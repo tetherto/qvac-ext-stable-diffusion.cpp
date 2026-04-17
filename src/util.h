@@ -69,6 +69,7 @@ protected:
 std::string path_join(const std::string& p1, const std::string& p2);
 std::vector<std::string> split_string(const std::string& str, char delimiter);
 void pretty_progress(int step, int steps, float time);
+bool sd_abort_requested();
 
 void log_printf(sd_log_level_t level, const char* file, int line, const char* format, ...);
 

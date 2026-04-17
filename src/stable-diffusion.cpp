@@ -97,6 +97,34 @@ void suppress_pp(int step, int steps, float time, void* data) {
     return;
 }
 
+static const char* ggml_backend_device_type_name(enum ggml_backend_dev_type type) {
+    switch (type) {
+        case GGML_BACKEND_DEVICE_TYPE_CPU:
+            return "CPU";
+        case GGML_BACKEND_DEVICE_TYPE_GPU:
+            return "GPU";
+        case GGML_BACKEND_DEVICE_TYPE_IGPU:
+            return "IGPU";
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL:
+            return "ACCEL";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void ggml_sd_log_bridge(enum ggml_log_level level, const char* text, void* user_data) {
+    (void)user_data;
+    if (text == nullptr) {
+        return;
+    }
+    switch (level) {
+        case GGML_LOG_LEVEL_DEBUG: LOG_DEBUG("ggml: %s", text); break;
+        case GGML_LOG_LEVEL_WARN:  LOG_WARN("ggml: %s", text); break;
+        case GGML_LOG_LEVEL_ERROR: LOG_ERROR("ggml: %s", text); break;
+        default:                   LOG_INFO("ggml: %s", text); break;
+    }
+}
+
 /*=============================================== StableDiffusionGGML ================================================*/
 
 class StableDiffusionGGML {
@@ -164,60 +192,147 @@ public:
         ggml_backend_free(backend);
     }
 
-    void init_backend() {
-#ifdef SD_USE_CUDA
-        LOG_DEBUG("Using CUDA backend");
-        backend = ggml_backend_cuda_init(0);
-#endif
-#ifdef SD_USE_METAL
-        LOG_DEBUG("Using Metal backend");
-        backend = ggml_backend_metal_init();
-#endif
-#ifdef SD_USE_VULKAN
-        LOG_DEBUG("Using Vulkan backend");
-        size_t device          = 0;
-        const int device_count = ggml_backend_vk_get_device_count();
-        if (device_count) {
-            const char* SD_VK_DEVICE = getenv("SD_VK_DEVICE");
-            if (SD_VK_DEVICE != nullptr) {
-                std::string sd_vk_device_str = SD_VK_DEVICE;
-                try {
-                    device = std::stoull(sd_vk_device_str);
-                } catch (const std::invalid_argument&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable is not a valid integer (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                } catch (const std::out_of_range&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable value is out of range for `unsigned long long` type (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                }
-                if (device >= device_count) {
-                    LOG_WARN("Cannot find targeted vulkan device (%llu). Falling back to device 0.", device);
-                    device = 0;
-                }
+    void init_backend(enum sd_backend_preference_t preferred_backend) {
+        const char* pref_name = "auto";
+        if (preferred_backend == SD_BACKEND_PREF_CPU) {
+            pref_name = "cpu";
+        } else if (preferred_backend == SD_BACKEND_PREF_GPU) {
+            pref_name = "gpu";
+        } else if (preferred_backend == SD_BACKEND_PREF_OPENCL) {
+            pref_name = "opencl";
+        }
+        LOG_INFO("Backend preference requested: %s", pref_name);
+
+        if (getenv("SD_CPU_ONLY")) {
+            LOG_INFO("SD_CPU_ONLY set - using CPU backend");
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
+            if (!backend) {
+                LOG_ERROR("SD_CPU_ONLY set but CPU backend failed to initialize");
             }
-            LOG_INFO("Vulkan: Using device %llu", device);
-            backend = ggml_backend_vk_init(device);
+            return;
         }
+
+        if (preferred_backend == SD_BACKEND_PREF_CPU) {
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
+            if (backend) {
+                LOG_INFO("Initialized CPU backend from explicit preference");
+            } else {
+                LOG_WARN("CPU backend preference requested but CPU backend initialization failed");
+            }
+            return;
+        }
+
+        if (preferred_backend == SD_BACKEND_PREF_OPENCL) {
+            const size_t n_devices = ggml_backend_dev_count();
+            bool found_opencl_device = false;
+            bool failed_opencl_init = false;
+            LOG_INFO("OpenCL preference: probing %zu device(s)", n_devices);
+            for (size_t i = 0; i < n_devices; ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                const enum ggml_backend_dev_type dev_type = ggml_backend_dev_type(dev);
+                if (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU &&
+                    dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                    continue;
+                }
+                const char* name = ggml_backend_dev_name(dev);
+                const char* desc = ggml_backend_dev_description(dev);
+                LOG_INFO("OpenCL probe candidate[%zu]: name='%s' desc='%s' type=%s", i, name ? name : "<null>", desc ? desc : "<null>", ggml_backend_device_type_name(dev_type));
+
+                if (!name) {
+                    continue;
+                }
+                const bool is_opencl = strstr(name, "opencl") != NULL ||
+                                       strstr(name, "OpenCL") != NULL;
+                if (!is_opencl) {
+                    continue;
+                }
+
+                found_opencl_device = true;
+                backend = ggml_backend_dev_init(dev, NULL);
+                if (backend) {
+                    LOG_INFO("Using OpenCL backend '%s'", name);
+                    LOG_INFO("Backend initialized successfully (OpenCL preference)");
+                    return;
+                }
+                failed_opencl_init = true;
+                LOG_WARN("OpenCL backend candidate '%s' failed to initialize", name);
+            }
+
+            if (!found_opencl_device) {
+                LOG_WARN("OpenCL preference requested but no OpenCL GPU device was enumerated; falling back to generic GPU selection");
+            } else if (failed_opencl_init) {
+                LOG_WARN("OpenCL preference requested but all OpenCL device init attempts failed; falling back to generic GPU selection");
+            } else {
+                LOG_WARN("OpenCL preference requested but no OpenCL backend could be initialized; falling back to generic GPU selection");
+            }
+        }
+
+        const size_t n_devices = ggml_backend_dev_count();
+        bool attempted_gpu_device_init = false;
+
+        // Prefer dedicated GPUs first.
+        for (size_t i = 0; i < n_devices; ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            const enum ggml_backend_dev_type dev_type = ggml_backend_dev_type(dev);
+            if (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU) {
+                continue;
+            }
+            const char* name = ggml_backend_dev_name(dev);
+            const char* desc = ggml_backend_dev_description(dev);
+            LOG_INFO("GPU init candidate[%zu]: name='%s' desc='%s' type=%s", i, name ? name : "<null>", desc ? desc : "<null>", ggml_backend_device_type_name(dev_type));
+            attempted_gpu_device_init = true;
+            backend = ggml_backend_dev_init(dev, NULL);
+            if (backend) {
+                LOG_INFO("Initialized GPU backend from explicit device candidate[%zu] '%s'", i, name ? name : "<null>");
+                break;
+            }
+            LOG_WARN("Failed to initialize GPU device candidate[%zu] '%s'", i, name ? name : "<null>");
+        }
+
+        // If no dedicated GPU worked, try integrated GPUs.
         if (!backend) {
-            LOG_WARN("Failed to initialize Vulkan backend");
+            for (size_t i = 0; i < n_devices; ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                const enum ggml_backend_dev_type dev_type = ggml_backend_dev_type(dev);
+                if (dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                    continue;
+                }
+                const char* name = ggml_backend_dev_name(dev);
+                const char* desc = ggml_backend_dev_description(dev);
+                LOG_INFO("IGPU init candidate[%zu]: name='%s' desc='%s' type=%s", i, name ? name : "<null>", desc ? desc : "<null>", ggml_backend_device_type_name(dev_type));
+                attempted_gpu_device_init = true;
+                backend = ggml_backend_dev_init(dev, NULL);
+                if (backend) {
+                    LOG_INFO("Initialized IGPU backend from explicit device candidate[%zu] '%s'", i, name ? name : "<null>");
+                    break;
+                }
+                LOG_WARN("Failed to initialize IGPU device candidate[%zu] '%s'", i, name ? name : "<null>");
+            }
         }
-#endif
-#ifdef SD_USE_OPENCL
-        LOG_DEBUG("Using OpenCL backend");
-        // ggml_log_set(ggml_log_callback_default, nullptr); // Optional ggml logs
-        backend = ggml_backend_opencl_init();
-        if (!backend) {
-            LOG_WARN("Failed to initialize OpenCL backend");
-        }
-#endif
-#ifdef SD_USE_SYCL
-        LOG_DEBUG("Using SYCL backend");
-        backend = ggml_backend_sycl_init(0);
-#endif
 
         if (!backend) {
-            LOG_DEBUG("Using CPU backend");
-            backend = ggml_backend_cpu_init();
+            if (attempted_gpu_device_init) {
+                LOG_WARN("All explicit GPU device init attempts failed; trying generic GPU init by type");
+            }
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, NULL);
+        }
+
+        if (!backend) {
+            LOG_WARN("GPU backend initialization failed; falling back to CPU backend");
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
+            if (!backend) {
+                LOG_ERROR("CPU fallback backend initialization failed");
+            }
+        } else {
+            LOG_INFO("Initialized generic GPU backend");
+        }
+
+        if (backend) {
+            if (ggml_backend_is_cpu(backend)) {
+                LOG_INFO("Final backend type: CPU");
+            } else {
+                LOG_INFO("Final backend type: non-CPU");
+            }
         }
     }
 
@@ -246,9 +361,9 @@ public:
             sampler_rng = rng;
         }
 
-        ggml_log_set(ggml_log_callback_default, nullptr);
+        ggml_log_set(ggml_sd_log_bridge, nullptr);
 
-        init_backend();
+        init_backend(sd_ctx_params->preferred_gpu_backend);
 
         ModelLoader model_loader;
 
@@ -2193,6 +2308,9 @@ public:
                 int showstep = std::abs(step);
                 pretty_progress(showstep, (int)steps, (t1 - t0) / 1000000.f / showstep);
                 // LOG_INFO("step %d sampling completed taking %.2fs", step, (t1 - t0) * 1.0f / 1000000);
+                if (sd_abort_requested()) {
+                    return (ggml_tensor*)nullptr;
+                }
             }
             return denoised;
         };
@@ -2203,7 +2321,11 @@ public:
                 control_net->free_control_ctx();
                 control_net->free_compute_buffer();
             }
-            diffusion_model->free_compute_buffer();
+            // Upstream bug: abort/failure path freed the wrong model's compute
+            // buffer (diffusion_model instead of work_diffusion_model).  The
+            // success path at line ~2218 frees work_diffusion_model -- this must
+            // match, otherwise sd_ctx state is corrupted and reuse segfaults.
+            work_diffusion_model->free_compute_buffer();
             return NULL;
         }
 
@@ -2953,6 +3075,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->chroma_use_dit_mask     = true;
     sd_ctx_params->chroma_use_t5_mask      = false;
     sd_ctx_params->chroma_t5_mask_pad      = 1;
+    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_AUTO;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
@@ -3795,6 +3918,13 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
                                                         &sd_img_gen_params->cache);
 
     size_t t2 = ggml_time_ms();
+
+    // When generate_image_internal() returns NULL (abort or failure),
+    // work_ctx is never freed inside that function -- it only frees on
+    // the success path.  Free it here to avoid leaking the ggml context.
+    if (result_images == nullptr) {
+        ggml_free(work_ctx);
+    }
 
     LOG_INFO("generate_image completed in %.2fs", (t2 - t0) * 1.0f / 1000);
 
