@@ -160,6 +160,13 @@ enum lora_apply_mode_t {
     LORA_APPLY_MODE_COUNT,
 };
 
+enum sd_backend_preference_t {
+    SD_BACKEND_PREF_AUTO = 0,
+    SD_BACKEND_PREF_CPU,
+    SD_BACKEND_PREF_GPU,
+    SD_BACKEND_PREF_OPENCL,
+};
+
 typedef struct {
     bool enabled;
     bool temporal_tiling;
@@ -231,6 +238,7 @@ typedef struct {
     bool auto_fit;
     const char* rpc_servers;
     const char* model_args;
+    enum sd_backend_preference_t preferred_gpu_backend;  // qvac: honored when `backend` is unset
 } sd_ctx_params_t;
 
 typedef struct {
@@ -434,11 +442,13 @@ struct ggml_tensor;
 
 typedef void (*sd_log_cb_t)(enum sd_log_level_t level, const char* text, void* data);
 typedef void (*sd_progress_cb_t)(int step, int steps, float time, void* data);
+typedef bool (*sd_abort_cb_t)(void* data);
 typedef void (*sd_preview_cb_t)(int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data);
 typedef bool (*sd_graph_eval_callback_t)(struct ggml_tensor* t, bool ask, void* user_data);
 
 SD_API void sd_set_log_callback(sd_log_cb_t sd_log_cb, void* data);
 SD_API void sd_set_progress_callback(sd_progress_cb_t cb, void* data);
+SD_API void sd_set_abort_callback(sd_abort_cb_t cb, void* data);
 SD_API void sd_set_preview_callback(sd_preview_cb_t cb, enum preview_t mode, int interval, bool denoised, bool noisy, void* data);
 SD_API void sd_set_backend_eval_callback(sd_graph_eval_callback_t cb, void* data);
 SD_API int32_t sd_get_num_physical_cores();
