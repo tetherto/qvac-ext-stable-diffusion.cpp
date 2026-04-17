@@ -935,6 +935,20 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     params_backend_spec       = SAFE_STR(sd_ctx_params->params_backend);
     split_mode_spec           = SAFE_STR(sd_ctx_params->split_mode);
     auto_fit_enabled          = sd_ctx_params->auto_fit && params_backend_spec.empty();
+    if (backend_spec.empty()) {
+        if (getenv("SD_CPU_ONLY")) {
+            LOG_INFO("SD_CPU_ONLY set - forcing CPU backend");
+            backend_spec = "cpu";
+        } else {
+            switch (sd_ctx_params->preferred_gpu_backend) {
+                case SD_BACKEND_PREF_CPU: backend_spec = "cpu"; break;
+                case SD_BACKEND_PREF_GPU: backend_spec = "gpu"; break;
+                case SD_BACKEND_PREF_OPENCL: backend_spec = "opencl"; break;
+                default: break;
+            }
+        }
+    }
+
     max_vram_assignment.reset(0.f);
     {
         std::string error;
@@ -2432,7 +2446,7 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
     sd::Tensor<float> denoised                    = x_t;
 
     auto denoise = [&](const sd::Tensor<float>& x, float sigma, int step) -> sd::guidance::GuiderOutput {
-        if (get_cancel_flag() == SD_CANCEL_ALL) {
+        if (get_cancel_flag() == SD_CANCEL_ALL || sd_abort_requested()) {
             LOG_VERBOSE("cancelling generation");
             return {};
         }

@@ -356,6 +356,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->rpc_servers               = nullptr;
     sd_ctx_params->model_args                = nullptr;
     sd_ctx_params->pulid_weights_path        = nullptr;
+    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_AUTO;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {

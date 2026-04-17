@@ -173,6 +173,13 @@ enum lora_apply_mode_t {
     LORA_APPLY_MODE_COUNT,
 };
 
+enum sd_backend_preference_t {
+    SD_BACKEND_PREF_AUTO = 0,
+    SD_BACKEND_PREF_CPU,
+    SD_BACKEND_PREF_GPU,
+    SD_BACKEND_PREF_OPENCL,
+};
+
 typedef struct {
     bool enabled;
     bool temporal_tiling;
@@ -256,6 +263,7 @@ typedef struct {
     int conditioning_cache_size;  // Maximum cached conditioning entries per context; 0 disables caching (default: 4)
     const char* flash_attn_mode;  // on/off/auto or module assignments (e.g. "auto,te=off"); NULL/empty honors legacy flags.
     const char* conv_direct_mode;  // on/off/auto or diffusion/vae/controlnet assignments; NULL/empty honors legacy flags.
+    enum sd_backend_preference_t preferred_gpu_backend;  // qvac: honored when `backend` is unset
 } sd_ctx_params_t;
 
 typedef struct {
@@ -486,6 +494,7 @@ struct ggml_tensor;
 
 typedef void (*sd_log_cb_t)(enum sd_log_level_t level, const char* text, void* data);
 typedef void (*sd_progress_cb_t)(int step, int steps, float time, void* data);
+typedef bool (*sd_abort_cb_t)(void* data);
 typedef void (*sd_preview_cb_t)(int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data);
 
 typedef struct {
@@ -499,6 +508,7 @@ SD_API void sd_set_progress_callback(sd_progress_cb_t cb, void* data);
 // In each sampling pass, a positive interval previews every Nth denoiser step, while a
 // negative interval previews only completed logical step -interval. Zero previews the final
 // completed step of the first sampling pass (base-resolution or high-noise).
+SD_API void sd_set_abort_callback(sd_abort_cb_t cb, void* data);
 SD_API void sd_set_preview_callback(sd_preview_cb_t cb, enum preview_t mode, int interval, bool denoised, bool noisy, void* data);
 // Query from a preview callback. Passes are numbered from 1 since the last
 // sd_set_preview_callback call; total_steps is the actual count in that pass.
