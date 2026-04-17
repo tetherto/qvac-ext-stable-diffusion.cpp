@@ -162,6 +162,19 @@ static float get_cache_reuse_threshold(const sd_cache_params_t& params) {
     return std::max(0.0f, reuse_threshold);
 }
 
+static void ggml_sd_log_bridge(enum ggml_log_level level, const char* text, void* user_data) {
+    (void)user_data;
+    if (text == nullptr) {
+        return;
+    }
+    switch (level) {
+        case GGML_LOG_LEVEL_DEBUG: LOG_DEBUG("ggml: %s", text); break;
+        case GGML_LOG_LEVEL_WARN: LOG_WARN("ggml: %s", text); break;
+        case GGML_LOG_LEVEL_ERROR: LOG_ERROR("ggml: %s", text); break;
+        default: LOG_INFO("ggml: %s", text); break;
+    }
+}
+
 /*=============================================== StableDiffusionGGML ================================================*/
 
 static_assert(std::atomic<sd_cancel_mode_t>::is_always_lock_free,
@@ -344,6 +357,28 @@ public:
         stream_layers       = sd_ctx_params->stream_layers;
         backend_spec        = SAFE_STR(sd_ctx_params->backend);
         params_backend_spec = SAFE_STR(sd_ctx_params->params_backend);
+
+        // qvac downstream reconcile: when no explicit --backend spec is given,
+        // derive one from preferred_gpu_backend / SD_CPU_ONLY so the legacy
+        // vcpkg consumer API keeps working on top of upstream's richer
+        // backend/params_backend string mechanism (which still wins when set).
+        if (backend_spec.empty()) {
+            if (getenv("SD_CPU_ONLY")) {
+                LOG_INFO("SD_CPU_ONLY set - forcing CPU backend");
+                backend_spec = "cpu";
+            } else {
+                switch (sd_ctx_params->preferred_gpu_backend) {
+                    case SD_BACKEND_PREF_CPU: backend_spec = "cpu"; break;
+                    case SD_BACKEND_PREF_GPU: backend_spec = "gpu"; break;
+                    case SD_BACKEND_PREF_OPENCL: backend_spec = "opencl"; break;
+                    case SD_BACKEND_PREF_AUTO:
+                    default: break;  // leave empty -> upstream auto-selection
+                }
+            }
+            if (!backend_spec.empty()) {
+                LOG_INFO("Applying backend preference: %s", backend_spec.c_str());
+            }
+        }
         max_vram_assignment.reset(0.f);
         {
             std::string error;
@@ -367,7 +402,7 @@ public:
             sampler_rng = rng;
         }
 
-        ggml_log_set(ggml_log_callback_default, nullptr);
+        ggml_log_set(ggml_sd_log_bridge, nullptr);
 
         if (!init_backend()) {
             return false;
@@ -1983,7 +2018,12 @@ public:
                 LOG_DEBUG("cancelling generation");
                 return {};
             }
-
+            // qvac: host-driven cancellation. Returning an empty GuiderOutput
+            // makes sample_k_diffusion bail out and run the normal cleanup path.
+            if (sd_abort_requested()) {
+                LOG_WARN("Abort requested by host; stopping sampling");
+                return {};
+            }
             if (step == 1 || step == -1) {
                 pretty_progress(0, (int)steps, 0);
                 last_progress_us = ggml_time_us();
@@ -2708,6 +2748,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->params_backend       = nullptr;
     sd_ctx_params->rpc_servers          = nullptr;
     sd_ctx_params->pulid_weights_path   = nullptr;
+    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_AUTO;  // qvac
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
