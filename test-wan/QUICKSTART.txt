@@ -1,0 +1,59 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                 WAN VIDEO GENERATION - QUICK START GUIDE                   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+PROJECT LOCATION:
+  ~/Documents/qvac-ext-stable-diffusion.cpp
+
+BINARIES AVAILABLE:
+  ✓ sd-cli   - Video/Image generation CLI
+  ✓ sd-server - REST API server
+
+BUILD COMMANDS:
+  make build-metal    # Build with Metal GPU (recommended for Mac)
+  make build          # CPU only
+  make clean          # Clean build artifacts
+
+TEST INFRASTRUCTURE:
+  ✓ test-wan/test-wan-models.sh  - Automated test runner
+  ✓ test-wan/wan-functions.sh    - Helper shell functions
+  ✓ test-wan/README.md           - Complete documentation
+  ✓ test-wan/models/             - Model storage directory
+  ✓ test-wan/output/             - Generated video output
+
+NEXT STEPS:
+  1. Download model files to test-wan/models/ (see README.md for links)
+  2. Run tests: cd test-wan && ./test-wan-models.sh wan2-1-t2v-small
+  3. Load functions: source test-wan/wan-functions.sh
+  4. Generate videos: wan_t2v_small "your prompt here" output.mp4
+
+SUPPORTED MODELS:
+  ✓ Wan2.1 Text-to-Video (T2V) 1.3B   - Fast, good for testing
+  ✓ Wan2.1 Text-to-Video (T2V) 14B    - High quality, requires more VRAM
+  ✓ Wan2.1 Image-to-Video (I2V) 14B   - Animate existing images
+  ✓ Wan2.2 Tiny Text-to-Video (TI2V) 5B - Mobile-friendly
+
+PERFORMANCE (Apple Silicon M-series):
+  Wan2.1 1.3B T2V:   ~30-60 seconds per video
+  Wan2.1 14B T2V:    ~3-5 minutes per video
+  Wan2.2 5B TI2V:    ~1-2 minutes per video
+
+QUICK COMMAND:
+  ./build/bin/sd-cli -M vid_gen \
+    --diffusion-model test-wan/models/wan2.1_t2v_1.3B_fp16.safetensors \
+    --vae test-wan/models/wan_2.1_vae.safetensors \
+    --t5xxl test-wan/models/umt5_xxl_fp16.safetensors \
+    -p "a lovely cat" \
+    --video-frames 33 \
+    -W 832 -H 480 \
+    --offload-to-cpu \
+    -o output.mp4
+
+MORE INFO:
+  - See BUILDING_WAN.md for detailed documentation
+  - See test-wan/README.md for complete model download links
+  - See test-wan/wan-functions.sh for helper functions
+
+═════════════════════════════════════════════════════════════════════════════
+Built: April 28, 2026 | Status: Ready for testing | Configuration: Metal GPU
+═════════════════════════════════════════════════════════════════════════════
