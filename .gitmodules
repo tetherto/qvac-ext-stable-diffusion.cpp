@@ -1,3 +1,4 @@
 [submodule "ggml"]
-    path = ggml
-	url = https://github.com/ggml-org/ggml.git
+	path = ggml
+	url = https://github.com/tetherto/qvac-ext-ggml.git
+	branch = feature/metal-pr-16669-clean

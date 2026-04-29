@@ -13,3 +13,6 @@ output*.png
 models*
 *.log
 preview.png
+test-wan/output/
+test-wan/models/
+test-wan/cache/
