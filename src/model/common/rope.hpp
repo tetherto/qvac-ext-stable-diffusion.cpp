@@ -6,6 +6,7 @@
 #include <cmath>
 #include <set>
 #include <utility>
+#include <cstdlib>
 #include <vector>
 #include "core/ggml_extend.h"
 #include "core/ggml_runner.h"
@@ -1137,7 +1138,19 @@ namespace Rope {
         // pe: [L, d_head/2, 2, 2]
         // return: [N, L, n_head*d_head]
         int64_t n_head = q->ne[1];
+#ifdef SD_GGML_HAS_ROPE_FLUX
+        static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+        if (!fused_disabled && rope_interleaved) {
+            auto q_fused = ggml_rope_flux(ctx->ggml_ctx, q, pe);
+            auto k_fused = ggml_rope_flux(ctx->ggml_ctx, k, pe);
+            if (ggml_backend_supports_op(ctx->backend, q_fused) &&
+                ggml_backend_supports_op(ctx->backend, k_fused)) {
+                auto x = ggml_ext_attention_ext(ctx, q_fused, k_fused, v, n_head, mask, true, ctx->flash_attn_enabled, kv_scale);
+                return x;
+            }
+        }
 
+#endif
         q = apply_rope(ctx, q, pe, rope_interleaved);  // [N*n_head, L, d_head]
         k = apply_rope(ctx, k, pe, rope_interleaved);  // [N*n_head, L, d_head]
 

@@ -25,3 +25,8 @@ if(SD_USE_UPSTREAM_GGML)
     target_compile_definitions(${SD_LIB} PUBLIC SD_USE_UPSTREAM_GGML)
     message(WARNING "Using upstream GGML: INT8 tensorwise/convrot is disabled and FP8 weights are converted to F16 at load time. Some operators may be unsupported and performance may be lower than with patched GGML.")
 endif()
+
+file(STRINGS "${sd_ggml_private_include}/../include/ggml.h" sd_ggml_rope_flux_decl REGEX "ggml_rope_flux")
+if(sd_ggml_rope_flux_decl)
+    target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_ROPE_FLUX=1)
+endif()
