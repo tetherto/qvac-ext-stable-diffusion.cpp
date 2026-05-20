@@ -104,6 +104,9 @@ namespace Flux {
             auto norm     = std::dynamic_pointer_cast<QKNorm>(blocks["norm"]);
 
             auto qkv         = qkv_proj->forward(ctx, x);
+            GGML_ASSERT(qkv->nb[0] == ggml_element_size(qkv));
+            GGML_ASSERT(qkv->ne[0] % 3 == 0);
+            GGML_ASSERT((qkv->ne[0] / 3) % num_heads == 0);
             int64_t head_dim = qkv->ne[0] / 3 / num_heads;
             auto q           = ggml_view_4d(ctx->ggml_ctx, qkv, head_dim, num_heads, qkv->ne[1], qkv->ne[2],
                                             qkv->nb[0] * head_dim, qkv->nb[1], qkv->nb[2], 0);
@@ -493,6 +496,9 @@ namespace Flux {
             auto x_mod   = Flux::modulate(ctx->ggml_ctx, pre_norm->forward(ctx, x), mod.shift, mod.scale);
             auto qkv_mlp = linear1->forward(ctx, x_mod);  // [N, n_token, hidden_size * 3 + mlp_hidden_dim*mlp_mult_factor]
 
+            GGML_ASSERT(qkv_mlp->nb[0] == ggml_element_size(qkv_mlp));
+            GGML_ASSERT(hidden_size % num_heads == 0);
+            GGML_ASSERT(qkv_mlp->ne[0] >= 3 * hidden_size);
             int64_t head_dim = hidden_size / num_heads;
 
             auto q = ggml_view_4d(ctx->ggml_ctx, qkv_mlp, head_dim, num_heads, qkv_mlp->ne[1], qkv_mlp->ne[2],
