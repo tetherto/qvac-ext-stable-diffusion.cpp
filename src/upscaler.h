@@ -25,6 +25,8 @@ struct UpscalerGGML {
     size_t max_graph_vram_bytes = 0;
     std::string backend_spec;
     std::string params_backend_spec;
+    // qvac: post-init truth for RuntimeStats (0 = CPU, 1 = GPU).
+    int actual_backend_device = 0;
 
     UpscalerGGML(int n_threads,
                  bool direct                     = false,
