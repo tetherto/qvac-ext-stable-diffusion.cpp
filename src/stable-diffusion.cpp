@@ -193,7 +193,7 @@ public:
     }
 
     void init_backend(enum sd_backend_preference_t preferred_backend) {
-        const char* pref_name = "auto";
+        const char* pref_name = "gpu";
         if (preferred_backend == SD_BACKEND_PREF_CPU) {
             pref_name = "cpu";
         } else if (preferred_backend == SD_BACKEND_PREF_GPU) {
@@ -3075,7 +3075,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->chroma_use_dit_mask     = true;
     sd_ctx_params->chroma_use_t5_mask      = false;
     sd_ctx_params->chroma_t5_mask_pad      = 1;
-    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_AUTO;
+    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_GPU;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {

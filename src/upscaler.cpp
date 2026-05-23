@@ -5,6 +5,21 @@
 #include <cstring>
 #include <cstdlib>
 
+static const char* ggml_backend_device_type_name(enum ggml_backend_dev_type type) {
+    switch (type) {
+        case GGML_BACKEND_DEVICE_TYPE_CPU:
+            return "CPU";
+        case GGML_BACKEND_DEVICE_TYPE_GPU:
+            return "GPU";
+        case GGML_BACKEND_DEVICE_TYPE_IGPU:
+            return "IGPU";
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL:
+            return "ACCEL";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 struct UpscalerGGML {
     ggml_backend_t backend    = nullptr;  // general backend
     ggml_type model_data_type = GGML_TYPE_F16;
@@ -26,7 +41,7 @@ struct UpscalerGGML {
 
     // Keep aligned with StableDiffusionGGML::init_backend() in stable-diffusion.cpp.
     bool init_upscaler_backend(enum sd_backend_preference_t preferred_backend) {
-        const char* pref_name = "auto";
+        const char* pref_name = "gpu";
         if (preferred_backend == SD_BACKEND_PREF_CPU) {
             pref_name = "cpu";
         } else if (preferred_backend == SD_BACKEND_PREF_GPU) {
@@ -50,8 +65,7 @@ struct UpscalerGGML {
             if (backend) {
                 LOG_INFO("ESRGAN upscaler: initialized CPU backend from preference");
             } else {
-                LOG_WARN("ESRGAN upscaler: CPU preference failed; trying ggml_backend_cpu_init");
-                backend = ggml_backend_cpu_init();
+                LOG_WARN("ESRGAN upscaler: CPU backend preference requested but CPU backend initialization failed");
             }
             return backend != nullptr;
         }
@@ -93,12 +107,61 @@ struct UpscalerGGML {
             }
         }
 
-        backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, NULL);
+        const size_t n_devices = ggml_backend_dev_count();
+        bool attempted_gpu_device_init = false;
+
+        // Prefer dedicated GPUs first.
+        for (size_t i = 0; i < n_devices; ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            const enum ggml_backend_dev_type dev_type = ggml_backend_dev_type(dev);
+            if (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU) {
+                continue;
+            }
+            const char* name = ggml_backend_dev_name(dev);
+            const char* desc = ggml_backend_dev_description(dev);
+            LOG_INFO("ESRGAN upscaler GPU init candidate[%zu]: name='%s' desc='%s' type=%s", i, name ? name : "<null>", desc ? desc : "<null>", ggml_backend_device_type_name(dev_type));
+            attempted_gpu_device_init = true;
+            backend = ggml_backend_dev_init(dev, NULL);
+            if (backend) {
+                LOG_INFO("ESRGAN upscaler: initialized GPU backend from explicit device candidate[%zu] '%s'", i, name ? name : "<null>");
+                break;
+            }
+            LOG_WARN("ESRGAN upscaler: failed to initialize GPU device candidate[%zu] '%s'", i, name ? name : "<null>");
+        }
+
+        // If no dedicated GPU worked, try integrated GPUs.
+        if (!backend) {
+            for (size_t i = 0; i < n_devices; ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                const enum ggml_backend_dev_type dev_type = ggml_backend_dev_type(dev);
+                if (dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                    continue;
+                }
+                const char* name = ggml_backend_dev_name(dev);
+                const char* desc = ggml_backend_dev_description(dev);
+                LOG_INFO("ESRGAN upscaler IGPU init candidate[%zu]: name='%s' desc='%s' type=%s", i, name ? name : "<null>", desc ? desc : "<null>", ggml_backend_device_type_name(dev_type));
+                attempted_gpu_device_init = true;
+                backend = ggml_backend_dev_init(dev, NULL);
+                if (backend) {
+                    LOG_INFO("ESRGAN upscaler: initialized IGPU backend from explicit device candidate[%zu] '%s'", i, name ? name : "<null>");
+                    break;
+                }
+                LOG_WARN("ESRGAN upscaler: failed to initialize IGPU device candidate[%zu] '%s'", i, name ? name : "<null>");
+            }
+        }
+
+        if (!backend) {
+            if (attempted_gpu_device_init) {
+                LOG_WARN("ESRGAN upscaler: all explicit GPU device init attempts failed; trying generic GPU init by type");
+            }
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, NULL);
+        }
+
         if (!backend) {
             LOG_WARN("ESRGAN upscaler: GPU init_by_type failed; falling back to CPU");
             backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, NULL);
             if (!backend) {
-                backend = ggml_backend_cpu_init();
+                LOG_ERROR("ESRGAN upscaler: CPU fallback backend initialization failed");
             }
         } else {
             LOG_INFO("ESRGAN upscaler: initialized generic GPU backend");
@@ -232,7 +295,7 @@ upscaler_ctx_t* new_upscaler_ctx(const char* esrgan_path_c_str,
                                  int tile_size) {
     return new_upscaler_ctx_with_device(
         esrgan_path_c_str, offload_params_to_cpu, direct, n_threads, tile_size,
-        SD_UPSCALER_DEVICE_AUTO, SD_BACKEND_PREF_AUTO);
+        SD_UPSCALER_DEVICE_GPU, SD_BACKEND_PREF_GPU);
 }
 
 int get_upscaler_backend_device(const upscaler_ctx_t* upscaler_ctx) {
