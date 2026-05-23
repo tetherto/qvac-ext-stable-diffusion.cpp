@@ -883,10 +883,12 @@ public:
             } else {
                 switch (sd_ctx_params->preferred_gpu_backend) {
                     case SD_BACKEND_PREF_CPU: backend_spec = "cpu"; break;
-                    case SD_BACKEND_PREF_GPU: backend_spec = "gpu"; break;
                     case SD_BACKEND_PREF_OPENCL: backend_spec = "opencl"; break;
-                    case SD_BACKEND_PREF_AUTO:
-                    default: break;
+                    case SD_BACKEND_PREF_GPU:
+                    default:
+                        // Leave empty: upstream auto-selection is GPU-first and
+                        // preserves per-module backend overrides.
+                        break;
                 }
                 if (!backend_spec.empty()) {
                     LOG_INFO("Applying backend preference: %s", backend_spec.c_str());
@@ -3578,7 +3580,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->rpc_servers          = nullptr;
     sd_ctx_params->model_args           = nullptr;
     sd_ctx_params->pulid_weights_path   = nullptr;
-    sd_ctx_params->preferred_gpu_backend   = SD_BACKEND_PREF_AUTO;
+    sd_ctx_params->preferred_gpu_backend   = SD_BACKEND_PREF_GPU;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
