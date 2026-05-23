@@ -942,7 +942,7 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
         } else {
             switch (sd_ctx_params->preferred_gpu_backend) {
                 case SD_BACKEND_PREF_CPU: backend_spec = "cpu"; break;
-                case SD_BACKEND_PREF_GPU: backend_spec = "gpu"; break;
+                case SD_BACKEND_PREF_GPU: break;
                 case SD_BACKEND_PREF_OPENCL: backend_spec = "opencl"; break;
                 default: break;
             }
