@@ -369,10 +369,11 @@ public:
             } else {
                 switch (sd_ctx_params->preferred_gpu_backend) {
                     case SD_BACKEND_PREF_CPU: backend_spec = "cpu"; break;
-                    case SD_BACKEND_PREF_GPU: backend_spec = "gpu"; break;
                     case SD_BACKEND_PREF_OPENCL: backend_spec = "opencl"; break;
-                    case SD_BACKEND_PREF_AUTO:
-                    default: break;  // leave empty -> upstream auto-selection
+                    case SD_BACKEND_PREF_GPU:
+                    default:
+                        // Leave empty: upstream auto-selection is GPU-first.
+                        break;
                 }
             }
             if (!backend_spec.empty()) {
@@ -2748,7 +2749,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->params_backend       = nullptr;
     sd_ctx_params->rpc_servers          = nullptr;
     sd_ctx_params->pulid_weights_path   = nullptr;
-    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_AUTO;  // qvac
+    sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_GPU;  // qvac
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {

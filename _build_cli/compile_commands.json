@@ -1,0 +1,1388 @@
+[
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/convert.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/convert.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/convert.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/convert.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/ggml_extend_backend.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/ggml_extend_backend.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/ggml_extend_backend.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/ggml_extend_backend.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/ggml_graph_cut.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/ggml_graph_cut.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/ggml_graph_cut.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/ggml_graph_cut.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/guidance.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/guidance.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/guidance.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/guidance.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/layer_registry.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/layer_registry.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/layer_registry.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/layer_registry.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model_io/gguf_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/gguf_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/gguf_io.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model_io/gguf_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model_io/pickle_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/pickle_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/pickle_io.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model_io/pickle_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model_io/safetensors_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/safetensors_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/safetensors_io.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model_io/safetensors_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model_io/torch_legacy_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/torch_legacy_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/torch_legacy_io.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model_io/torch_legacy_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/model_io/torch_zip_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/torch_zip_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/model_io/torch_zip_io.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/model_io/torch_zip_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/name_conversion.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/name_conversion.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/name_conversion.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/name_conversion.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/sample-cache.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/sample-cache.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/sample-cache.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/sample-cache.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/stable-diffusion.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/stable-diffusion.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/stable-diffusion.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/stable-diffusion.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/bpe_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/bpe_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/bpe_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/bpe_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/clip_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/clip_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/clip_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/clip_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/gemma_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/gemma_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/gemma_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/gemma_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/gpt_oss_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/gpt_oss_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/gpt_oss_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/gpt_oss_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/mistral_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/mistral_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/mistral_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/mistral_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/qwen2_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/qwen2_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/qwen2_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/qwen2_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/t5_unigram_tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/t5_unigram_tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/t5_unigram_tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/t5_unigram_tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/tokenize_util.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/tokenize_util.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/tokenize_util.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/tokenize_util.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/tokenizer.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/tokenizer.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/tokenizer.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/tokenizer.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/tokenizers/vocab/vocab.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/vocab/vocab.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/tokenizers/vocab/vocab.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/tokenizers/vocab/vocab.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/upscaler.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/upscaler.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/upscaler.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/upscaler.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/util.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/util.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/util.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/util.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSDCPP_BUILD_COMMIT=c7d3817 -DSDCPP_BUILD_VERSION=master-669-2d40a8b-12-gc7d3817 -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/stable-diffusion.dir/src/version.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/version.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src/version.cpp",
+  "output": "CMakeFiles/stable-diffusion.dir/src/version.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty",
+  "command": "/usr/bin/cc  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -O3 -DNDEBUG -std=gnu11 -arch arm64 -o CMakeFiles/zip.dir/zip.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/zip.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/zip.c",
+  "output": "thirdparty/CMakeFiles/zip.dir/zip.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_cpu.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_cpu.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_cpu.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_cpu.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_csp.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_csp.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_csp.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_csp.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_dsp.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_dsp.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_dsp.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_dsp.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_gamma.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_gamma.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv_gamma.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv_gamma.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -o CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/sharpyuv/sharpyuv.c",
+  "output": "thirdparty/libwebp/CMakeFiles/sharpyuv.dir/sharpyuv/sharpyuv.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/cpu.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cpu.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cpu.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/cpu.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_clip_tables.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_clip_tables.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_clip_tables.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_clip_tables.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/filters.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/filters.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_avx2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_avx2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_avx2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_avx2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/filters_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/filters_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/filters_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/filters_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/filters_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/filters_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/alpha_processing_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/dec_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/dec_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/filters_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/filters_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/lossless_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/lossless_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/rescaler_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/upsampling_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdspdecode.dir/src/dsp/yuv_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdspdecode.dir/src/dsp/yuv_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/alpha_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/alpha_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/alpha_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/alpha_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/buffer_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/buffer_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/buffer_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/buffer_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/frame_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/frame_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/frame_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/frame_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/idec_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/idec_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/idec_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/idec_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/io_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/io_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/io_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/io_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/quant_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/quant_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/quant_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/quant_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/tree_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/tree_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/tree_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/tree_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/vp8_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/vp8_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/vp8_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/vp8_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/vp8l_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/vp8l_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/vp8l_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/vp8l_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdecode.dir/src/dec/webp_dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/webp_dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dec/webp_dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdecode.dir/src/dec/webp_dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/bit_reader_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_reader_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_reader_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/bit_reader_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/color_cache_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/color_cache_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/color_cache_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/color_cache_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/filters_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/filters_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/filters_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/filters_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/huffman_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/huffman_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/palette.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/palette.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/palette.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/palette.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/quant_levels_dec_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_dec_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_dec_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/quant_levels_dec_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/rescaler_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/rescaler_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/rescaler_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/rescaler_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/random_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/random_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/random_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/random_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/thread_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/thread_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/thread_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/thread_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputilsdecode.dir/src/utils/utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputilsdecode.dir/src/utils/utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/alpha_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/alpha_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/alpha_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/alpha_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/analysis_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/analysis_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/analysis_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/analysis_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/backward_references_cost_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/backward_references_cost_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/backward_references_cost_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/backward_references_cost_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/backward_references_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/backward_references_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/backward_references_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/backward_references_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/config_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/config_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/config_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/config_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/cost_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/cost_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/cost_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/cost_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/filter_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/filter_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/filter_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/filter_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/frame_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/frame_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/frame_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/frame_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/histogram_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/histogram_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/histogram_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/histogram_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/iterator_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/iterator_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/iterator_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/iterator_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/near_lossless_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/near_lossless_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/near_lossless_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/near_lossless_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/picture_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/picture_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/picture_csp_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_csp_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_csp_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/picture_csp_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/picture_psnr_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_psnr_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_psnr_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/picture_psnr_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/picture_rescale_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_rescale_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_rescale_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/picture_rescale_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/picture_tools_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_tools_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/picture_tools_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/picture_tools_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/predictor_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/predictor_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/predictor_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/predictor_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/quant_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/quant_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/quant_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/quant_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/syntax_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/syntax_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/syntax_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/syntax_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/token_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/token_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/token_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/token_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/tree_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/tree_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/tree_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/tree_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/vp8l_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/vp8l_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/vp8l_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/vp8l_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpencode.dir/src/enc/webp_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/webp_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/enc/webp_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpencode.dir/src/enc/webp_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/alpha_processing.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/alpha_processing.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cpu.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cpu.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cpu.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cpu.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_clip_tables.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_clip_tables.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_clip_tables.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_clip_tables.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/filters.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/filters.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_avx2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_avx2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_avx2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_avx2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/filters_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/filters_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/filters_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/filters_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/filters_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/filters_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/alpha_processing_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/alpha_processing_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/dec_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/dec_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/dec_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/filters_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/filters_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/filters_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/rescaler_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/rescaler_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/rescaler_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/upsampling_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/upsampling_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/upsampling_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/yuv_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/yuv_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/yuv_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cost.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cost.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/ssim.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/ssim.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/ssim.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/ssim.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cost_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cost_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/ssim_sse2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/ssim_sse2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/ssim_sse2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/ssim_sse2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_sse41.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_sse41.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_sse41.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_sse41.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_avx2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_avx2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_avx2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_avx2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cost_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cost_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_neon.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_neon.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_neon.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_neon.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_msa.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_msa.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_msa.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_msa.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cost_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cost_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_mips32.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_mips32.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_mips32.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_mips32.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/cost_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/cost_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/cost_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/enc_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/enc_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/enc_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_mips_dsp_r2.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_mips_dsp_r2.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/dsp/lossless_enc_mips_dsp_r2.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdsp.dir/src/dsp/lossless_enc_mips_dsp_r2.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/bit_reader_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_reader_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_reader_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/bit_reader_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/color_cache_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/color_cache_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/color_cache_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/color_cache_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/filters_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/filters_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/filters_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/filters_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/huffman_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/huffman_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/palette.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/palette.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/palette.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/palette.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/quant_levels_dec_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_dec_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_dec_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/quant_levels_dec_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/rescaler_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/rescaler_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/rescaler_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/rescaler_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/random_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/random_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/random_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/random_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/thread_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/thread_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/thread_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/thread_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/bit_writer_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_writer_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/bit_writer_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/bit_writer_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/huffman_encode_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_encode_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/huffman_encode_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/huffman_encode_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webputils.dir/src/utils/quant_levels_utils.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_utils.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/utils/quant_levels_utils.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webputils.dir/src/utils/quant_levels_utils.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdemux.dir/src/demux/anim_decode.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/demux/anim_decode.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/demux/anim_decode.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdemux.dir/src/demux/anim_decode.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/webpdemux.dir/src/demux/demux.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/demux/demux.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/demux/demux.c",
+  "output": "thirdparty/libwebp/CMakeFiles/webpdemux.dir/src/demux/demux.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/libwebpmux.dir/src/mux/anim_encode.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/anim_encode.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/anim_encode.c",
+  "output": "thirdparty/libwebp/CMakeFiles/libwebpmux.dir/src/mux/anim_encode.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/libwebpmux.dir/src/mux/muxedit.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxedit.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxedit.c",
+  "output": "thirdparty/libwebp/CMakeFiles/libwebpmux.dir/src/mux/muxedit.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/libwebpmux.dir/src/mux/muxinternal.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxinternal.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxinternal.c",
+  "output": "thirdparty/libwebp/CMakeFiles/libwebpmux.dir/src/mux/muxinternal.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp",
+  "command": "/usr/bin/cc -DHAVE_CONFIG_H -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src  -pthread -O3 -DNDEBUG -std=gnu11 -arch arm64 -fPIC -fvisibility=hidden -Wall -o CMakeFiles/libwebpmux.dir/src/mux/muxread.c.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxread.c",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src/mux/muxread.c",
+  "output": "thirdparty/libwebp/CMakeFiles/libwebpmux.dir/src/mux/muxread.c.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxer.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvmuxer.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvmuxer.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxer.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxerutil.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvmuxerutil.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvmuxerutil.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxerutil.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvwriter.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvwriter.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvmuxer/mkvwriter.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvwriter.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/mkvparser.dir/mkvparser/mkvparser.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvparser/mkvparser.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvparser/mkvparser.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/mkvparser.dir/mkvparser/mkvparser.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/mkvparser.dir/mkvparser/mkvreader.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvparser/mkvreader.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/mkvparser/mkvreader.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/mkvparser.dir/mkvparser/mkvreader.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/webvtt_common.dir/webvtt/vttreader.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/webvtt/vttreader.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/webvtt/vttreader.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/webvtt_common.dir/webvtt/vttreader.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/webvtt_common.dir/webvtt/webvttparser.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/webvtt/webvttparser.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/webvtt/webvttparser.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/webvtt_common.dir/webvtt/webvttparser.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/webm.dir/common/file_util.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/common/file_util.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/common/file_util.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/webm.dir/common/file_util.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm",
+  "command": "/usr/bin/c++  -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/webm.dir/common/hdr_util.cc.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/common/hdr_util.cc",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm/common/hdr_util.cc",
+  "output": "thirdparty/libwebm/CMakeFiles/webm.dir/common/hdr_util.cc.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/.. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-cli.dir/__/common/common.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/common.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/common.cpp",
+  "output": "examples/cli/CMakeFiles/sd-cli.dir/__/common/common.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/.. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-cli.dir/__/common/log.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/log.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/log.cpp",
+  "output": "examples/cli/CMakeFiles/sd-cli.dir/__/common/log.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/.. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-cli.dir/__/common/media_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/media_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/media_io.cpp",
+  "output": "examples/cli/CMakeFiles/sd-cli.dir/__/common/media_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/.. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-cli.dir/image_metadata.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/image_metadata.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/image_metadata.cpp",
+  "output": "examples/cli/CMakeFiles/sd-cli.dir/image_metadata.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/.. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-cli.dir/main.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/main.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/cli/main.cpp",
+  "output": "examples/cli/CMakeFiles/sd-cli.dir/main.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/__/common/common.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/common.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/common.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/__/common/common.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/__/common/log.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/log.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/log.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/__/common/log.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/__/common/media_io.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/media_io.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/common/media_io.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/__/common/media_io.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/main.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/main.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/main.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/main.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/runtime.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/runtime.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/runtime.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/runtime.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/async_jobs.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/async_jobs.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/async_jobs.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/async_jobs.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/routes_index.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_index.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_index.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/routes_index.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/routes_openai.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_openai.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_openai.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/routes_openai.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/routes_sdapi.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_sdapi.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_sdapi.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/routes_sdapi.cpp.o"
+},
+{
+  "directory": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server",
+  "command": "/usr/bin/c++ -DGGML_MAX_NAME=128 -DSD_USE_WEBM -DSD_USE_WEBP -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/include -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/. -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp/src -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebp -I/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/thirdparty/libwebm -isystem /Users/user030/Documents/qvac-ext-ggml/_install/include -O3 -DNDEBUG -std=gnu++17 -arch arm64 -o CMakeFiles/sd-server.dir/routes_sdcpp.cpp.o -c /Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_sdcpp.cpp",
+  "file": "/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/examples/server/routes_sdcpp.cpp",
+  "output": "examples/server/CMakeFiles/sd-server.dir/routes_sdcpp.cpp.o"
+}
+]

@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebp/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/thirdparty/libwebm/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/cli/cmake_install.cmake",
+		"/Users/user030/Documents/qvac-ext-stable-diffusion.cpp/_build_cli/examples/server/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

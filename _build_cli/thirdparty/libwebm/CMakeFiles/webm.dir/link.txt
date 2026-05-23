@@ -1,0 +1,2 @@
+/usr/bin/ar qc libwebm.a CMakeFiles/webm.dir/common/file_util.cc.o CMakeFiles/webm.dir/common/hdr_util.cc.o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxer.cc.o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvmuxerutil.cc.o CMakeFiles/mkvmuxer.dir/mkvmuxer/mkvwriter.cc.o CMakeFiles/mkvparser.dir/mkvparser/mkvparser.cc.o CMakeFiles/mkvparser.dir/mkvparser/mkvreader.cc.o
+/usr/bin/ranlib libwebm.a
