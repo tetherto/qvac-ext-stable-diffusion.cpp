@@ -1159,7 +1159,22 @@ __STATIC_INLINE__ ggml_tensor* ggml_ext_conv_3d(ggml_context* ctx,
         x          = ggml_cont(ctx, ggml_permute(ctx, x, 0, 1, 3, 2));
         x          = ggml_reshape_4d(ctx, x, im2col->ne[1], im2col->ne[2], OD, OC * N);
     } else {
-        x = ggml_conv_3d(ctx, w, x, IC, s0, s1, s2, p0, p1, p2, d0, d1, d2);
+        // ggml_conv_3d's CPU im2col path requires F16 weights (issue #1577).
+        // For quantized weight types fall back to the explicit im2col+mul_mat path.
+        if (w->type != GGML_TYPE_F16 && w->type != GGML_TYPE_F32) {
+            ggml_tensor* im2col = ggml_im2col_3d(ctx, w, x, IC, s0, s1, s2, p0, p1, p2, d0, d1, d2, w->type);
+            int64_t OC = w->ne[3] / IC;
+            int64_t N  = x->ne[3] / IC;
+            x          = ggml_mul_mat(ctx,
+                                      ggml_reshape_2d(ctx, im2col, im2col->ne[0], im2col->ne[3] * im2col->ne[2] * im2col->ne[1]),
+                                      ggml_reshape_2d(ctx, w, w->ne[0] * w->ne[1] * w->ne[2] * IC, OC));
+            int64_t OD = im2col->ne[3] / N;
+            x          = ggml_reshape_4d(ctx, x, im2col->ne[1] * im2col->ne[2], OD, N, OC);
+            x          = ggml_cont(ctx, ggml_permute(ctx, x, 0, 1, 3, 2));
+            x          = ggml_reshape_4d(ctx, x, im2col->ne[1], im2col->ne[2], OD, OC * N);
+        } else {
+            x = ggml_conv_3d(ctx, w, x, IC, s0, s1, s2, p0, p1, p2, d0, d1, d2);
+        }
     }
 
     if (b != nullptr) {
