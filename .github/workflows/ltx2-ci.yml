@@ -1,0 +1,201 @@
+name: LTX-2 CI
+
+on:
+  push:
+    branches:
+      - ltx2-video-generation
+    paths:
+      - '.github/workflows/ltx2-ci.yml'
+      - 'include/ltx2.h'
+      - 'script/convert_ltx2.py'
+      - 'src/stable-diffusion.cpp'
+      - 'src/ggml_extend.hpp'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/CMakeLists.txt'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - master
+
+concurrency:
+  group: ltx2-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Linux x86-64 CPU build + LTX-2 flag smoke test
+  # -------------------------------------------------------------------------
+  build-linux:
+    name: Build (Linux x86-64 CPU)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y build-essential cmake ninja-build
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_EXAMPLES=ON \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DGGML_AVX2=ON
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Verify sd-cli exposes LTX-2 vid_gen mode
+        run: |
+          ./build/bin/sd-cli --help | grep -q "vid_gen" \
+            || { echo "ERROR: vid_gen mode missing from --help"; exit 1; }
+          ./build/bin/sd-cli --help | grep -q "embeddings-connectors" \
+            || { echo "ERROR: --embeddings-connectors flag missing"; exit 1; }
+          ./build/bin/sd-cli --help | grep -q "diffusion-fa" \
+            || { echo "ERROR: --diffusion-fa flag missing"; exit 1; }
+          echo "All LTX-2 CLI flags present ✓"
+
+  # -------------------------------------------------------------------------
+  # Job 2: convert_ltx2.py — syntax, help, and synthetic GGUF round-trip
+  # -------------------------------------------------------------------------
+  convert-script:
+    name: Validate convert_ltx2.py
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install safetensors numpy gguf --quiet
+
+      - name: Syntax check
+        run: |
+          python -m py_compile script/convert_ltx2.py
+          echo "Syntax OK ✓"
+
+      - name: Help flag
+        run: python script/convert_ltx2.py --help
+
+      - name: Synthetic round-trip (F32 → Q8_0 GGUF)
+        run: |
+          python3 - << 'PYEOF'
+          import json, struct, sys, subprocess, tempfile
+          from pathlib import Path
+          import numpy as np
+
+          # Build a minimal safetensors file: one F32 tensor named so it
+          # hits the quantisation path (not KEEP_F16_PATTERNS).
+          data = np.random.rand(64, 64).astype(np.float32)
+          raw = data.tobytes()
+          meta = {"transformer.blocks.0.weight": {
+              "dtype": "F32", "shape": [64, 64],
+              "data_offsets": [0, len(raw)]}}
+          hdr = json.dumps(meta).encode()
+          hdr += b" " * ((-len(hdr)) % 8)          # 8-byte align
+          st = struct.pack("<Q", len(hdr)) + hdr + raw
+
+          with tempfile.TemporaryDirectory() as tmp:
+              src = Path(tmp) / "model.safetensors"
+              dst = Path(tmp) / "model_q8_0.gguf"
+              src.write_bytes(st)
+
+              r = subprocess.run(
+                  [sys.executable, "script/convert_ltx2.py",
+                   "--model", str(src), "--output", str(dst), "--type", "q8_0"],
+                  capture_output=True, text=True)
+
+              if r.returncode != 0:
+                  print("stdout:", r.stdout); print("stderr:", r.stderr)
+                  sys.exit(1)
+
+              if not dst.exists() or dst.stat().st_size < 200:
+                  print("ERROR: GGUF output missing or empty"); sys.exit(1)
+
+              print(f"Round-trip OK — {dst.stat().st_size} bytes ✓")
+          PYEOF
+
+      - name: Synthetic round-trip (BF16 → F16 via KEEP_F16_PATTERNS)
+        run: |
+          python3 - << 'PYEOF'
+          import json, struct, sys, subprocess, tempfile
+          from pathlib import Path
+          import numpy as np
+
+          # BF16 tensor whose name matches KEEP_F16_PATTERNS ("norm") — must
+          # be preserved as F16, not quantised.
+          data = np.random.rand(32, 32).astype(np.float32)
+          bf16 = (data.view(np.uint32) >> 16).astype(np.uint16)
+          raw = bf16.tobytes()
+          meta = {"transformer.blocks.0.norm.weight": {
+              "dtype": "BF16", "shape": [32, 32],
+              "data_offsets": [0, len(raw)]}}
+          hdr = json.dumps(meta).encode()
+          hdr += b" " * ((-len(hdr)) % 8)
+          st = struct.pack("<Q", len(hdr)) + hdr + raw
+
+          with tempfile.TemporaryDirectory() as tmp:
+              src = Path(tmp) / "model_bf16.safetensors"
+              dst = Path(tmp) / "model_f16.gguf"
+              src.write_bytes(st)
+
+              r = subprocess.run(
+                  [sys.executable, "script/convert_ltx2.py",
+                   "--model", str(src), "--output", str(dst), "--type", "q8_0"],
+                  capture_output=True, text=True)
+
+              if r.returncode != 0:
+                  print("stdout:", r.stdout); print("stderr:", r.stderr)
+                  sys.exit(1)
+
+              print(f"BF16→F16 round-trip OK — {dst.stat().st_size} bytes ✓")
+          PYEOF
+
+  # -------------------------------------------------------------------------
+  # Job 3: macOS ARM64 — CPU + Metal (M2/M3 milestone target platform)
+  # -------------------------------------------------------------------------
+  build-macos-arm64:
+    name: Build (macOS ARM64 + Metal)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure (Metal enabled)
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_EXAMPLES=ON \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DGGML_METAL=ON
+
+      - name: Build
+        run: cmake --build build --parallel $(sysctl -n hw.logicalcpu)
+
+      - name: Verify sd-cli LTX-2 flags
+        run: |
+          ./build/bin/sd-cli --help | grep -q "vid_gen" \
+            || { echo "ERROR: vid_gen missing"; exit 1; }
+          ./build/bin/sd-cli --help | grep -q "embeddings-connectors" \
+            || { echo "ERROR: --embeddings-connectors missing"; exit 1; }
+          echo "macOS ARM64 + Metal build OK ✓"
+
+      - name: Upload macOS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-cli-macos-arm64
+          path: build/bin/sd-cli
+          retention-days: 7
