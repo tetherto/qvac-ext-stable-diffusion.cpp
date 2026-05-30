@@ -11,7 +11,6 @@ Supported types: f16, q4_0, q5_1, q8_0
 """
 
 import argparse
-import struct
 import sys
 from pathlib import Path
 
@@ -51,9 +50,13 @@ def should_keep_f16(name: str) -> bool:
 
 
 def bf16_to_fp32(data: np.ndarray) -> np.ndarray:
-    u16 = data.view(np.uint16).astype(np.uint32)
-    packed = struct.pack(f"{len(u16)}I", *(int(x) << 16 for x in u16.flat))
-    return np.frombuffer(packed, dtype=np.float32).reshape(data.shape)
+    # BF16 is float32 with the lower 16 bits zeroed — copy bytes into the high
+    # 16 bits of uint32 words, then reinterpret as float32.
+    buf = np.zeros(data.size * 4, dtype=np.uint8)
+    src = data.view(np.uint8)
+    buf[2::4] = src[0::2]
+    buf[3::4] = src[1::2]
+    return np.frombuffer(buf, dtype=np.float32).reshape(data.shape)
 
 
 def convert_tensor(data: np.ndarray, qtype: gguf.GGMLQuantizationType, name: str):
