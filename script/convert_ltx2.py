@@ -3,7 +3,7 @@
 Convert LTX-2.3 safetensors weights to GGUF format.
 
 Usage:
-    pip install safetensors numpy gguf
+    pip install numpy gguf
     python script/convert_ltx2.py --model /path/to/ltx-2.3-22b-dev.safetensors \
         --output ltx-2.3-22b-dev.gguf --type q4_0
 
@@ -11,16 +11,17 @@ Supported types: f16, q4_0, q5_1, q8_0
 """
 
 import argparse
+import json
+import struct
 import sys
 from pathlib import Path
 
 try:
     import numpy as np
-    from safetensors import safe_open
     import gguf
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Install with: pip install safetensors numpy gguf")
+    print("Install with: pip install numpy gguf")
     sys.exit(1)
 
 
@@ -44,6 +45,23 @@ KEEP_F16_PATTERNS = [
     "final_layer",
 ]
 
+# Safetensors dtype string → numpy dtype.
+# BF16 has no native numpy type; we load it as uint16 and convert via bf16_to_fp32.
+_ST_DTYPE: dict = {
+    "F32":  np.float32,
+    "F16":  np.float16,
+    "BF16": np.uint16,
+    "I8":   np.int8,
+    "I16":  np.int16,
+    "I32":  np.int32,
+    "I64":  np.int64,
+    "U8":   np.uint8,
+    "U16":  np.uint16,
+    "U32":  np.uint32,
+    "U64":  np.uint64,
+    "F64":  np.float64,
+}
+
 
 def should_keep_f16(name: str) -> bool:
     return any(p in name for p in KEEP_F16_PATTERNS)
@@ -52,15 +70,35 @@ def should_keep_f16(name: str) -> bool:
 def bf16_to_fp32(data: np.ndarray) -> np.ndarray:
     # BF16 is float32 with the lower 16 bits zeroed — copy bytes into the high
     # 16 bits of uint32 words, then reinterpret as float32.
-    buf = np.zeros(data.size * 4, dtype=np.uint8)
-    src = data.view(np.uint8)
-    buf[2::4] = src[0::2]
-    buf[3::4] = src[1::2]
+    # Flatten to 1D first so .view(uint8) gives a flat byte array.
+    flat = np.ascontiguousarray(data).ravel()
+    buf = np.zeros(flat.size * 4, dtype=np.uint8)
+    src = flat.view(np.uint8)   # shape (flat.size * 2,)
+    buf[2::4] = src[0::2]       # BF16 low byte  → float32 byte 2
+    buf[3::4] = src[1::2]       # BF16 high byte → float32 byte 3
     return np.frombuffer(buf, dtype=np.float32).reshape(data.shape)
 
 
-def convert_tensor(data: np.ndarray, qtype: gguf.GGMLQuantizationType, name: str):
-    if str(data.dtype) == "bfloat16":
+def _iter_safetensors(path: Path):
+    """Yield (name, array, dtype_str) for every tensor in a safetensors file."""
+    with open(path, "rb") as fh:
+        hdr_size = struct.unpack("<Q", fh.read(8))[0]
+        metadata = json.loads(fh.read(hdr_size).decode())
+        data_base = 8 + hdr_size
+        for name, info in metadata.items():
+            if name == "__metadata__":
+                continue
+            dtype_str = info["dtype"]
+            shape     = info["shape"]
+            lo, hi    = info["data_offsets"]
+            fh.seek(data_base + lo)
+            raw = np.frombuffer(fh.read(hi - lo), dtype=_ST_DTYPE[dtype_str])
+            yield name, raw.reshape(shape), dtype_str
+
+
+def convert_tensor(data: np.ndarray, qtype: gguf.GGMLQuantizationType,
+                   name: str, original_dtype: str = ""):
+    if original_dtype == "BF16":
         fp32 = bf16_to_fp32(data)
     else:
         fp32 = data.astype(np.float32)
@@ -78,7 +116,6 @@ def convert(model_path: Path, output_path: Path, qtype_str: str, vae_path=None):
         sys.exit(1)
 
     writer = gguf.GGUFWriter(str(output_path), arch="ltx2")
-    writer.add_string("general.architecture", "ltx2")
     writer.add_string("general.name", model_path.stem)
     writer.add_string("general.quantization_version", qtype_str)
 
@@ -88,15 +125,13 @@ def convert(model_path: Path, output_path: Path, qtype_str: str, vae_path=None):
 
     for src_path, prefix in sources:
         print(f"Loading {src_path} ...")
-        with safe_open(str(src_path), framework="pt", device="cpu") as f:
-            keys = list(f.keys())
-            for i, key in enumerate(keys):
-                tensor = f.get_tensor(key).numpy()
-                scoped_name = prefix + key
-                data, used_qtype = convert_tensor(tensor, qtype, scoped_name)
-                writer.add_tensor(scoped_name, data, raw_dtype=used_qtype)
-                if (i + 1) % 50 == 0 or (i + 1) == len(keys):
-                    print(f"  [{i+1}/{len(keys)}] {scoped_name} -> {used_qtype.name}")
+        tensors = list(_iter_safetensors(src_path))
+        for i, (key, tensor, dtype_str) in enumerate(tensors):
+            scoped_name = prefix + key
+            data, used_qtype = convert_tensor(tensor, qtype, scoped_name, dtype_str)
+            writer.add_tensor(scoped_name, data, raw_dtype=used_qtype)
+            if (i + 1) % 50 == 0 or (i + 1) == len(tensors):
+                print(f"  [{i+1}/{len(tensors)}] {scoped_name} -> {used_qtype.name}")
 
     print(f"Writing {output_path} ...")
     writer.write_header_to_file()

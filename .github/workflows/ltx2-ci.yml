@@ -78,7 +78,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install safetensors numpy gguf --quiet
+        run: pip install numpy gguf --quiet
 
       - name: Syntax check
         run: |
