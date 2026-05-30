@@ -15,6 +15,13 @@ on:
       - '**/*.c'
       - '**/*.cpp'
       - '**/CMakeLists.txt'
+      # Shell scripts — broad wildcard covers test_m2.sh and any future tests.
+      # Explicit entries below are redundant (any-match wins) but document
+      # which specific scripts we care about for CI gating.
+      - '**/*.sh'
+      - 'test_m2.sh'
+      - 'test_*.sh'
+      - '.github/test_*.sh'
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
