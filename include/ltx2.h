@@ -48,10 +48,17 @@ extern "C" {
  * Call sd_ctx_params_init() first, then this function to overlay LTX-2 settings.
  */
 static inline void ltx2_ctx_params_set_defaults(sd_ctx_params_t* p) {
-    p->schedule              = LTX2_SCHEDULER;
-    p->sample_method         = EULER_SAMPLE_METHOD;
-    p->cfg_scale             = 3.5f;
-    p->diffusion_flash_attn  = true;
+    p->diffusion_flash_attn = true;
+}
+
+/**
+ * Apply LTX-2.3 recommended sample defaults to an sd_vid_gen_params_t.
+ * Call sd_vid_gen_params_init() first, then this function before generation.
+ */
+static inline void ltx2_vid_params_set_defaults(sd_vid_gen_params_t* vp) {
+    vp->sample_params.scheduler     = LTX2_SCHEDULER;
+    vp->sample_params.sample_method = EULER_SAMPLE_METHOD;
+    vp->sample_params.guidance.txt_cfg = 3.5f;
 }
 
 /**
@@ -85,7 +92,7 @@ static inline sd_ctx_t* ltx2_new_ctx(
     p.vae_path                   = vae_path;
     p.audio_vae_path             = audio_vae_path;
     p.llm_path                   = llm_path;
-    p.embeddings_connector_path  = connectors_path;
+    p.embeddings_connectors_path = connectors_path;
     p.n_threads                  = n_threads;
     p.vae_decode_only            = vae_decode_only;
     if (backend != NULL) {
@@ -130,6 +137,7 @@ static inline bool ltx2_generate_t2v(
 {
     sd_vid_gen_params_t vp;
     sd_vid_gen_params_init(&vp);
+    ltx2_vid_params_set_defaults(&vp);
     vp.prompt          = prompt;
     vp.negative_prompt = neg_prompt
         ? neg_prompt
@@ -165,6 +173,7 @@ static inline bool ltx2_generate_i2v(
 {
     sd_vid_gen_params_t vp;
     sd_vid_gen_params_init(&vp);
+    ltx2_vid_params_set_defaults(&vp);
     vp.prompt          = prompt;
     vp.negative_prompt = neg_prompt
         ? neg_prompt
