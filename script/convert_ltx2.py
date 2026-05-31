@@ -91,8 +91,15 @@ def _iter_safetensors(path: Path):
             dtype_str = info["dtype"]
             shape     = info["shape"]
             lo, hi    = info["data_offsets"]
+            expected  = int(np.prod(shape)) * np.dtype(_ST_DTYPE[dtype_str]).itemsize
+            actual    = hi - lo
+            if actual != expected:
+                raise ValueError(
+                    f"Tensor '{name}': expected {expected} bytes for shape {shape} "
+                    f"dtype {dtype_str}, got {actual} in file"
+                )
             fh.seek(data_base + lo)
-            raw = np.frombuffer(fh.read(hi - lo), dtype=_ST_DTYPE[dtype_str])
+            raw = np.frombuffer(fh.read(actual), dtype=_ST_DTYPE[dtype_str])
             yield name, raw.reshape(shape), dtype_str
 
 
