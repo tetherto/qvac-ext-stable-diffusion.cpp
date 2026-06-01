@@ -1,0 +1,68 @@
+name: LTX-2 CI
+
+# M1 deliverable: buildable project + "model loads on CPU" verified on
+# Linux x86-64 via a tiny synthetic GGUF (no large weight download).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - ci
+    paths:
+      - ".github/workflows/ltx2.yml"
+      - "src/ltx2.hpp"
+      - "src/diffusion_model.hpp"
+      - "src/model.*"
+      - "src/stable-diffusion.cpp"
+      - "script/convert_ltx2_to_gguf.py"
+      - "script/make_synthetic_ltx2_gguf.py"
+      - "script/ci_ltx2_load_smoke.sh"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/ltx2.yml"
+      - "src/ltx2.hpp"
+      - "src/diffusion_model.hpp"
+      - "src/model.*"
+      - "src/stable-diffusion.cpp"
+      - "script/convert_ltx2_to_gguf.py"
+      - "script/make_synthetic_ltx2_gguf.py"
+      - "script/ci_ltx2_load_smoke.sh"
+
+concurrency:
+  group: ltx2-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  linux-x64-load-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install conversion deps
+        run: pip install numpy gguf
+
+      - name: Validate conversion tooling (filter self-test)
+        run: python script/convert_ltx2_to_gguf.py --self-test
+
+      - name: Build sd-cli
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)" --target sd-cli
+
+      - name: LTX-2 load-on-CPU smoke test
+        run: bash script/ci_ltx2_load_smoke.sh

@@ -524,6 +524,13 @@ public:
                     clip_vision->alloc_params_buffer();
                     clip_vision->get_param_tensors(tensors);
                 }
+            } else if (sd_version_is_ltx2(version)) {
+                // M1: load the video DiT only. The Gemma-3-12B text encoder and
+                // the CausalVideoAutoencoder are wired in M2.
+                diffusion_model = std::make_shared<Ltx2Model>(backend,
+                                                              offload_params_to_cpu,
+                                                              tensor_storage_map,
+                                                              "model.diffusion_model");
             } else if (sd_version_is_qwen_image(version)) {
                 bool enable_vision = false;
                 if (!vae_decode_only) {
@@ -588,8 +595,10 @@ public:
                 }
             }
 
-            cond_stage_model->alloc_params_buffer();
-            cond_stage_model->get_param_tensors(tensors);
+            if (cond_stage_model) {
+                cond_stage_model->alloc_params_buffer();
+                cond_stage_model->get_param_tensors(tensors);
+            }
 
             diffusion_model->alloc_params_buffer();
             diffusion_model->get_param_tensors(tensors);
@@ -621,6 +630,11 @@ public:
                     first_stage_model->alloc_params_buffer();
                     first_stage_model->get_param_tensors(tensors, "first_stage_model");
                 } else if (version == VERSION_CHROMA_RADIANCE) {
+                    first_stage_model = std::make_shared<FakeVAE>(vae_backend,
+                                                                  offload_params_to_cpu);
+                } else if (sd_version_is_ltx2(version)) {
+                    // M1: placeholder so a DiT-only checkpoint loads on CPU.
+                    // The real CausalVideoAutoencoder is added in M2.
                     first_stage_model = std::make_shared<FakeVAE>(vae_backend,
                                                                   offload_params_to_cpu);
                 } else {
@@ -736,7 +750,9 @@ public:
 
             if (sd_ctx_params->flash_attn) {
                 LOG_INFO("Using flash attention");
-                cond_stage_model->set_flash_attention_enabled(true);
+                if (cond_stage_model) {
+                    cond_stage_model->set_flash_attention_enabled(true);
+                }
                 if (clip_vision) {
                     clip_vision->set_flash_attention_enabled(true);
                 }
@@ -816,7 +832,7 @@ public:
         LOG_DEBUG("finished loaded file");
 
         {
-            size_t clip_params_mem_size = cond_stage_model->get_params_buffer_size();
+            size_t clip_params_mem_size = cond_stage_model ? cond_stage_model->get_params_buffer_size() : 0;
             size_t unet_params_mem_size = diffusion_model->get_params_buffer_size();
             if (high_noise_diffusion_model) {
                 unet_params_mem_size += high_noise_diffusion_model->get_params_buffer_size();
@@ -915,7 +931,8 @@ public:
                            sd_version_is_wan(version) ||
                            sd_version_is_qwen_image(version) ||
                            sd_version_is_anima(version) ||
-                           sd_version_is_z_image(version)) {
+                           sd_version_is_z_image(version) ||
+                           sd_version_is_ltx2(version)) {
                     pred_type = FLOW_PRED;
                     if (sd_version_is_wan(version)) {
                         default_flow_shift = 5.f;
@@ -3854,6 +3871,12 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
 
 SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* sd_vid_gen_params, int* num_frames_out) {
     if (sd_ctx == nullptr || sd_vid_gen_params == nullptr) {
+        return nullptr;
+    }
+    if (sd_ctx->sd->cond_stage_model == nullptr) {
+        // M1 LTX-2: the DiT loads, but the Gemma text encoder and video VAE
+        // needed for generation arrive in M2.
+        LOG_ERROR("video generation is not available: no text encoder loaded (LTX-2 inference lands in M2)");
         return nullptr;
     }
     sd_ctx->sd->vae_tiling_params = sd_vid_gen_params->vae_tiling_params;

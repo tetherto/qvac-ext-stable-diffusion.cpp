@@ -288,15 +288,64 @@ def _bf16_to_f32(arr):
 # --------------------------------------------------------------------------
 
 
+def self_test() -> int:
+    """Validate the keep/drop filter on representative names (no checkpoint)."""
+    keep = [
+        _DM + "patchify_proj.weight",
+        _DM + "proj_out.weight",
+        _DM + "scale_shift_table",
+        _DM + "adaln_single.linear.weight",
+        _DM + "video_embeddings_connector.learnable_registers",
+        _DM + "video_embeddings_connector.transformer_1d_blocks.0.attn1.to_q.weight",
+        _DM + "transformer_blocks.0.attn1.to_q.weight",
+        _DM + "transformer_blocks.0.attn2.to_k.weight",
+        _DM + "transformer_blocks.0.ff.net.0.proj.weight",
+        _DM + "transformer_blocks.0.scale_shift_table",
+        _DM + "transformer_blocks.0.prompt_scale_shift_table",
+        "vae.decoder.conv_in.weight",
+    ]
+    drop = [
+        "vocoder.conv_pre.weight",
+        "audio_vae.encoder.conv_in.weight",
+        _DM + "audio_patchify_proj.weight",
+        _DM + "audio_scale_shift_table",
+        _DM + "audio_embeddings_connector.transformer_1d_blocks.0.attn1.to_q.weight",
+        "text_embedding_projection.audio_aggregate_embed.weight",
+        _DM + "av_ca_scale_shift_table",
+        _DM + "transformer_blocks.0.audio_attn1.to_q.weight",
+        _DM + "transformer_blocks.0.audio_to_video_attn.to_q.weight",
+        _DM + "transformer_blocks.0.scale_shift_table_a2v_ca_audio",
+    ]
+    ok = True
+    for n in keep:
+        if not is_video_tensor(n):
+            print(f"SELF-TEST FAIL: should KEEP but dropped: {n}")
+            ok = False
+    for n in drop:
+        if is_video_tensor(n):
+            print(f"SELF-TEST FAIL: should DROP but kept: {n}")
+            ok = False
+    print("self-test PASSED" if ok else "self-test FAILED")
+    return 0 if ok else 1
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Convert LTX-2.3 safetensors -> GGUF (video only)")
-    ap.add_argument("--src", required=True, help="input .safetensors checkpoint")
+    ap.add_argument("--src", help="input .safetensors checkpoint")
     ap.add_argument("--dst", help="output .gguf path (required unless --dry-run)")
     ap.add_argument("--type", default="f16", choices=QUANT_TYPES, help="output tensor type")
     ap.add_argument("--no-vae", action="store_true", help="exclude VAE tensors from the GGUF")
     ap.add_argument("--dry-run", action="store_true",
                     help="only read the header and print the keep/drop plan")
+    ap.add_argument("--self-test", action="store_true",
+                    help="validate the keep/drop filter on built-in names (no checkpoint needed)")
     args = ap.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+
+    if not args.src:
+        ap.error("--src is required unless --self-test is given")
 
     header, _ = read_safetensors_header(args.src)
 
