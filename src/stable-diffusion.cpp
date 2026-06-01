@@ -2691,7 +2691,7 @@ public:
             }
             process_latent_out(x);
             // x = load_tensor_from_file(work_ctx, "wan_vae_z.bin");
-            if (vae_tiling_params.enabled) {
+            if (vae_tiling_params.enabled && !decode_video) {
                 float tile_overlap;
                 int tile_size_x, tile_size_y;
                 get_tile_sizes(tile_size_x, tile_size_y, tile_overlap, vae_tiling_params, x->ne[0], x->ne[1]);
@@ -4010,7 +4010,7 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
             ggml_ext_tensor_set_f32(image, value, i0, i1, i2, i3);
         });
 
-        concat_latent = sd_ctx->sd->encode_first_stage(work_ctx, image);  // [b*c, t, h/vae_scale_factor, w/vae_scale_factor]
+        concat_latent = sd_ctx->sd->encode_first_stage(work_ctx, image, true);  // encode_video=true bypasses spatial tiling
 
         int64_t t2 = ggml_time_ms();
         LOG_INFO("encode_first_stage completed, taking %" PRId64 " ms", t2 - t1);
