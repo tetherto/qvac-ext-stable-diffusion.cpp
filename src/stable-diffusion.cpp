@@ -53,6 +53,7 @@ const char* model_version_to_str[] = {
     "Flux.2 klein",
     "Z-Image",
     "Ovis Image",
+    "LTX-2",
 };
 
 const char* sampling_methods_str[] = {
