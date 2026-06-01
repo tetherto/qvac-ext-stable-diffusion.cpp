@@ -2374,8 +2374,8 @@ public:
         return latent_frames_to_video_frames(video_frames_to_latent_frames(frames));
     }
 
-    sd::Tensor<float> encode_to_vae_latents(const sd::Tensor<float>& x) {
-        auto latents = first_stage_model->encode(n_threads, x, vae_tiling_params, circular_x, circular_y);
+    sd::Tensor<float> encode_to_vae_latents(const sd::Tensor<float>& x, bool encode_video = false) {
+        auto latents = first_stage_model->encode(n_threads, x, vae_tiling_params, encode_video, circular_x, circular_y);
         if (latents.empty()) {
             return {};
         }
@@ -2383,8 +2383,8 @@ public:
         return latents;
     }
 
-    sd::Tensor<float> encode_first_stage(const sd::Tensor<float>& x) {
-        auto latents = encode_to_vae_latents(x);
+    sd::Tensor<float> encode_first_stage(const sd::Tensor<float>& x, bool encode_video = false) {
+        auto latents = encode_to_vae_latents(x, encode_video);
         if (latents.empty()) {
             return {};
         }
@@ -4885,7 +4885,7 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
             sd::ops::slice_assign(&image, 2, request->frames - 1, request->frames, end_image.unsqueeze(2));
         }
 
-        auto concat_latent = sd_ctx->sd->encode_first_stage(image);  // [b, c, t, h/vae_scale_factor, w/vae_scale_factor]
+        auto concat_latent = sd_ctx->sd->encode_first_stage(image, /*encode_video=*/true);  // [b, c, t, h/vae_scale_factor, w/vae_scale_factor]; encode_video bypasses spatial tiling
         if (concat_latent.empty()) {
             LOG_ERROR("failed to encode video conditioning frames");
             return std::nullopt;
