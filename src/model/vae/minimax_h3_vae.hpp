@@ -602,12 +602,13 @@ namespace MiniMaxH3VAE {
         sd::Tensor<float> encode(int n_threads,
                                  const sd::Tensor<float>& x,
                                  sd_tiling_params_t tiling_params,
-                                 bool circular_x = false,
-                                 bool circular_y = false) override {
+                                 bool encode_video = false,
+                                 bool circular_x   = false,
+                                 bool circular_y   = false) override {
             auto input  = ensure_video_shape(x);
             auto tiling = h3_tiling(tiling_params);
             if (input.shape()[2] == 1) {
-                auto encoded = VAE::encode(n_threads, input, tiling, circular_x, circular_y);
+                auto encoded = VAE::encode(n_threads, input, tiling, encode_video, circular_x, circular_y);
                 if (!encoded.empty() && encoded.shape()[2] > 1) {
                     encoded = sd::ops::slice(encoded,
                                              2,
@@ -627,7 +628,7 @@ namespace MiniMaxH3VAE {
             sd::Tensor<float> result;
             for (int64_t start = 0; start < input.shape()[2]; start += 17) {
                 auto chunk   = sd::ops::slice(input, 2, start, start + 17);
-                auto encoded = VAE::encode(n_threads, chunk, tiling, circular_x, circular_y);
+                auto encoded = VAE::encode(n_threads, chunk, tiling, encode_video, circular_x, circular_y);
                 if (encoded.empty()) {
                     return {};
                 }
