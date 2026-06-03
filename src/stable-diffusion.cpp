@@ -411,7 +411,10 @@ public:
         } else if (sd_version_is_wan(version) ||
                    sd_version_is_qwen_image(version) ||
                    sd_version_is_anima(version) ||
-                   sd_version_is_flux2(version)) {
+                   sd_version_is_flux2(version) ||
+                   sd_version_is_ltx2(version)) {
+            // LTX-2 latents are normalized inside the VAE via per-channel
+            // statistics, so the DiT-side latent transform is identity.
             scale_factor = 1.0f;
             shift_factor = 0.f;
         }
@@ -525,9 +528,11 @@ public:
                     clip_vision->get_param_tensors(tensors);
                 }
             } else if (sd_version_is_ltx2(version)) {
-                // M1: load the video DiT only. The Gemma-3-12B text encoder and
-                // the CausalVideoAutoencoder are wired in M2.
-                diffusion_model = std::make_shared<Ltx2Model>(backend,
+                // M2: Gemma-3 text encoder + LTX feature extractor feed the video DiT.
+                cond_stage_model = std::make_shared<Ltx2Conditioner>(clip_backend,
+                                                                     offload_params_to_cpu,
+                                                                     tensor_storage_map);
+                diffusion_model  = std::make_shared<Ltx2Model>(backend,
                                                               offload_params_to_cpu,
                                                               tensor_storage_map,
                                                               "model.diffusion_model");
@@ -633,10 +638,12 @@ public:
                     first_stage_model = std::make_shared<FakeVAE>(vae_backend,
                                                                   offload_params_to_cpu);
                 } else if (sd_version_is_ltx2(version)) {
-                    // M1: placeholder so a DiT-only checkpoint loads on CPU.
-                    // The real CausalVideoAutoencoder is added in M2.
-                    first_stage_model = std::make_shared<FakeVAE>(vae_backend,
-                                                                  offload_params_to_cpu);
+                    // M2: LTX-2 CausalVideoAutoencoder (32x spatial, 8x temporal,
+                    // 128 latent channels). See Ltx2VAERunner for current status.
+                    first_stage_model = std::make_shared<Ltx2VAERunner>(vae_backend,
+                                                                        offload_params_to_cpu,
+                                                                        tensor_storage_map,
+                                                                        "first_stage_model");
                 } else {
                     first_stage_model = std::make_shared<AutoEncoderKL>(vae_backend,
                                                                         offload_params_to_cpu,
@@ -2316,6 +2323,8 @@ public:
             vae_scale_factor = 16;
         } else if (sd_version_is_flux2(version)) {
             vae_scale_factor = 16;
+        } else if (sd_version_is_ltx2(version)) {
+            vae_scale_factor = 32;  // LTX-2 CausalVideoAutoencoder: 32x spatial compression
         } else if (version == VERSION_CHROMA_RADIANCE) {
             vae_scale_factor = 1;
         }
@@ -2343,6 +2352,8 @@ public:
                 latent_channel = 3;
             } else if (sd_version_is_flux2(version)) {
                 latent_channel = 128;
+            } else if (sd_version_is_ltx2(version)) {
+                latent_channel = 128;  // LTX-2 Video-VAE latent channels
             } else {
                 latent_channel = 16;
             }
@@ -2366,6 +2377,8 @@ public:
         int T                = frames;
         if (sd_version_is_wan(version)) {
             T = ((T - 1) / 4) + 1;
+        } else if (sd_version_is_ltx2(version)) {
+            T = ((T - 1) / 8) + 1;  // LTX-2: 8x temporal compression, (F-1)%8==0
         }
         int C = get_latent_channel();
         ggml_tensor* init_latent;
@@ -2687,6 +2700,8 @@ public:
             int64_t T = x->ne[2];
             if (sd_version_is_wan(version)) {
                 T = ((T - 1) * 4) + 1;
+            } else if (sd_version_is_ltx2(version)) {
+                T = ((T - 1) * 8) + 1;  // LTX-2: 8x temporal expansion on decode
             }
             result = ggml_new_tensor_4d(work_ctx,
                                         GGML_TYPE_F32,
@@ -2852,6 +2867,7 @@ const char* scheduler_to_str[] = {
     "kl_optimal",
     "lcm",
     "bong_tangent",
+    "linear_quadratic",
 };
 
 const char* sd_scheduler_name(enum scheduler_t scheduler) {
@@ -3887,7 +3903,11 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
     int width        = sd_vid_gen_params->width;
     int height       = sd_vid_gen_params->height;
     int frames       = sd_vid_gen_params->video_frames;
-    frames           = (frames - 1) / 4 * 4 + 1;
+    if (sd_version_is_ltx2(sd_ctx->sd->version)) {
+        frames = (frames - 1) / 8 * 8 + 1;  // LTX-2 temporal alignment: (F-1)%8==0
+    } else {
+        frames = (frames - 1) / 4 * 4 + 1;  // Wan temporal alignment: (F-1)%4==0
+    }
     int sample_steps = sd_vid_gen_params->sample_params.sample_steps;
 
     int vae_scale_factor            = sd_ctx->sd->get_vae_scale_factor();
@@ -4083,6 +4103,31 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
 
         if (!sd_ctx->sd->use_tiny_autoencoder)
             sd_ctx->sd->process_latent_in(init_latent);
+
+        int64_t t2 = ggml_time_ms();
+        LOG_INFO("encode_first_stage completed, taking %" PRId64 " ms", t2 - t1);
+    } else if (sd_version_is_ltx2(sd_ctx->sd->version) && sd_vid_gen_params->init_image.data) {
+        // LTX-2 I2V: encode the init image into the first latent frame and keep
+        // it fixed during denoising via the denoise mask.
+        LOG_INFO("LTX-2 IMG2VID");
+        int64_t t1            = ggml_time_ms();
+        ggml_tensor* init_img = ggml_new_tensor_4d(work_ctx, GGML_TYPE_F32, width, height, 3, 1);
+        sd_image_to_ggml_tensor(sd_vid_gen_params->init_image, init_img);
+        init_img = ggml_reshape_4d(work_ctx, init_img, width, height, 1, 3);
+
+        auto init_image_latent = sd_ctx->sd->vae_encode(work_ctx, init_img);  // [w/32, h/32, 1, 128]
+
+        init_latent  = sd_ctx->sd->generate_init_latent(work_ctx, width, height, frames, true);
+        denoise_mask = ggml_new_tensor_4d(work_ctx, GGML_TYPE_F32, init_latent->ne[0], init_latent->ne[1], init_latent->ne[2], 1);
+        ggml_set_f32(denoise_mask, 1.f);
+
+        ggml_ext_tensor_iter(init_image_latent, [&](ggml_tensor* t, int64_t i0, int64_t i1, int64_t i2, int64_t i3) {
+            float value = ggml_ext_tensor_get_f32(t, i0, i1, i2, i3);
+            ggml_ext_tensor_set_f32(init_latent, value, i0, i1, i2, i3);
+            if (i3 == 0) {
+                ggml_ext_tensor_set_f32(denoise_mask, 0.f, i0, i1, i2, i3);
+            }
+        });
 
         int64_t t2 = ggml_time_ms();
         LOG_INFO("encode_first_stage completed, taking %" PRId64 " ms", t2 - t1);

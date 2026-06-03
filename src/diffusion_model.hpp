@@ -431,13 +431,16 @@ struct Ltx2Model : public DiffusionModel {
         ltx2.set_circular_axes(circular_x, circular_y);
     }
 
-    // M1: load-only. Denoising forward is implemented in M2.
     bool compute(int n_threads,
                  DiffusionParams diffusion_params,
                  struct ggml_tensor** output     = nullptr,
                  struct ggml_context* output_ctx = nullptr) override {
-        LOG_ERROR("LTX-2 diffusion forward is not implemented yet (M1 is load-only)");
-        return false;
+        return ltx2.compute(n_threads,
+                            diffusion_params.x,
+                            diffusion_params.timesteps,
+                            diffusion_params.context,
+                            output,
+                            output_ctx);
     }
 };
 
