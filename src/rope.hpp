@@ -654,16 +654,17 @@ namespace Rope {
         // pe: [L, d_head/2, 2, 2]
         // return: [N, L, n_head*d_head]
 
-        static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
-        if (!fused_disabled && rope_interleaved) {
-            auto q_fused = ggml_rope_flux(ctx->ggml_ctx, q, pe);
-            auto k_fused = ggml_rope_flux(ctx->ggml_ctx, k, pe);
-            if (ggml_backend_supports_op(ctx->backend, q_fused) &&
-                ggml_backend_supports_op(ctx->backend, k_fused)) {
-                auto x = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q_fused, k_fused, v, v->ne[1], mask, true, ctx->flash_attn_enabled, kv_scale);
-                return x;
-            }
-        }
+        // Fused rope_flux not yet implemented - use standard rope
+        // static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+        // if (!fused_disabled && rope_interleaved) {
+        //     auto q_fused = ggml_rope_flux(ctx->ggml_ctx, q, pe);
+        //     auto k_fused = ggml_rope_flux(ctx->ggml_ctx, k, pe);
+        //     if (ggml_backend_supports_op(ctx->backend, q_fused) &&
+        //         ggml_backend_supports_op(ctx->backend, k_fused)) {
+        //         auto x = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q_fused, k_fused, v, v->ne[1], mask, true, ctx->flash_attn_enabled, kv_scale);
+        //         return x;
+        //     }
+        // }
 
         q = apply_rope(ctx->ggml_ctx, q, pe, rope_interleaved);
         k = apply_rope(ctx->ggml_ctx, k, pe, rope_interleaved);

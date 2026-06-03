@@ -1309,13 +1309,14 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_ext_attention_ext(struct ggml_context
         }
         k_in = ggml_cast(ctx, k_in, GGML_TYPE_F16);
 
-        auto v_fused = ggml_rope_flux(ctx, v_in, nullptr);
-        if (ggml_backend_supports_op(backend, v_fused)) {
-            v_in = v_fused;
-        } else {
+        // Fused rope_flux not yet implemented - use standard fallback
+        // auto v_fused = ggml_rope_flux(ctx, v_in, nullptr);
+        // if (ggml_backend_supports_op(backend, v_fused)) {
+        //     v_in = v_fused;
+        // } else {
             v_in = ggml_ext_cont(ctx, ggml_permute(ctx, v_in, 0, 2, 1, 3));
             v_in = ggml_reshape_3d(ctx, v_in, d_head, L_k, n_kv_head * N);
-        }
+        // }
         if (kv_pad != 0) {
             v_in = ggml_pad(ctx, v_in, 0, kv_pad, 0, 0);
         }
