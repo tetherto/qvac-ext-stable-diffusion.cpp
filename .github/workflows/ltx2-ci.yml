@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - ltx2-video-generation
+      - ltx2-m2
     paths:
       - '.github/workflows/ltx2-ci.yml'
       - 'include/ltx2.h'
       - 'script/convert_ltx2.py'
+      - 'script/ltx2_parity.py'
       - 'src/stable-diffusion.cpp'
       - 'src/ggml_extend.hpp'
       - '**/*.h'
@@ -72,6 +74,46 @@ jobs:
           ./build/bin/sd-cli --help | grep -q "diffusion-fa" \
             || { echo "ERROR: --diffusion-fa flag missing"; exit 1; }
           echo "All LTX-2 CLI flags present ✓"
+
+  # -------------------------------------------------------------------------
+  # Job 1b: Linux x86-64 Vulkan build (compile-only — CI runners have no GPU).
+  # End-to-end T2V/I2V + cross-backend parity run on developer hardware via
+  # script/ltx2_parity.py; this job guards that the Vulkan backend keeps building.
+  # -------------------------------------------------------------------------
+  build-linux-vulkan:
+    name: Build (Linux x86-64 Vulkan)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Vulkan SDK + build deps
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -q
+          sudo apt-get install -y build-essential cmake ninja-build vulkan-sdk
+
+      - name: Configure (Vulkan enabled)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSD_BUILD_EXAMPLES=ON \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DGGML_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Verify sd-cli exposes LTX-2 vid_gen mode
+        run: |
+          ./build/bin/sd-cli --help | grep -q "vid_gen" \
+            || { echo "ERROR: vid_gen mode missing from --help"; exit 1; }
+          echo "Linux x86-64 Vulkan build OK ✓"
 
   # -------------------------------------------------------------------------
   # Job 2: convert_ltx2.py — syntax, help, and synthetic GGUF round-trip
@@ -171,6 +213,40 @@ jobs:
 
               print(f"BF16→F16 round-trip OK — {dst.stat().st_size} bytes ✓")
           PYEOF
+
+  # -------------------------------------------------------------------------
+  # Job 2b: ltx2_parity.py — syntax, help, and the missing-models guard.
+  # The full parity run needs model weights + a GPU, so it executes on
+  # developer hardware (see script/ltx2_parity.py), not in CI.
+  # -------------------------------------------------------------------------
+  parity-script:
+    name: Validate ltx2_parity.py
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install numpy pillow --quiet
+
+      - name: Syntax check
+        run: |
+          python -m py_compile script/ltx2_parity.py
+          echo "Syntax OK ✓"
+
+      - name: Help flag
+        run: python script/ltx2_parity.py --help
+
+      - name: Guard — missing models exits non-zero
+        run: |
+          if python script/ltx2_parity.py --bin /bin/true --models-dir ""; then
+            echo "ERROR: expected non-zero exit on missing models"; exit 1
+          fi
+          echo "Missing-models guard OK ✓"
 
   # -------------------------------------------------------------------------
   # Job 3: macOS ARM64 — CPU + Metal (M2/M3 milestone target platform)
