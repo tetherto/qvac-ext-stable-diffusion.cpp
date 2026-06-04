@@ -5,7 +5,7 @@ find_package(cmake-bare REQUIRED PATHS node_modules/cmake-bare)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-project(ltx2_bare C)
+project(ltx2_bare C CXX)
 
 # Path to the qvac-ext-stable-diffusion.cpp checkout. Defaults to the parent of
 # this addon dir (bare/ lives inside the repo). Override with -DSD_ROOT=... if the

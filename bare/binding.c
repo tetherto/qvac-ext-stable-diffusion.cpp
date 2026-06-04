@@ -16,6 +16,7 @@
 #include <assert.h>
 #include <bare.h>
 #include <js.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,7 +104,8 @@ ltx2_bare_create_context(js_env_t *env, js_callback_info_t *info) {
   js_get_value_int32(env, argv[5], &threads);
   char *backend = ltx2_bare__strdup_arg(env, argv[6]);
 
-  sd_ctx_t *ctx = ltx2_new_ctx(diffusion, vae, audio_vae, llm, conn, threads, backend);
+  // vae_decode_only = false so the encoder is available for I2V init images.
+  sd_ctx_t *ctx = ltx2_new_ctx(diffusion, vae, audio_vae, llm, conn, threads, false, backend);
 
   free(diffusion);
   free(vae);

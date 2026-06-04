@@ -20,14 +20,21 @@ C API in [`../include/ltx2.h`](../include/ltx2.h) (`ltx2_new_ctx`,
 ## Build
 
 Requires the [Bare](https://github.com/holepunchto/bare) toolchain
-(`npm i -g bare bare-make`) and a C/C++ toolchain + CMake ≥ 3.25.
+(`npm i -g bare bare-make`), **clang + lld** (bare-make's CMake toolchain links
+with `lld`; on Debian/Ubuntu: `apt install clang lld`), and CMake ≥ 3.25.
 
 ```sh
 cd bare
 npm install                 # pulls cmake-bare + bare-make
 npm run generate            # bare-make generate  (configure)
 npm run build               # bare-make build     (compiles binding.c + links sd lib)
+npx bare-make install       # copies the addon into prebuilds/<platform>/ so require.addon() finds it
+bare test.js                # smoke test (SKIPs unless $LTX2_MODELS is set)
 ```
+
+> Verified building on linux-x64 (clang 18, gcc backend, CPU): the addon
+> compiles, links `libstable-diffusion.a`, installs to `prebuilds/linux-x64/`,
+> and `require()` exposes `createContext` / `generateT2V` / `generateI2V`.
 
 For an accelerated backend, pass the ggml flag through to the embedded sd build,
 e.g. `bare-make generate --define GGML_VULKAN=ON` (Vulkan) or `GGML_METAL=ON`

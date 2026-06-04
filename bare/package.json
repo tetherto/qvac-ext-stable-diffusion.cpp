@@ -21,6 +21,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "bare-env": "^3.0.0",
     "bare-make": "^1.0.0",
     "cmake-bare": "^1.0.0"
   }

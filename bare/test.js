@@ -6,20 +6,21 @@
 //
 //   LTX2_MODELS=/path/to/ltx2-models bare test.js
 
-const path = require('path')
-const ltx2 = require('.')
+const env = require('bare-env')
+const ltx2 = require('./index.js')
 
-const MODELS = process.env.LTX2_MODELS
+const MODELS = env.LTX2_MODELS
 if (!MODELS) {
   console.log('SKIP: set $LTX2_MODELS to run the LTX-2 addon smoke test')
-  process.exit(0)
+  Bare.exit(0)
 }
 
+const root = MODELS.replace(/\/+$/, '')
 const ctx = ltx2.createContext({
-  diffusionModel: path.join(MODELS, 'distilled/ltx-2.3-22b-distilled-Q4_0.gguf'),
-  vae: path.join(MODELS, 'vae/ltx-2.3-22b-distilled_video_vae.safetensors'),
-  llm: path.join(MODELS, 'gemma-3-12b-it-Q4_K_S.gguf'),
-  connectors: path.join(MODELS, 'text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors')
+  diffusionModel: `${root}/distilled/ltx-2.3-22b-distilled-Q4_0.gguf`,
+  vae: `${root}/vae/ltx-2.3-22b-distilled_video_vae.safetensors`,
+  llm: `${root}/gemma-3-12b-it-Q4_K_S.gguf`,
+  connectors: `${root}/text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors`
 })
 
 const out = ltx2.generateT2V(ctx, {
