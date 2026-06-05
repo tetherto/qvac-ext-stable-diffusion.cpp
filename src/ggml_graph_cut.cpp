@@ -12,7 +12,6 @@
 #include "ggml-backend.h"
 #include "util.h"
 
-#include "../ggml/src/ggml-impl.h"
 
 namespace sd::ggml_graph_cut {
 
