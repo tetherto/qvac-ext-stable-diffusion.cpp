@@ -16,8 +16,6 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 
-#include "ggml-impl.h"
-
 namespace sd::ggml_graph_cut {
 
     static constexpr double MAX_VRAM_BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0;
