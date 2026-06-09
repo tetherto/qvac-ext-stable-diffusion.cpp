@@ -32,8 +32,8 @@ namespace sd::ggml_graph_cut {
     static int graph_leaf_index(ggml_cgraph* gf, const ggml_tensor* tensor) {
         GGML_ASSERT(gf != nullptr);
         GGML_ASSERT(tensor != nullptr);
-        for (int i = 0; i < gf->n_leafs; ++i) {
-            if (gf->leafs[i] == tensor) {
+        for (int i = 0; i < ggml_graph_n_leafs(gf); ++i) {
+            if (ggml_graph_leaf(gf, i) == tensor) {
                 return i;
             }
         }
@@ -468,15 +468,15 @@ namespace sd::ggml_graph_cut {
 
     int leaf_count(ggml_cgraph* gf) {
         GGML_ASSERT(gf != nullptr);
-        return gf->n_leafs;
+        return ggml_graph_n_leafs(gf);
     }
 
     ggml_tensor* leaf_tensor(ggml_cgraph* gf, int leaf_index) {
         GGML_ASSERT(gf != nullptr);
-        if (leaf_index < 0 || leaf_index >= gf->n_leafs) {
+        if (leaf_index < 0 || leaf_index >= ggml_graph_n_leafs(gf)) {
             return nullptr;
         }
-        return gf->leafs[leaf_index];
+        return ggml_graph_leaf(gf, leaf_index);
     }
 
     ggml_backend_buffer_t tensor_buffer(const ggml_tensor* tensor) {
@@ -508,14 +508,14 @@ namespace sd::ggml_graph_cut {
 
     bool plan_matches_graph(ggml_cgraph* gf, const Plan& plan) {
         GGML_ASSERT(gf != nullptr);
-        if (ggml_graph_n_nodes(gf) != plan.n_nodes || gf->n_leafs != plan.n_leafs) {
+        if (ggml_graph_n_nodes(gf) != plan.n_nodes || ggml_graph_n_leafs(gf) != plan.n_leafs) {
             return false;
         }
         for (const auto& input_shape_ref : plan.input_shapes) {
-            if (input_shape_ref.leaf_index < 0 || input_shape_ref.leaf_index >= gf->n_leafs) {
+            if (input_shape_ref.leaf_index < 0 || input_shape_ref.leaf_index >= ggml_graph_n_leafs(gf)) {
                 return false;
             }
-            ggml_tensor* leaf = gf->leafs[input_shape_ref.leaf_index];
+            ggml_tensor* leaf = ggml_graph_leaf(gf, input_shape_ref.leaf_index);
             if (leaf == nullptr || input_shape_ref.type != leaf->type) {
                 return false;
             }
@@ -548,7 +548,7 @@ namespace sd::ggml_graph_cut {
             }
             return ggml_graph_node(gf, input_ref.node_index);
         }
-        if (input_ref.leaf_index < 0 || input_ref.leaf_index >= gf->n_leafs) {
+        if (input_ref.leaf_index < 0 || input_ref.leaf_index >= ggml_graph_n_leafs(gf)) {
             return nullptr;
         }
         return leaf_tensor(gf, input_ref.leaf_index);
@@ -617,8 +617,7 @@ namespace sd::ggml_graph_cut {
             if (current_input == nullptr) {
                 continue;
             }
-            GGML_ASSERT(segment_graph->n_leafs < segment_graph->size);
-            segment_graph->leafs[segment_graph->n_leafs++] = current_input;
+            ggml_graph_add_leaf(segment_graph, current_input);
         }
 
         for (int output_node_index : segment.output_node_indices) {
@@ -722,9 +721,9 @@ namespace sd::ggml_graph_cut {
             return plan;
         }
         plan.n_nodes = n_nodes;
-        plan.n_leafs = gf->n_leafs;
-        for (int i = 0; i < gf->n_leafs; ++i) {
-            ggml_tensor* leaf = gf->leafs[i];
+        plan.n_leafs = ggml_graph_n_leafs(gf);
+        for (int i = 0; i < ggml_graph_n_leafs(gf); ++i) {
+            ggml_tensor* leaf = ggml_graph_leaf(gf, i);
             if (is_params_tensor(params_tensor_set, leaf)) {
                 continue;
             }
