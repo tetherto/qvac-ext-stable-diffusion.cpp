@@ -911,6 +911,7 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t(bool taesd_preview) {
     sd_ctx_params.auto_fit                        = auto_fit;
     sd_ctx_params.rpc_servers                     = rpc_servers.c_str();
     sd_ctx_params.model_args                      = model_args.empty() ? nullptr : model_args.c_str();
+    sd_ctx_params.preferred_gpu_backend           = SD_BACKEND_PREF_GPU;
     return sd_ctx_params;
 }
 
