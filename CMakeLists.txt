@@ -17,6 +17,11 @@ if (MSVC)
         $<$<COMPILE_LANGUAGE:C>:/utf-8>
         $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/MP>
         $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+        # stable-diffusion.cpp is a large translation unit; with the LTX-2
+        # additions it exceeds the COFF 2^16 section limit, so MSVC needs
+        # /bigobj (clang/gcc have no equivalent limit). Fatal error C1128.
+        $<$<COMPILE_LANGUAGE:C>:/bigobj>
+        $<$<COMPILE_LANGUAGE:CXX>:/bigobj>
     )
 endif()
 
