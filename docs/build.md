@@ -3,7 +3,7 @@
 ## Get the Code
 
 ```shell
-git clone --recursive https://github.com/leejet/stable-diffusion.cpp
+git clone --recursive https://github.com/tetherto/qvac-ext-stable-diffusion.cpp
 cd stable-diffusion.cpp
 ```
 
