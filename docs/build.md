@@ -3,18 +3,37 @@
 ## Get the Code
 
 ```
-git clone --recursive https://github.com/leejet/stable-diffusion.cpp
-cd stable-diffusion.cpp
+git clone https://github.com/tetherto/qvac-ext-stable-diffusion.cpp
+cd qvac-ext-stable-diffusion.cpp
 ```
 
 - If you have already cloned the repository, you can use the following command to update the repository to the latest code.
 
 ```
-cd stable-diffusion.cpp
-git pull origin master
-git submodule init
-git submodule update
+cd qvac-ext-stable-diffusion.cpp
+git pull
 ```
+
+## GGML dependency (system / vcpkg)
+
+This fork no longer vendors `ggml` as a git submodule. `ggml` is consumed from
+the [qvac-ext-ggml](https://github.com/tetherto/qvac-ext-ggml) vcpkg port, and
+`SD_USE_SYSTEM_GGML` defaults to `ON`. Configure with the vcpkg toolchain file so
+CMake can resolve the `ggml::ggml` target:
+
+```shell
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+cmake --build . --config Release
+```
+
+If `ggml` cannot be found, CMake fails with a clear error pointing here. The
+qvac-ext-ggml port is built with `GGML_MAX_NAME=128` and exports it as a PUBLIC
+compile definition, so consumers inherit it automatically (the in-tree
+`add_definitions(-DGGML_MAX_NAME=128)` only applies to non-system builds).
+
+The GPU backend flags below (`-DSD_METAL=ON`, `-DSD_CUDA=ON`, ...) still apply;
+combine them with the vcpkg toolchain invocation above.
 
 ## WebP and WebM Support in Examples
 

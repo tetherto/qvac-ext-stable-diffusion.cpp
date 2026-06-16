@@ -98,7 +98,7 @@ option(SD_SYCL                       "sd: sycl backend" OFF)
 option(SD_MUSA                       "sd: musa backend" OFF)
 option(SD_BUILD_SHARED_LIBS          "sd: build shared libs" OFF)
 option(SD_BUILD_SHARED_GGML_LIB      "sd: build ggml as a separate shared lib" OFF)
-option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" OFF)
+option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" ON)
 #option(SD_BUILD_SERVER               "sd: build server example"                           ON)
 
 set(CMAKE_C_STANDARD 11)
@@ -303,13 +303,26 @@ endif()
 # Only add ggml if it hasn't been added yet
 if (NOT TARGET ggml)
     if (SD_USE_SYSTEM_GGML)
-        find_package(ggml REQUIRED)
+        # This fork consumes ggml from the qvac-ext-ggml vcpkg port rather than a
+        # vendored submodule. The port exports GGML_MAX_NAME=128 as a PUBLIC/
+        # INTERFACE compile definition on ggml::ggml, so consumers inherit it
+        # automatically (no need for the add_definitions() above under system ggml).
+        find_package(ggml CONFIG)
         if (NOT ggml_FOUND)
-            message(FATAL_ERROR "System-installed GGML library not found.")
+            message(FATAL_ERROR
+                "SD_USE_SYSTEM_GGML is ON but no system GGML was found. Provide ggml "
+                "via the qvac-ext-ggml vcpkg port (or any package exporting the "
+                "ggml::ggml CMake target) and configure with the vcpkg toolchain "
+                "file, e.g. -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
         endif()
         add_library(ggml ALIAS ggml::ggml)
-    else()
+    elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
         add_subdirectory(ggml)
+    else()
+        message(FATAL_ERROR
+            "The bundled ggml submodule has been removed from this branch; ggml is "
+            "now consumed from the qvac-ext-ggml vcpkg port. Re-run cmake with "
+            "-DSD_USE_SYSTEM_GGML=ON together with the vcpkg toolchain file.")
     endif()
 endif()
 
