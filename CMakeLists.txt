@@ -98,7 +98,7 @@ option(SD_SYCL                       "sd: sycl backend" OFF)
 option(SD_MUSA                       "sd: musa backend" OFF)
 option(SD_BUILD_SHARED_LIBS          "sd: build shared libs" OFF)
 option(SD_BUILD_SHARED_GGML_LIB      "sd: build ggml as a separate shared lib" OFF)
-option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" ON)
+option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" OFF)
 #option(SD_BUILD_SERVER               "sd: build server example"                           ON)
 
 set(CMAKE_C_STANDARD 11)
@@ -303,10 +303,10 @@ endif()
 # Only add ggml if it hasn't been added yet
 if (NOT TARGET ggml)
     if (SD_USE_SYSTEM_GGML)
-        # This fork consumes ggml from the qvac-ext-ggml vcpkg port rather than a
-        # vendored submodule. The port exports GGML_MAX_NAME=128 as a PUBLIC/
-        # INTERFACE compile definition on ggml::ggml, so consumers inherit it
-        # automatically (no need for the add_definitions() above under system ggml).
+        # System ggml (e.g. the qvac-ext-ggml vcpkg port). The port exports
+        # GGML_MAX_NAME=128 as a PUBLIC/INTERFACE compile definition on
+        # ggml::ggml, so consumers inherit it automatically (no need for the
+        # add_definitions() above under system ggml).
         find_package(ggml CONFIG)
         if (NOT ggml_FOUND)
             message(FATAL_ERROR
@@ -317,12 +317,14 @@ if (NOT TARGET ggml)
         endif()
         add_library(ggml ALIAS ggml::ggml)
     elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
+        # Vendored submodule (default): standalone builds with no external tooling.
         add_subdirectory(ggml)
     else()
         message(FATAL_ERROR
-            "The bundled ggml submodule has been removed from this branch; ggml is "
-            "now consumed from the qvac-ext-ggml vcpkg port. Re-run cmake with "
-            "-DSD_USE_SYSTEM_GGML=ON together with the vcpkg toolchain file.")
+            "ggml not found. Either initialize the bundled submodule "
+            "(git submodule update --init ggml, or clone with --recursive), or "
+            "build against system ggml with -DSD_USE_SYSTEM_GGML=ON together with "
+            "the vcpkg toolchain file (qvac-ext-ggml port).")
     endif()
 endif()
 
