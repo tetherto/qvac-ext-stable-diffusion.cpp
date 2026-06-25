@@ -4,7 +4,7 @@
 
 ```shell
 git clone --recursive https://github.com/tetherto/qvac-ext-stable-diffusion.cpp
-cd stable-diffusion.cpp
+cd qvac-ext-stable-diffusion.cpp
 ```
 
 If you already cloned the repository without submodules, initialize them from the repository root:
@@ -16,8 +16,8 @@ git submodule update --init --recursive
 To update an existing checkout and its submodules:
 
 ```shell
-cd stable-diffusion.cpp
-git pull origin master
+cd qvac-ext-stable-diffusion.cpp
+git pull
 git submodule update --init --recursive
 ```
 
