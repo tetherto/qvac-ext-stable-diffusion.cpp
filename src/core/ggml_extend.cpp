@@ -680,8 +680,10 @@ ggml_tensor* ggml_ext_attention_ext(ggml_context* ctx,
         }
 
 #ifdef SD_GGML_HAS_ROPE_FLUX
-        auto v_fused = ggml_rope_flux(ctx, v_in, nullptr);
-        if (ggml_backend_supports_op(backend, v_fused)) {
+        // A null position tensor only permutes V; values are never rotated.
+        static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+        auto v_fused = fused_disabled ? nullptr : ggml_rope_flux(ctx, v_in, nullptr);
+        if (v_fused && ggml_backend_supports_op(backend, v_fused)) {
             v_in = v_fused;
         } else
 #endif
