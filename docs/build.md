@@ -3,18 +3,45 @@
 ## Get the Code
 
 ```
-git clone --recursive https://github.com/leejet/stable-diffusion.cpp
-cd stable-diffusion.cpp
+git clone --recursive https://github.com/tetherto/qvac-ext-stable-diffusion.cpp
+cd qvac-ext-stable-diffusion.cpp
 ```
 
-- If you have already cloned the repository, you can use the following command to update the repository to the latest code.
+- If you have already cloned the repository, you can use the following command to update the repository to the latest code and fetch the submodules.
 
 ```
-cd stable-diffusion.cpp
-git pull origin master
-git submodule init
-git submodule update
+cd qvac-ext-stable-diffusion.cpp
+git pull
+git submodule update --init --recursive
 ```
+
+## GGML dependency (vendored submodule or system / vcpkg)
+
+`ggml` can be provided in two ways:
+
+- **Vendored submodule (default).** `SD_USE_SYSTEM_GGML` defaults to `OFF`, and
+  CMake builds the bundled `ggml` submodule
+  ([qvac-ext-ggml](https://github.com/tetherto/qvac-ext-ggml)) via
+  `add_subdirectory(ggml)`. This is the no-extra-tooling path for building the
+  repository standalone — just clone with `--recursive` (or run
+  `git submodule update --init --recursive`) and the plain `cmake ..` invocations
+  below work as-is.
+- **System / vcpkg ggml.** Pass `-DSD_USE_SYSTEM_GGML=ON` and configure with the
+  vcpkg toolchain file so CMake resolves the `ggml::ggml` target from the
+  qvac-ext-ggml vcpkg port:
+
+  ```shell
+  mkdir build && cd build
+  cmake .. -DSD_USE_SYSTEM_GGML=ON -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+  cmake --build . --config Release
+  ```
+
+The qvac-ext-ggml port is built with `GGML_MAX_NAME=128` and exports it as a
+PUBLIC compile definition, so system-ggml consumers inherit it automatically; for
+vendored builds the in-tree `add_definitions(-DGGML_MAX_NAME=128)` applies.
+
+The GPU backend flags below (`-DSD_METAL=ON`, `-DSD_CUDA=ON`, ...) apply to both
+paths.
 
 ## WebP and WebM Support in Examples
 

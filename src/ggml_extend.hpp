@@ -1338,8 +1338,17 @@ __STATIC_INLINE__ ggml_tensor* ggml_ext_attention_ext(ggml_context* ctx,
         }
         k_in = ggml_cast(ctx, k_in, GGML_TYPE_F16);
 
-        auto v_fused = ggml_rope_flux(ctx, v_in, nullptr);
-        if (ggml_backend_supports_op(backend, v_fused)) {
+        // ggml_rope_flux(ctx, v_in, nullptr): the null position tensor means NO
+        // rotation is applied — V is never RoPE-rotated (only q/k are). With a
+        // null pe the fused kernel degenerates to exactly the permute(0,2,1,3) +
+        // reshape_3d layout transform in the else branch below; we use it purely
+        // as a fused-kernel fast path for that reshape. Gate it on the same
+        // GGML_ROPE_FLUX_DISABLE switch as the q/k fused path in rope.hpp so the
+        // whole fused-RoPE kernel family can be turned off together for
+        // debugging / backend bring-up.
+        static const bool rope_flux_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+        ggml_tensor* v_fused                 = rope_flux_disabled ? nullptr : ggml_rope_flux(ctx, v_in, nullptr);
+        if (v_fused != nullptr && ggml_backend_supports_op(backend, v_fused)) {
             v_in = v_fused;
         } else {
             v_in = ggml_ext_cont(ctx, ggml_permute(ctx, v_in, 0, 2, 1, 3));

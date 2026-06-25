@@ -16,6 +16,11 @@ if (MSVC)
         $<$<COMPILE_LANGUAGE:C>:/utf-8>
         $<$<COMPILE_LANGUAGE:CXX>:/MP>
         $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+        # stable-diffusion.cpp is a large translation unit; with the LTX-2
+        # additions it exceeds the COFF 2^16 section limit, so MSVC needs
+        # /bigobj (clang/gcc have no equivalent limit). Fatal error C1128.
+        $<$<COMPILE_LANGUAGE:C>:/bigobj>
+        $<$<COMPILE_LANGUAGE:CXX>:/bigobj>
     )
 endif()
 
@@ -298,13 +303,28 @@ endif()
 # Only add ggml if it hasn't been added yet
 if (NOT TARGET ggml)
     if (SD_USE_SYSTEM_GGML)
-        find_package(ggml REQUIRED)
+        # System ggml (e.g. the qvac-ext-ggml vcpkg port). The port exports
+        # GGML_MAX_NAME=128 as a PUBLIC/INTERFACE compile definition on
+        # ggml::ggml, so consumers inherit it automatically (no need for the
+        # add_definitions() above under system ggml).
+        find_package(ggml CONFIG)
         if (NOT ggml_FOUND)
-            message(FATAL_ERROR "System-installed GGML library not found.")
+            message(FATAL_ERROR
+                "SD_USE_SYSTEM_GGML is ON but no system GGML was found. Provide ggml "
+                "via the qvac-ext-ggml vcpkg port (or any package exporting the "
+                "ggml::ggml CMake target) and configure with the vcpkg toolchain "
+                "file, e.g. -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake")
         endif()
         add_library(ggml ALIAS ggml::ggml)
-    else()
+    elseif (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/CMakeLists.txt")
+        # Vendored submodule (default): standalone builds with no external tooling.
         add_subdirectory(ggml)
+    else()
+        message(FATAL_ERROR
+            "ggml not found. Either initialize the bundled submodule "
+            "(git submodule update --init ggml, or clone with --recursive), or "
+            "build against system ggml with -DSD_USE_SYSTEM_GGML=ON together with "
+            "the vcpkg toolchain file (qvac-ext-ggml port).")
     endif()
 endif()
 

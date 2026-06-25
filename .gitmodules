@@ -1,5 +1,5 @@
 [submodule "ggml"]
-    path = ggml
+	path = ggml
 	url = https://github.com/tetherto/qvac-ext-ggml.git
 	branch = 2026-06-06
 [submodule "examples/server/frontend"]
