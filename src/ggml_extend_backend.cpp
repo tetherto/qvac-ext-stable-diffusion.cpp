@@ -273,6 +273,18 @@ static std::string sd_resolve_backend_name(const std::string& name) {
 
     for (size_t i = 0; i < device_count; ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        if (reg == nullptr) {
+            continue;
+        }
+        const char* reg_name = ggml_backend_reg_name(reg);
+        if (reg_name != nullptr && lower_copy(reg_name) == lower) {
+            return ggml_backend_dev_name(dev);
+        }
+    }
+
+    for (size_t i = 0; i < device_count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         std::string dev_name   = ggml_backend_dev_name(dev);
         std::string dev_lower  = lower_copy(dev_name);
         if (dev_lower.rfind(lower, 0) == 0) {
