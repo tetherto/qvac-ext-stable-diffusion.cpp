@@ -178,6 +178,15 @@ static std::string backend_device_name(ggml_backend_dev_t dev) {
     return reg_name != nullptr ? reg_name : "";
 }
 
+static std::string resolve_first_device_by_registry_name(const std::string& name) {
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name(name.c_str());
+    if (reg == nullptr || ggml_backend_reg_dev_count(reg) == 0) {
+        return "";
+    }
+    ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
+    return dev != nullptr ? ggml_backend_dev_name(dev) : "";
+}
+
 static ggml_backend_buffer_t ggml_backend_tensor_buffer(const struct ggml_tensor* tensor) {
     if (tensor == nullptr) {
         return nullptr;
