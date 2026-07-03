@@ -109,6 +109,15 @@ static std::string resolve_first_device_by_type(enum ggml_backend_dev_type type)
     return ggml_backend_dev_name(dev);
 }
 
+static std::string resolve_first_device_by_registry_name(const std::string& name) {
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name(name.c_str());
+    if (reg == nullptr || ggml_backend_reg_dev_count(reg) == 0) {
+        return "";
+    }
+    ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
+    return dev != nullptr ? ggml_backend_dev_name(dev) : "";
+}
+
 static ggml_backend_buffer_t ggml_backend_tensor_buffer(const struct ggml_tensor* tensor) {
     if (tensor == nullptr) {
         return nullptr;
@@ -260,6 +269,11 @@ static std::string sd_resolve_backend_name(const std::string& name) {
             return result;
         }
         return resolve_first_device_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+    }
+
+    std::string registry_device = resolve_first_device_by_registry_name(requested);
+    if (!registry_device.empty()) {
+        return registry_device;
     }
 
     const size_t device_count = ggml_backend_dev_count();
