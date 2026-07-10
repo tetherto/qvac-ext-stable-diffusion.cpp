@@ -740,6 +740,48 @@ namespace Rope {
         return (m - (a % m)) % m;
     }
 
+    // Interleaved multi-axis RoPE used by Ideogram 4. Mirrors the reference
+    // stack(...).permute(...) mrope construction: build per-axis rotary
+    // embeddings, then interleave the frequency bands per mrope_section.
+    __STATIC_INLINE__ std::vector<float> embed_interleaved_mrope(const std::vector<std::vector<float>>& ids,
+                                                                 int bs,
+                                                                 float theta,
+                                                                 int head_dim,
+                                                                 const std::vector<int>& mrope_section,
+                                                                 const std::vector<std::vector<int>>& axis_wrap_dims = {}) {
+        GGML_ASSERT(bs > 0);
+        GGML_ASSERT(head_dim % 2 == 0);
+        GGML_ASSERT(mrope_section.size() >= 3);
+
+        std::vector<std::vector<float>> trans_ids = transpose(ids);
+        size_t pos_len                            = ids.size() / bs;
+        int half_dim                              = head_dim / 2;
+
+        std::vector<std::vector<std::vector<float>>> axis_embs;
+        axis_embs.reserve(3);
+        for (int axis = 0; axis < 3; ++axis) {
+            std::vector<int> axis_wrap;
+            if (axis < static_cast<int>(axis_wrap_dims.size())) {
+                axis_wrap = axis_wrap_dims[axis];
+            }
+            axis_embs.push_back(rope(trans_ids[axis], head_dim, theta, axis_wrap));
+        }
+
+        std::vector<std::vector<float>> emb = axis_embs[0];
+        for (int axis = 1; axis < 3; ++axis) {
+            int length = std::min<int>(mrope_section[axis] * 3, half_dim);
+            for (int freq_idx = axis; freq_idx < length; freq_idx += 3) {
+                for (size_t pos_idx = 0; pos_idx < bs * pos_len; ++pos_idx) {
+                    for (int k = 0; k < 4; ++k) {
+                        emb[pos_idx][4 * freq_idx + k] = axis_embs[axis][pos_idx][4 * freq_idx + k];
+                    }
+                }
+            }
+        }
+
+        return flatten(emb);
+    }
+
     __STATIC_INLINE__ std::vector<std::vector<float>> gen_z_image_ids(int h,
                                                                       int w,
                                                                       int patch_size,

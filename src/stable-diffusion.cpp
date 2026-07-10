@@ -23,6 +23,7 @@
 #include "flux.hpp"
 #include "guidance.h"
 #include "hidream_o1.hpp"
+#include "ideogram4.hpp"
 #include "lens.hpp"
 #include "lora.hpp"
 #include "ltx_audio_vae.h"
@@ -84,6 +85,7 @@ const char* model_version_to_str[] = {
     "Lens",
     "Longcat-Image",
     "PiD",
+    "Ideogram 4",
 };
 
 const char* sampling_methods_str[] = {
@@ -738,6 +740,16 @@ public:
                                                                        params_backend_for(SDBackendModule::DIFFUSION),
                                                                        tensor_storage_map,
                                                                        "model.diffusion_model");
+            } else if (sd_version_is_ideogram4(version)) {
+                cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
+                                                                 params_backend_for(SDBackendModule::TE),
+                                                                 tensor_storage_map,
+                                                                 version);
+                diffusion_model  = std::make_shared<Ideogram4::Ideogram4Runner>(backend_for(SDBackendModule::DIFFUSION),
+                                                                               params_backend_for(SDBackendModule::DIFFUSION),
+                                                                               tensor_storage_map,
+                                                                               "model.diffusion_model",
+                                                                               version);
             } else if (sd_version_is_z_image(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  params_backend_for(SDBackendModule::TE),
@@ -1073,6 +1085,12 @@ public:
             ignore_tensors.insert("text_encoders.llm.model.layers.0.mlp.experts.gate_up_proj.weight_scale_2");
             ignore_tensors.insert("text_encoders.llm.model.layers.0.mlp.experts.down_proj.weight_scale_2");
         }
+        if (sd_version_is_ideogram4(version)) {
+            ignore_tensors.insert("text_encoders.llm.lm_head.");
+            ignore_tensors.insert("text_encoders.llm.visual.");
+            ignore_tensors.insert("text_encoders.llm.vision_model.");
+            ignore_tensors.insert("text_encoders.llm.tokenizer_json");
+        }
         if (version == VERSION_HIDREAM_O1) {
             ignore_tensors.insert("lm_head.");
             ignore_tensors.insert("model.visual.deepstack_merger_list.");
@@ -1248,7 +1266,8 @@ public:
                            sd_version_is_anima(version) ||
                            sd_version_is_ernie_image(version) ||
                            sd_version_is_z_image(version) ||
-                           sd_version_is_pid(version)) {
+                           sd_version_is_pid(version) ||
+                           sd_version_is_ideogram4(version)) {
                     pred_type = FLOW_PRED;
                     if (sd_version_is_wan(version)) {
                         default_flow_shift = 5.f;
@@ -1256,6 +1275,8 @@ public:
                         default_flow_shift = 4.f;
                     } else if (sd_version_is_pid(version)) {
                         default_flow_shift = 1.5f;
+                    } else if (sd_version_is_ideogram4(version)) {
+                        default_flow_shift = 1.0f;
                     } else {
                         default_flow_shift = 3.f;
                     }
@@ -1918,7 +1939,7 @@ public:
         if (version == VERSION_HIDREAM_O1) {
             return std::vector<float>{1.0f - (t / static_cast<float>(TIMESTEPS))};
         }
-        if (sd_version_is_z_image(version)) {
+        if (sd_version_is_z_image(version) || sd_version_is_ideogram4(version)) {
             return std::vector<float>{1000.f - t};
         }
         return std::vector<float>{t};
@@ -4236,18 +4257,25 @@ static std::optional<ImageGenerationEmbeds> prepare_image_generation_embeds(sd_c
 
     SDCondition uncond;
     if (request->use_uncond || request->use_high_noise_uncond) {
-        bool zero_out_masked = false;
-        if (sd_version_is_sdxl(sd_ctx->sd->version) &&
-            request->negative_prompt.empty() &&
-            !sd_ctx->sd->is_using_edm_v_parameterization) {
-            zero_out_masked = true;
-        }
-        condition_params.text            = request->negative_prompt;
-        condition_params.zero_out_masked = zero_out_masked;
-        uncond                           = sd_ctx->sd->cond_stage_model->get_learned_condition(sd_ctx->sd->n_threads,
-                                                                                               condition_params);
-        if (uncond.c_concat.empty()) {
-            uncond.c_concat = latents->concat_latent;  // TODO: optimize
+        if (sd_version_is_ideogram4(sd_ctx->sd->version)) {
+            // Ideogram 4 uses a dedicated unconditional diffusion model instead of a
+            // text-encoded negative prompt. A non-empty c_vector (mapped to the
+            // diffusion params' `y`) signals the runner to use the uncond weights.
+            uncond.c_vector = sd::Tensor<float>::from_vector({1.0f});
+        } else {
+            bool zero_out_masked = false;
+            if (sd_version_is_sdxl(sd_ctx->sd->version) &&
+                request->negative_prompt.empty() &&
+                !sd_ctx->sd->is_using_edm_v_parameterization) {
+                zero_out_masked = true;
+            }
+            condition_params.text            = request->negative_prompt;
+            condition_params.zero_out_masked = zero_out_masked;
+            uncond                           = sd_ctx->sd->cond_stage_model->get_learned_condition(sd_ctx->sd->n_threads,
+                                                                                                   condition_params);
+            if (uncond.c_concat.empty()) {
+                uncond.c_concat = latents->concat_latent;  // TODO: optimize
+            }
         }
     }
 
