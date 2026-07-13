@@ -4063,6 +4063,14 @@ static float resolve_eta(sd_ctx_t* sd_ctx,
     return eta;
 }
 
+static bool ideogram4_has_uncond_model(sd_ctx_t* sd_ctx) {
+    if (sd_ctx == nullptr || sd_ctx->sd == nullptr || !sd_version_is_ideogram4(sd_ctx->sd->version)) {
+        return false;
+    }
+    auto ideogram_runner = std::dynamic_pointer_cast<Ideogram4::Ideogram4Runner>(sd_ctx->sd->diffusion_model);
+    return ideogram_runner != nullptr && ideogram_runner->has_unconditional_model();
+}
+
 struct GenerationRequest {
     std::string prompt;
     std::string negative_prompt;
@@ -4093,6 +4101,7 @@ struct GenerationRequest {
     int requested_frames                     = -1;
     int fps                                  = 16;
     float vace_strength                      = 1.f;
+    bool valid                               = true;
 
     GenerationRequest(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_gen_params) {
         prompt                      = SAFE_STR(sd_img_gen_params->prompt);
@@ -4280,6 +4289,22 @@ struct GenerationRequest {
         }
     }
 
+    void validate_ideogram4_uncond_model(sd_ctx_t* sd_ctx) {
+        if (!sd_version_is_ideogram4(sd_ctx->sd->version)) {
+            return;
+        }
+        if (!use_uncond && !use_high_noise_uncond) {
+            return;
+        }
+        if (ideogram4_has_uncond_model(sd_ctx)) {
+            return;
+        }
+        LOG_ERROR(
+            "Ideogram 4 CFG requires a successfully loaded unconditional diffusion model; "
+            "provide uncond_diffusion_model_path/--uncond-diffusion-model, or set cfg_scale=1 to run without CFG");
+        valid = false;
+    }
+
     void resolve(sd_ctx_t* sd_ctx) {
         align_generation_request_size();
         resolve_hires();
@@ -4294,6 +4319,7 @@ struct GenerationRequest {
                              has_ref_images,
                              "high noise: ");
         }
+        validate_ideogram4_uncond_model(sd_ctx);
 
         if (shifted_timestep > 0 && !sd_version_is_sdxl(sd_ctx->sd->version)) {
             LOG_WARN("timestep shifting is only supported for SDXL models!");
@@ -5628,6 +5654,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
     int64_t t0                    = ggml_time_ms();
     sd_ctx->sd->vae_tiling_params = sd_img_gen_params->vae_tiling_params;
     GenerationRequest request(sd_ctx, sd_img_gen_params);
+    if (!request.valid) {
+        return nullptr;
+    }
     LOG_INFO("generate_image %dx%d", request.width, request.height);
 
     sd_ctx->sd->rng->manual_seed(request.seed);
@@ -6874,6 +6903,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     sd_ctx->sd->vae_tiling_params = sd_vid_gen_params->vae_tiling_params;
     apply_circular_axes_to_diffusion(sd_ctx, sd_vid_gen_params->circular_x, sd_vid_gen_params->circular_y);
     GenerationRequest request(sd_ctx, sd_vid_gen_params);
+    if (!request.valid) {
+        return false;
+    }
     bool latent_upscale_enabled     = request.hires.enabled;
     GenerationRequest hires_request = request;
     if (latent_upscale_enabled) {
