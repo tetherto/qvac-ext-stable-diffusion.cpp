@@ -163,17 +163,32 @@ namespace Ideogram4 {
             : Linear(in_features, out_features, bias, false, false, 1.f) {}
 
         ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
-            x         = Linear::forward(ctx, x);
             auto iter = params.find("weight_scale");
             if (iter == params.end()) {
-                return x;
+                return Linear::forward(ctx, x);
             }
 
+            // FP8 scaled weights: weight_scale belongs to the weight product,
+            // not the bias. Do the matmul without bias, apply the per-output
+            // channel scale, then add the bias so the result is
+            // (x @ W) * weight_scale + b rather than (x @ W + b) * weight_scale.
+            ggml_tensor* out = ggml_ext_linear(ctx->ggml_ctx,
+                                               x,
+                                               params["weight"],
+                                               nullptr,
+                                               force_prec_f32,
+                                               scale);
+
             ggml_tensor* weight_scale = iter->second;
-            if (weight_scale->ne[0] == x->ne[0] && ggml_n_dims(weight_scale) == 1) {
+            if (weight_scale->ne[0] == out->ne[0] && ggml_n_dims(weight_scale) == 1) {
                 weight_scale = ggml_reshape_3d(ctx->ggml_ctx, weight_scale, weight_scale->ne[0], 1, 1);
             }
-            return ggml_mul(ctx->ggml_ctx, x, weight_scale);
+            out = ggml_mul(ctx->ggml_ctx, out, weight_scale);
+
+            if (bias) {
+                out = ggml_add(ctx->ggml_ctx, out, params["bias"]);
+            }
+            return out;
         }
     };
 
