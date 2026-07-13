@@ -514,6 +514,10 @@ namespace Ideogram4 {
             return "ideogram4";
         }
 
+        bool has_unconditional_model() const {
+            return has_uncond_model;
+        }
+
         void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string& prefix) override {
             model.get_param_tensors(tensors, prefix);
             if (has_uncond_model) {
