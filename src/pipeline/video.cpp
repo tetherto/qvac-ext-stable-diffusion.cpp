@@ -1597,6 +1597,9 @@ namespace sd::pipeline {
         if (info_out)
             *info_out = nlohmann::json();
         GenerationRequest request(sd, sd_vid_gen_params);
+        if (!request.valid) {
+            return false;
+        }
         const auto info = sd::generation_info(request, *sd_vid_gen_params);
         if (sd->config_->animatediff_loaded && sd_version_supports_animatediff(sd->version)) {
             LOG_INFO("AnimateDiff dispatch: %d frames, %dx%d",

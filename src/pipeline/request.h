@@ -24,6 +24,7 @@ namespace sd::pipeline {
                       enum sample_method_t sample_method);
 
     struct GenerationRequest {
+        bool valid = true;
         std::string prompt;
         std::string negative_prompt;
         std::map<std::string, std::string> models;

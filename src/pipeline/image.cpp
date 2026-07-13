@@ -859,6 +859,9 @@ namespace sd::pipeline {
         int64_t t0            = ggml_time_ms();
         sd->vae_tiling_params = sd_img_gen_params->vae_tiling_params;
         GenerationRequest request(sd, sd_img_gen_params);
+        if (!request.valid) {
+            return nullptr;
+        }
         const auto info = sd::generation_info(request, *sd_img_gen_params);
         sd::ImagePreprocessor preprocessing(sd_img_gen_params->image_preprocess.rules);
         sd_img_gen_params_t processed_params = *sd_img_gen_params;
