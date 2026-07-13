@@ -139,10 +139,48 @@ namespace Ideogram4 {
         return x;
     }
 
+    class Ideogram4Linear : public Linear {
+    protected:
+        void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") override {
+            Linear::init_params(ctx, tensor_storage_map, prefix);
+
+            auto iter = tensor_storage_map.find(prefix + "weight_scale");
+            if (iter == tensor_storage_map.end()) {
+                return;
+            }
+
+            const TensorStorage& tensor_storage = iter->second;
+            enum ggml_type wtype                = tensor_storage.expected_type != GGML_TYPE_COUNT
+                                                      ? tensor_storage.expected_type
+                                                      : tensor_storage.type;
+            params["weight_scale"]              = ggml_new_tensor(ctx, wtype, tensor_storage.n_dims, tensor_storage.ne);
+        }
+
+    public:
+        Ideogram4Linear(int64_t in_features,
+                        int64_t out_features,
+                        bool bias = true)
+            : Linear(in_features, out_features, bias, false, false, 1.f) {}
+
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
+            x         = Linear::forward(ctx, x);
+            auto iter = params.find("weight_scale");
+            if (iter == params.end()) {
+                return x;
+            }
+
+            ggml_tensor* weight_scale = iter->second;
+            if (weight_scale->ne[0] == x->ne[0] && ggml_n_dims(weight_scale) == 1) {
+                weight_scale = ggml_reshape_3d(ctx->ggml_ctx, weight_scale, weight_scale->ne[0], 1, 1);
+            }
+            return ggml_mul(ctx->ggml_ctx, x, weight_scale);
+        }
+    };
+
     __STATIC_INLINE__ std::shared_ptr<Linear> make_linear(int64_t in_features,
                                                           int64_t out_features,
                                                           bool bias = true) {
-        return std::make_shared<Linear>(in_features, out_features, bias, false, false, 1.f);
+        return std::make_shared<Ideogram4Linear>(in_features, out_features, bias);
     }
 
     __STATIC_INLINE__ std::vector<float> gen_ideogram4_pe(int grid_h,
@@ -538,7 +576,50 @@ namespace Ideogram4 {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context, use_uncond_model);
             };
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
+            ggml_cgraph* gf = nullptr;
+            if (!prepare_compute_graph(get_graph, &gf)) {
+                return {};
+            }
+            GGML_ASSERT(gf != nullptr);
+
+            if (can_attempt_graph_cut_segmented_compute()) {
+                GraphCutPlan plan;
+                size_t effective_graph_vram_bytes = 0;
+                if (!resolve_graph_cut_plan(gf, &plan, &effective_graph_vram_bytes)) {
+                    free_compute_ctx();
+                    return {};
+                }
+                if (should_use_graph_cut_segmented_compute(plan)) {
+                    if (stream_layers_enabled) {
+                        return restore_trailing_singleton_dims(
+                            compute_streaming_segments<float>(gf,
+                                                              plan,
+                                                              effective_graph_vram_bytes,
+                                                              n_threads,
+                                                              false),
+                            x.dim());
+                    }
+                    return restore_trailing_singleton_dims(
+                        compute_with_graph_cuts<float>(gf,
+                                                       plan,
+                                                       n_threads,
+                                                       false),
+                        x.dim());
+                }
+            }
+
+            if (!alloc_compute_buffer(gf)) {
+                LOG_ERROR("%s alloc compute buffer failed", get_desc().c_str());
+                return {};
+            }
+
+            return restore_trailing_singleton_dims(
+                execute_graph<float>(gf,
+                                     n_threads,
+                                     false,
+                                     graph_param_tensors(gf),
+                                     false),
+                x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,
