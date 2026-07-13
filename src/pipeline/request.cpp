@@ -9,6 +9,7 @@
 #include "diffusion_engine.h"
 #include "generation.h"
 #include "model/vae/vae.hpp"
+#include "model/diffusion/ideogram4.hpp"
 #include "model_definition.h"
 #include "runtime/denoiser.hpp"
 
@@ -376,6 +377,14 @@ namespace sd::pipeline {
                              &use_high_noise_img_uncond,
                              has_ref_images,
                              "high noise: ");
+        }
+
+        if (sd_version_is_ideogram4(sd->version) && (use_uncond || use_high_noise_uncond)) {
+            auto runner = std::dynamic_pointer_cast<Ideogram4::Ideogram4Runner>(sd->diffusion_model);
+            if (!runner || !runner->has_unconditional_model()) {
+                LOG_ERROR("Ideogram 4 CFG requires a successfully loaded unconditional diffusion model; provide uncond_diffusion_model_path/--uncond-diffusion-model, or set cfg_scale=1 to run without CFG");
+                valid = false;
+            }
         }
 
         if (shifted_timestep > 0 && !sd_version_is_sdxl(sd->version)) {
