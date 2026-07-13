@@ -1849,6 +1849,34 @@ protected:
         }
     }
 
+    std::vector<ggml_tensor*> graph_param_tensors(ggml_cgraph* gf) const {
+        std::vector<ggml_tensor*> tensors;
+        if (gf == nullptr || params_tensor_set_.empty()) {
+            return tensors;
+        }
+
+        std::unordered_set<ggml_tensor*> seen;
+        auto add_if_param = [&](ggml_tensor* tensor) {
+            if (tensor == nullptr) {
+                return;
+            }
+            if (params_tensor_set_.find(tensor) == params_tensor_set_.end()) {
+                return;
+            }
+            if (seen.insert(tensor).second) {
+                tensors.push_back(tensor);
+            }
+        };
+
+        for (int i = 0; i < sd::ggml_graph_cut::leaf_count(gf); ++i) {
+            add_if_param(sd::ggml_graph_cut::leaf_tensor(gf, i));
+        }
+        for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
+            add_if_param(ggml_graph_node(gf, i));
+        }
+        return tensors;
+    }
+
     void prepare_build_in_tensor_before() {
         one_tensor = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_F32, 1);
         ggml_set_name(one_tensor, "ggml_runner_build_in_tensor:one");
