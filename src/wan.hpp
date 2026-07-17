@@ -1136,7 +1136,7 @@ namespace WAN {
                      const std::string prefix                       = "",
                      bool decode_only                               = false,
                      SDVersion version                              = VERSION_WAN2)
-            : decode_only(decode_only), ae(decode_only, version == VERSION_WAN2_2_TI2V), VAE(version, backend, params_backend) {
+            : decode_only(decode_only), ae(decode_only, sd_version_is_wan_ti2v_family(version)), VAE(version, backend, params_backend) {
             ae.init(params_ctx, tensor_storage_map, prefix);
         }
 
@@ -1815,6 +1815,10 @@ namespace WAN {
         int64_t out_dim                        = 16;
         int64_t num_heads                      = 16;
         int num_layers                         = 32;
+        // ABot-World (causal Wan2.2-TI2V-5B + keyboard-action conditioning)
+        bool abot_world                 = false;
+        int64_t act_in_dim              = 32;   // 8 keys x 4 (repeat_interleave)
+        int act_downscale_factor        = 16;   // pixel-unshuffle factor before conv
         int vace_layers                        = 0;
         int64_t vace_in_dim                    = 96;
         std::map<int, int> vace_layers_mapping = {};
@@ -1826,6 +1830,38 @@ namespace WAN {
         // wan2.1 1.3B: 1536/12, wan2.1/2.2 14B: 5120/40, wan2.2 5B: 3074/24
         std::vector<int> axes_dim = {44, 42, 42};
         int64_t axes_dim_sum      = 128;
+    };
+
+    // ABot-World action-conditioning adapter ("SimpleAdapter" in the reference
+    // implementation, github.com/amap-cvlab/ABot-World wan/modules/model.py):
+    //   pixel_unshuffle(x16) -> Conv2d(act_in_dim*16*16 -> dim, k=2, s=2)
+    //   -> ResidualBlock(conv1 3x3 p1 -> ReLU -> conv2 3x3 p1 -> +residual)
+    // The pixel-unshuffle is a host-side data rearrangement of the broadcast
+    // keyboard-action planes; forward() expects the already-unshuffled tensor
+    // [W/16, H/16, act_in_dim*256, N*T] and returns [W/32, H/32, dim, N*T],
+    // i.e. one feature per latent-token cell (matches patch_embedding grid).
+    class ActControlAdapter : public GGMLBlock {
+    public:
+        ActControlAdapter(int64_t act_in_dim, int64_t dim, int downscale_factor) {
+            int64_t unshuffled_dim = act_in_dim * downscale_factor * downscale_factor;
+            blocks["conv"]                    = std::shared_ptr<GGMLBlock>(new Conv2d(unshuffled_dim, dim, {2, 2}, {2, 2}));
+            blocks["residual_blocks.0.conv1"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+            blocks["residual_blocks.0.conv2"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+        }
+
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
+            auto conv  = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
+            auto conv1 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv1"]);
+            auto conv2 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv2"]);
+
+            x             = conv->forward(ctx, x);
+            auto residual = x;
+            x             = conv1->forward(ctx, x);
+            x             = ggml_relu_inplace(ctx->ggml_ctx, x);
+            x             = conv2->forward(ctx, x);
+            x             = ggml_add(ctx->ggml_ctx, x, residual);
+            return x;
+        }
     };
 
     class Wan : public GGMLBlock {
@@ -1870,6 +1906,12 @@ namespace WAN {
             // img_emb
             if (params.model_type == "i2v") {
                 blocks["img_emb"] = std::shared_ptr<GGMLBlock>(new MLPProj(1280, params.dim, params.flf_pos_embed_token_number));
+            }
+
+            // ABot-World keyboard-action adapter
+            if (params.abot_world) {
+                blocks["act_control_adapter"] = std::shared_ptr<GGMLBlock>(
+                    new ActControlAdapter(params.act_in_dim, params.dim, params.act_downscale_factor));
             }
 
             // vace
@@ -2145,8 +2187,15 @@ namespace WAN {
             }
 
             if (wan_params.num_layers == 30) {
-                if (version == VERSION_WAN2_2_TI2V) {
-                    desc                 = "Wan2.2-TI2V-5B";
+                if (version == VERSION_WAN2_2_TI2V || sd_version_is_abot_world(version)) {
+                    // ABot-World-0-5B-LF shares the Wan2.2-TI2V-5B backbone and
+                    // adds the act_control_adapter (keyboard-action conditioning).
+                    if (sd_version_is_abot_world(version)) {
+                        desc                  = "ABot-World-5B";
+                        wan_params.abot_world = true;
+                    } else {
+                        desc = "Wan2.2-TI2V-5B";
+                    }
                     wan_params.dim       = 3072;
                     wan_params.eps       = 1e-06f;
                     wan_params.ffn_dim   = 14336;

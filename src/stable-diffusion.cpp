@@ -86,6 +86,7 @@ const char* model_version_to_str[] = {
     "Longcat-Image",
     "PiD",
     "Ideogram 4",
+    "ABot-World",
 };
 
 const char* sampling_methods_str[] = {
@@ -2125,7 +2126,7 @@ public:
             sd::Tensor<float> timesteps_tensor({static_cast<int64_t>(timesteps_vec.size())}, timesteps_vec);
             sd::Tensor<float> guidance_tensor({1}, std::vector<float>{guidance.distilled_guidance});
             sd::Tensor<float> noised_input = x * c_in;
-            if (!denoise_mask.empty() && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version))) {
+            if (!denoise_mask.empty() && (sd_version_is_wan_ti2v_family(version) || sd_version_is_ltxav(version))) {
                 noised_input = noised_input * denoise_mask + init_latent * (1.0f - denoise_mask);
             }
 
@@ -2374,7 +2375,7 @@ public:
         if (sd_version_is_dit(version)) {
             if (sd_version_is_ltxav(version)) {
                 latent_channel = 128;
-            } else if (version == VERSION_WAN2_2_TI2V) {
+            } else if (sd_version_is_wan_ti2v_family(version)) {
                 latent_channel = 48;
             } else if (version == VERSION_HIDREAM_O1) {
                 latent_channel = 3;
@@ -5391,6 +5392,16 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         *num_frames_out = 0;
     }
     int64_t t0                    = ggml_time_ms();
+    if (sd_version_is_abot_world(sd_ctx->sd->version)) {
+        // ABot-World is a causal/interactive model: it must be driven
+        // block-by-block with a KV cache, per-block keyboard actions, and its
+        // distilled 4-step schedule. Running it through the batch video path
+        // executes the wrong recipe and produces corrupted output.
+        LOG_ERROR("ABot-World models are not supported by batch generate_video(); "
+                  "the causal interactive session API is not implemented yet "
+                  "(model loading and inspection are supported)");
+        return false;
+    }
     sd_ctx->sd->vae_tiling_params = sd_vid_gen_params->vae_tiling_params;
     GenerationRequest request(sd_ctx, sd_vid_gen_params);
     if (!request.valid) {
