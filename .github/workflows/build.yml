@@ -903,3 +903,78 @@ jobs:
                 });
               }
             }
+
+  # ── ABot-World walk MVP (stepping stone): native taehv decode → video ──
+  # Temporary: piggy-backs on this existing workflow so it can be triggered
+  # from a feature-branch PR (a brand-new workflow file can't be). Rename to
+  # its own file (abot-walk-mvp.yml) when the PR is ready to merge.
+  abot-walk-mvp-gpu:
+    runs-on: qvac-ubuntu2204-x64-gpu
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Manual Workspace Cleanup
+        run: rm -rf "$GITHUB_WORKSPACE" && mkdir -p "$GITHUB_WORKSPACE"
+        shell: bash
+        working-directory: .
+        if: runner.environment != 'github-hosted'
+
+      - name: Clone
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build deps (Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build \
+            libvulkan-dev glslc spirv-headers spirv-tools mesa-vulkan-drivers python3
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: eu-central-1
+
+      - name: Fetch models from S3
+        run: |
+          set -euo pipefail
+          mkdir -p models
+          BASE="s3://${{ secrets.MODEL_S3_BUCKET }}/qvac_models_compiled/ABot-World-0-5B-LF/2026-07-17"
+          aws s3 cp "$BASE/taew2_2_f16.gguf" models/
+          # DiT pulled to validate access; unused by the decode stepping stone.
+          aws s3 cp "$BASE/abot-world-0-5b-lf-dit-q8_0.gguf" models/
+          ls -la models/
+
+      - name: Build sd-abot-decode (GPU / Vulkan)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DSD_VULKAN=ON -DSD_BUILD_EXAMPLES=ON
+          cmake --build build -j "$(nproc)" --target sd-abot-decode
+
+      - name: Run walk decode
+        run: |
+          set -euo pipefail
+          read W H C T < <(python3 -c "import json;d=json.load(open('examples/abot-decode/data/walk_latents.json'));print(d['W'],d['H'],d['C'],d['T'])")
+          ./build/bin/sd-abot-decode \
+            --taehv models/taew2_2_f16.gguf \
+            --latents examples/abot-decode/data/walk_latents.bin \
+            --width "$W" --height "$H" --channels "$C" --frames "$T" \
+            --backend gpu --fps 12 --out walk.avi
+
+      - name: Validate output video
+        run: |
+          set -euo pipefail
+          test -f walk.avi
+          SZ=$(stat -c%s walk.avi)
+          echo "walk.avi = $SZ bytes"
+          test "$SZ" -gt 10000  # non-trivial video was produced
+
+      - name: Upload walk video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: abot-walk-avi
+          path: walk.avi
+          if-no-files-found: warn
