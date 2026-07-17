@@ -181,7 +181,10 @@ namespace WAN {
                 if (feat_cache.size() > 0) {
                     int idx = feat_idx;
                     feat_idx += 1;
-                    auto time_conv = std::dynamic_pointer_cast<CausalConv3d>(blocks["time_conv"]);
+                    auto time_conv_it = blocks.find("time_conv");
+                    GGML_ASSERT(time_conv_it != blocks.end());
+                    auto time_conv = std::dynamic_pointer_cast<CausalConv3d>(time_conv_it->second);
+                    GGML_ASSERT(time_conv != nullptr);
 
                     // mirrors the reference (vae2_2.py Resample.forward):
                     //   cache_x = x[:, :, -CACHE_T:].clone()
