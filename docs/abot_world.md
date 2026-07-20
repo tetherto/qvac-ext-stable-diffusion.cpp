@@ -25,8 +25,7 @@ Wan model that also contains `model.diffusion_model.act_control_adapter.conv.wei
 
 ## GGUF conversion
 
-The DiT converts to GGUF with standard tooling (see
-`ABot-World/tools/convert_dit_to_gguf.py` in the demo repo). Notes:
+The DiT checkpoint converts to GGUF with standard tooling. Notes:
 - `patch_embedding.weight` is a Conv3d `[3072,48,1,2,2]`; stored 4D as
   `[147456,1,2,2]` (ggml/ComfyUI-GGUF Conv3d convention).
 - The 6 `act_control_adapter.*` tensors are kept F16 (convs); everything else
