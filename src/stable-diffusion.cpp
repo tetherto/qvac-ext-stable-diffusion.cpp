@@ -30,6 +30,7 @@
 #include "ltx_latent_upscaler.hpp"
 #include "ltx_vae.hpp"
 #include "ltxv.hpp"
+#include "abot_world.hpp"
 #include "mmdit.hpp"
 #include "pid.hpp"
 #include "pmid.hpp"
@@ -5775,4 +5776,118 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         free_sd_audio(generated_audio);
     }
     return true;
+}
+
+/* ABot-World interactive walk session ------------------------------------- */
+
+struct sd_abot_session_t {
+    SDBackendManager backend_manager;
+    ABOT::AbotWalkSession session;
+};
+
+void sd_abot_session_params_init(sd_abot_session_params_t* params) {
+    if (params == nullptr) {
+        return;
+    }
+    memset(params, 0, sizeof(sd_abot_session_params_t));
+    params->n_threads           = -1;
+    params->seed                = 42;
+    params->num_frame_per_block = 0;  // model default
+    params->local_attn_size     = 0;  // config default
+}
+
+sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
+    if (params == nullptr ||
+        strlen(SAFE_STR(params->dit_model_path)) == 0 ||
+        strlen(SAFE_STR(params->taehv_path)) == 0 ||
+        strlen(SAFE_STR(params->scene_path)) == 0) {
+        LOG_ERROR("sd_abot_session_new: dit_model_path, taehv_path and scene_path are required");
+        return nullptr;
+    }
+    auto* s = new (std::nothrow) sd_abot_session_t();
+    if (s == nullptr) {
+        return nullptr;
+    }
+    std::string err;
+    if (!s->backend_manager.init(SAFE_STR(params->backend), nullptr,
+                                 params->offload_params_to_cpu,
+                                 false, false, false, &err)) {
+        LOG_ERROR("sd_abot_session_new: backend init failed: %s", err.c_str());
+        delete s;
+        return nullptr;
+    }
+    ABOT::AbotWorldConfig cfg;
+    if (params->num_frame_per_block > 0) {
+        cfg.num_frame_per_block = params->num_frame_per_block;
+    }
+    if (params->local_attn_size > 0) {
+        cfg.local_attn_size = params->local_attn_size;
+    }
+    int n_threads = params->n_threads;
+    if (n_threads <= 0) {
+        n_threads = sd_get_num_physical_cores();
+    }
+    if (!s->session.load(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
+                         s->backend_manager.params_backend(SDBackendModule::DIFFUSION),
+                         s->backend_manager.runtime_backend(SDBackendModule::VAE),
+                         s->backend_manager.params_backend(SDBackendModule::VAE),
+                         SAFE_STR(params->dit_model_path),
+                         SAFE_STR(params->taehv_path),
+                         SAFE_STR(params->scene_path),
+                         cfg,
+                         static_cast<uint64_t>(params->seed),
+                         n_threads)) {
+        delete s;
+        return nullptr;
+    }
+    return s;
+}
+
+sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
+                                 uint32_t action_mask,
+                                 int* num_frames_out) {
+    if (num_frames_out != nullptr) {
+        *num_frames_out = 0;
+    }
+    if (session == nullptr) {
+        return nullptr;
+    }
+    std::vector<std::vector<uint8_t>> rgb_frames;
+    int64_t px_w = 0, px_h = 0;
+    if (!session->session.step(static_cast<uint8_t>(action_mask & 0xFF), rgb_frames, px_w, px_h)) {
+        return nullptr;
+    }
+    sd_image_t* result = (sd_image_t*)calloc(rgb_frames.size(), sizeof(sd_image_t));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < rgb_frames.size(); i++) {
+        result[i].width   = static_cast<uint32_t>(px_w);
+        result[i].height  = static_cast<uint32_t>(px_h);
+        result[i].channel = 3;
+        result[i].data    = (uint8_t*)malloc(rgb_frames[i].size());
+        if (result[i].data == nullptr) {
+            sd_abot_session_frames_free(result, static_cast<int>(i));
+            return nullptr;
+        }
+        memcpy(result[i].data, rgb_frames[i].data(), rgb_frames[i].size());
+    }
+    if (num_frames_out != nullptr) {
+        *num_frames_out = static_cast<int>(rgb_frames.size());
+    }
+    return result;
+}
+
+void sd_abot_session_frames_free(sd_image_t* frames, int num_frames) {
+    if (frames == nullptr) {
+        return;
+    }
+    for (int i = 0; i < num_frames; i++) {
+        free(frames[i].data);
+    }
+    free(frames);
+}
+
+void sd_abot_session_free(sd_abot_session_t* session) {
+    delete session;
 }

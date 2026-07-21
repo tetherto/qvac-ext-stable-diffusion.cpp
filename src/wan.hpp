@@ -1611,10 +1611,12 @@ namespace WAN {
                                      ggml_tensor* e,
                                      ggml_tensor* pe,
                                      ggml_tensor* context,
-                                     int64_t context_img_len = 257) {
+                                     int64_t context_img_len = 257,
+                                     ggml_tensor* attn_mask  = nullptr) {
             // x: [N, n_token, dim]
             // e: [N, 6, dim] or [N, T, 6, dim]
             // context: [N, context_img_len + context_txt_len, dim]
+            // attn_mask: optional additive self-attention mask (ABot causal walk)
             // return [N, n_token, dim]
 
             auto modulation = params["modulation"];
@@ -1633,7 +1635,7 @@ namespace WAN {
             auto y = norm1->forward(ctx, x);
             y      = ggml_add(ctx->ggml_ctx, y, modulate_mul(ctx->ggml_ctx, y, es[1]));
             y      = modulate_add(ctx->ggml_ctx, y, es[0]);
-            y      = self_attn->forward(ctx, y, pe);
+            y      = self_attn->forward(ctx, y, pe, attn_mask);
 
             x = ggml_add(ctx->ggml_ctx, x, modulate_mul(ctx->ggml_ctx, y, es[2]));
 

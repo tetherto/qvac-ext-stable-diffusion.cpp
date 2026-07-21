@@ -500,6 +500,38 @@ SD_API sd_image_t upscale(upscaler_ctx_t* upscaler_ctx,
 
 SD_API int get_upscale_factor(upscaler_ctx_t* upscaler_ctx);
 
+// -- ABot-World interactive walk session --------------------------------------
+// ABot-World is a causal world model: it generates video block-by-block under
+// per-block keyboard actions instead of one batch call. A session owns the DiT
+// + taehv decoder and a fixed scene pack; each step() generates one latent
+// block and returns its decoded RGB frames. Standalone (no sd_ctx_t needed);
+// the batch generate_image()/generate_video() APIs keep rejecting ABot models.
+
+typedef struct sd_abot_session_t sd_abot_session_t;
+
+typedef struct {
+    const char* dit_model_path;  // ABot-World DiT GGUF (F16 or Q8_0)
+    const char* taehv_path;      // taew2_2 GGUF (streaming pixel decoder)
+    const char* scene_path;      // scene pack safetensors (prompt/first-frame/ref latents)
+    const char* backend;         // backend spec string (NULL/"" = default, e.g. "cpu", "cuda")
+    int n_threads;               // <= 0: physical cores
+    int64_t seed;                // walk noise seed
+    int num_frame_per_block;     // <= 0: model default (3)
+    int local_attn_size;         // <= 0: scene/deploy default; latent-frame window
+    bool offload_params_to_cpu;
+} sd_abot_session_params_t;
+
+SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);
+SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params);
+// Generate the next block under `action_mask` (bit 0..7 = W,A,S,D,I,J,K,L held).
+// Returns a malloc'd array of `*num_frames_out` RGB frames (free each .data and
+// the array with sd_abot_session_frames_free), or NULL on failure.
+SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
+                                        uint32_t action_mask,
+                                        int* num_frames_out);
+SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
+SD_API void sd_abot_session_free(sd_abot_session_t* session);
+
 SD_API bool convert(const char* input_path,
                     const char* vae_path,
                     const char* output_path,
