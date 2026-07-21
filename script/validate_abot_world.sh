@@ -33,8 +33,16 @@ set -e
 grep -q "ABot-World-5B"                                  "$log" || fail "not detected as ABot-World-5B"
 grep -q "loading tensors completed"                      "$log" || fail "tensor load did not complete"
 grep -qi "wrong shape\|not in model file"                "$log" && fail "tensor shape/name mismatch on load"
-grep -q "not supported by batch generate_video"          "$log" || fail "missing the guarded-rejection error"
-echo "PASS: ABot-World detected, all tensors loaded, batch path correctly rejected."
+grep -q "not supported by batch"                         "$log" || fail "missing the guarded-rejection error"
+echo "PASS: ABot-World detected, all tensors loaded, batch video path correctly rejected."
+
+echo "== ABot-World: batch image path must be rejected too =="
+set +e
+"$SD_CLI" -M img_gen --diffusion-model "$ABOT_DIT" --vae "$ABOT_VAE" \
+  --t5xxl "$ABOT_T5" -p "a coastal street at dusk" -W 480 -H 832 -v >"$log" 2>&1
+set -e
+grep -q "not supported by batch" "$log" || fail "generate_image() not rejected for ABot-World"
+echo "PASS: batch image path correctly rejected."
 
 if [[ -n "${WAN_DIT:-}" ]]; then
   echo "== Regression: stock Wan still generates =="
@@ -42,7 +50,7 @@ if [[ -n "${WAN_DIT:-}" ]]; then
   "$SD_CLI" -M vid_gen --diffusion-model "$WAN_DIT" --vae "${WAN_VAE:?}" \
     --t5xxl "${WAN_T5:?}" -p "a bird flying" -W 480 -H 832 --video-frames 9 \
     -o "$out" -v >"$log" 2>&1 || fail "stock Wan generation failed (regression!)"
-  grep -qi "not supported by batch generate_video" "$log" && fail "stock Wan wrongly rejected (regression!)"
+  grep -qi "not supported by batch" "$log" && fail "stock Wan wrongly rejected (regression!)"
   echo "PASS: stock Wan generation unaffected."
 fi
 

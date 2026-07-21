@@ -3102,10 +3102,18 @@ struct sd_ctx_t {
 };
 
 static bool sd_version_supports_video_generation(SDVersion version) {
+    // ABot-World loads like a Wan model but is causal/interactive-only: it
+    // supports neither batch capability until the causal session API lands.
+    if (sd_version_is_abot_world(version)) {
+        return false;
+    }
     return version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_ltxav(version);
 }
 
 static bool sd_version_supports_image_generation(SDVersion version) {
+    if (sd_version_is_abot_world(version)) {
+        return false;
+    }
     return !sd_version_supports_video_generation(version);
 }
 
@@ -3510,7 +3518,25 @@ struct GenerationRequest {
         valid = false;
     }
 
+    // ABot-World is a causal/interactive model: it must be driven block-by-block
+    // with a KV cache, per-block keyboard actions, and its distilled 4-step
+    // schedule. Both batch entrypoints (generate_image and generate_video) build
+    // a GenerationRequest, so rejecting here covers every batch door with one
+    // check; running these weights through the batch recipes would silently
+    // produce corrupted output. Model loading and inspection remain supported.
+    void reject_abot_world_batch_generation(sd_ctx_t* sd_ctx) {
+        if (!sd_version_is_abot_world(sd_ctx->sd->version)) {
+            return;
+        }
+        LOG_ERROR(
+            "ABot-World models are not supported by batch generate_image()/generate_video(); "
+            "the causal interactive session API is not implemented yet "
+            "(model loading and inspection are supported)");
+        valid = false;
+    }
+
     void resolve(sd_ctx_t* sd_ctx) {
+        reject_abot_world_batch_generation(sd_ctx);
         align_generation_request_size();
         resolve_hires();
         seed = resolve_seed(seed);
@@ -5392,17 +5418,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         *num_frames_out = 0;
     }
     int64_t t0                    = ggml_time_ms();
-    if (sd_version_is_abot_world(sd_ctx->sd->version)) {
-        // ABot-World is a causal/interactive model: it must be driven
-        // block-by-block with a KV cache, per-block keyboard actions, and its
-        // distilled 4-step schedule. Running it through the batch video path
-        // executes the wrong recipe and produces corrupted output.
-        LOG_ERROR("ABot-World models are not supported by batch generate_video(); "
-                  "the causal interactive session API is not implemented yet "
-                  "(model loading and inspection are supported)");
-        return false;
-    }
     sd_ctx->sd->vae_tiling_params = sd_vid_gen_params->vae_tiling_params;
+    // ABot-World (causal/interactive-only) is rejected inside
+    // GenerationRequest::resolve(), which covers generate_image() too.
     GenerationRequest request(sd_ctx, sd_vid_gen_params);
     if (!request.valid) {
         return false;

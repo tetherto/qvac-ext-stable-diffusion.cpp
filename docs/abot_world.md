@@ -13,10 +13,13 @@ loading (F16 / Q8_0 GGUF or safetensors), including the extra
 Wan2.2-TI2V latent space (48ch, 16x) and VAE.
 
 **Not yet supported:** actual generation. ABot-World cannot run through the
-batch `generate_video()` path — that path is bidirectional/one-shot, whereas
-ABot needs a stateful causal session (KV cache, per-block action injection, its
-distilled 4-step schedule). Calling `generate_video()` on an ABot model returns
-a clear error. The interactive session API is a planned follow-up.
+batch paths — those are bidirectional/one-shot, whereas ABot needs a stateful
+causal session (KV cache, per-block action injection, its distilled 4-step
+schedule). Both batch entrypoints reject ABot models with a clear error at the
+shared `GenerationRequest` stage, and the capability queries
+(`sd_ctx_supports_image_generation` / `sd_ctx_supports_video_generation`)
+report `false`, so front-ends pre-screen it consistently. The interactive
+session API is a planned follow-up.
 
 ## Detection
 
