@@ -137,6 +137,10 @@ int main(int argc, char** argv) {
 
     ABOT::AbotWorldConfig cfg;  // window 8 / 3 fpb — matches the golden test config
     ABOT::AbotWorldRunner runner(be, pbe, ml.get_tensor_storage_map(), "model.diffusion_model.", cfg);
+    if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
+        runner.set_flash_attention_enabled(true);
+        printf("flash attention enabled\n");
+    }
     if (!runner.alloc_params_buffer()) {
         fprintf(stderr, "alloc params failed\n");
         return 1;
@@ -245,7 +249,11 @@ int main(int argc, char** argv) {
     }
     printf("]\n");
 
-    auto flow = runner.forward_step(frames, actions, tframes, Fb, n_threads);
+    std::vector<int64_t> abs_ids(frames.size());
+    for (size_t i = 0; i < abs_ids.size(); i++) {
+        abs_ids[i] = static_cast<int64_t>(i);  // full contiguous history
+    }
+    auto flow = runner.forward_step(frames, actions, tframes, abs_ids, Fb, n_threads);
     if (flow.empty()) {
         fprintf(stderr, "forward failed\n");
         return 1;

@@ -143,6 +143,10 @@ int main(int argc, char** argv) {
     ABOT::AbotWorldRunner runner(backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
                                  backend_manager.params_backend(SDBackendModule::DIFFUSION),
                                  ml.get_tensor_storage_map(), "model.diffusion_model.", cfg);
+    if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
+        runner.set_flash_attention_enabled(true);
+        printf("flash attention enabled\n");
+    }
     if (!runner.alloc_params_buffer()) {
         return 1;
     }
@@ -217,7 +221,11 @@ int main(int argc, char** argv) {
                 fts.push_back(first && f == 0 ? 0.0f : t_cur);
             }
 
-            auto flow = runner.forward_step(frames, facts, fts, Fb, n_threads);
+            std::vector<int64_t> abs_ids(frames.size());
+            for (size_t i = 0; i < abs_ids.size(); i++) {
+                abs_ids[i] = static_cast<int64_t>(i);  // full contiguous history
+            }
+            auto flow = runner.forward_step(frames, facts, fts, abs_ids, Fb, n_threads);
             if (flow.empty()) {
                 fprintf(stderr, "forward failed (block %zu step %zu)\n", b, s);
                 return 1;

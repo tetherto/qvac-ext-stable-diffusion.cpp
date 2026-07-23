@@ -38,8 +38,10 @@
 #include <string>
 #include <vector>
 
+#include <array>
 #include <functional>
 #include <random>
+#include <thread>
 
 #include "ggml_extend.hpp"
 #include "model.h"
@@ -58,6 +60,15 @@ struct AbotWorldConfig {
     std::vector<float> denoise_steps = {1000.0f, 937.5f, 833.3333333f, 625.0f};
     int act_in_dim           = 32;    // 8 keys x 4 (repeat_interleave)
     int act_downscale_factor = 16;
+    // Frames of finalized history fed into each block's graph, in addition to
+    // walk block 0 (always pinned: ref rows re-derive their K/V against it).
+    // 0 = local_attn_size (bounded memory: the current block's window is exact,
+    // older frames' K/V lose context beyond the kept set - a second-order
+    // effect; for walks <= local_attn_size + num_frame_per_block frames the
+    // kept set equals the full history, so short walks are unchanged).
+    // < 0 = unbounded (previous behavior: full-history recompute, VRAM grows
+    // every block until OOM).
+    int history_keep = 0;
 };
 
 static inline float abot_sigma_of_t(float t) {
@@ -180,6 +191,16 @@ public:
     // attn_mask:  ne {L, L} additive f32 (built host-side)
     // token_frame_rows: ne {L} int32 -> row in the timestep table (ref rows -> F_vis)
     // returns flow tokens for the LAST block_frames frames: {pt*ph*pw*out_dim, block_tokens, 1}
+    // Optional KV-cache hooks (ABot walk):
+    //  - kv_ctx_provider(layer, &k_ctx, &v_ctx): supplies cached context K/V for
+    //    the layer ({d_head, T_ctx, n_head} / {T_ctx, d_head, n_head}); when set,
+    //    the layer runs forward_cached and attends [ctx | rows].
+    //  - kv_capture_sink(layer, k_cur, v_cur): receives this graph's roped K /
+    //    per-token V of the visible rows for persisting into the cache.
+    // Both null -> the original full-recompute path, bit-for-bit.
+    using KvCtxProvider = std::function<void(int, ggml_tensor**, ggml_tensor**)>;
+    using KvCaptureSink = std::function<void(int, ggml_tensor*, ggml_tensor*)>;
+
     ggml_tensor* forward_causal(GGMLRunnerContext* ctx,
                                 ggml_tensor* x_all,
                                 ggml_tensor* act_planes,
@@ -192,7 +213,9 @@ public:
                                 ggml_tensor* token_frame_rows,
                                 int block_frames,
                                 int64_t& out_h_len,
-                                int64_t& out_w_len) {
+                                int64_t& out_w_len,
+                                const KvCtxProvider& kv_ctx_provider = nullptr,
+                                const KvCaptureSink& kv_capture_sink = nullptr) {
         auto gctx = ctx->ggml_ctx;
 
         auto patch_embedding  = std::dynamic_pointer_cast<Conv3d>(blocks["patch_embedding"]);
@@ -253,7 +276,23 @@ public:
         // ── transformer ──
         for (int i = 0; i < params.num_layers; i++) {
             auto block = std::dynamic_pointer_cast<WAN::WanAttentionBlock>(blocks["blocks." + std::to_string(i)]);
-            x          = block->forward(ctx, x, e0_tok, pe, c, 0, attn_mask);
+            if (kv_ctx_provider == nullptr && kv_capture_sink == nullptr) {
+                x = block->forward(ctx, x, e0_tok, pe, c, 0, attn_mask);
+            } else {
+                ggml_tensor* k_ctx = nullptr;
+                ggml_tensor* v_ctx = nullptr;
+                if (kv_ctx_provider != nullptr) {
+                    kv_ctx_provider(i, &k_ctx, &v_ctx);
+                }
+                ggml_tensor* k_cur = nullptr;
+                ggml_tensor* v_cur = nullptr;
+                x = block->forward_cached(ctx, x, e0_tok, pe, c, 0, attn_mask, k_ctx, v_ctx,
+                                          kv_capture_sink != nullptr ? &k_cur : nullptr,
+                                          kv_capture_sink != nullptr ? &v_cur : nullptr);
+                if (kv_capture_sink != nullptr) {
+                    kv_capture_sink(i, k_cur, v_cur);
+                }
+            }
         }
 
         // ── head over the trailing block tokens only ──
@@ -313,10 +352,13 @@ struct AbotWorldRunner : public GGMLRunner {
     // ---- host-side helpers ----
 
     // Per-token 3-axis rope ids: ref slots at negative constant times (the
-    // reference's _build_ref_freqs), video frames at absolute frame ids (the
-    // reference's REL_ROPE_CACHE fast path with base 0; valid for walks well
-    // below the re-base threshold of ~256 frames).
-    std::vector<float> build_pe(int n_ref_slots, int ref_grid, int F_vis, int h_len, int w_len) {
+    // reference's _build_ref_freqs), video frames at their ABSOLUTE frame ids
+    // (the reference's REL_ROPE_CACHE fast path with base 0; valid for walks
+    // well below the re-base threshold of ~256 frames). With a trimmed history
+    // the visible frames are non-contiguous; absolute ids keep every pairwise
+    // rotary distance identical to the full-history graph.
+    std::vector<float> build_pe(int n_ref_slots, int ref_grid,
+                                const std::vector<int64_t>& frame_abs_ids, int h_len, int w_len) {
         std::vector<std::vector<float>> ids;
         const int tokens_per_slot = ref_grid * ref_grid;
         const int t_step          = std::max(tokens_per_slot, 256);
@@ -328,10 +370,10 @@ struct AbotWorldRunner : public GGMLRunner {
                 }
             }
         }
-        for (int f = 0; f < F_vis; f++) {
+        for (int64_t abs_f : frame_abs_ids) {
             for (int hh = 0; hh < h_len; hh++) {
                 for (int ww = 0; ww < w_len; ww++) {
-                    ids.push_back({static_cast<float>(f), static_cast<float>(hh), static_cast<float>(ww)});
+                    ids.push_back({static_cast<float>(abs_f), static_cast<float>(hh), static_cast<float>(ww)});
                 }
             }
         }
@@ -340,27 +382,33 @@ struct AbotWorldRunner : public GGMLRunner {
 
     // Additive mask {L(k), L(q)}: video rows of block b attend ref + frames of
     // blocks <= b inside b's trailing window; ref rows attend ref + block 0.
-    std::vector<float> build_mask(int n_ref, int F_vis, int fsl, int block_frames) {
+    // Frames are identified by their ABSOLUTE walk ids (frame_abs_ids per
+    // visible slot) so the window rules stay correct with a trimmed history;
+    // with the full history present the mask is identical to the untrimmed one.
+    std::vector<float> build_mask(int n_ref, const std::vector<int64_t>& frame_abs_ids, int fsl) {
+        const int F_vis = static_cast<int>(frame_abs_ids.size());
         const int64_t L = n_ref + static_cast<int64_t>(F_vis) * fsl;
         std::vector<float> mask(static_cast<size_t>(L) * L, -INFINITY);
-        auto frame_of = [&](int64_t tok) -> int {  // -1 for ref tokens
+        auto frame_of = [&](int64_t tok) -> int {  // visible slot; -1 for ref tokens
             return tok < n_ref ? -1 : static_cast<int>((tok - n_ref) / fsl);
         };
         for (int64_t q = 0; q < L; q++) {
-            int fq = frame_of(q);
-            int bq = fq < 0 ? 0 : fq / cfg.num_frame_per_block;
-            // trailing window (in frames) as seen when block bq was generated
-            int hi = (bq + 1) * cfg.num_frame_per_block;  // frames [0, hi)
-            int lo = std::max(0, hi - cfg.local_attn_size);
+            int fq         = frame_of(q);
+            int64_t abs_fq = fq < 0 ? 0 : frame_abs_ids[fq];
+            int64_t bq     = fq < 0 ? 0 : abs_fq / cfg.num_frame_per_block;
+            // trailing window (in absolute frames) as seen when block bq was generated
+            int64_t hi = (bq + 1) * cfg.num_frame_per_block;  // frames [0, hi)
+            int64_t lo = std::max<int64_t>(0, hi - cfg.local_attn_size);
             for (int64_t k = 0; k < L; k++) {
                 int fk       = frame_of(k);
                 bool allowed = false;
                 if (fk < 0) {
                     allowed = true;  // ref keys visible to everyone
                 } else if (fq < 0) {
-                    allowed = fk < cfg.num_frame_per_block;  // ref rows formed with block 0
+                    allowed = frame_abs_ids[fk] < cfg.num_frame_per_block;  // ref rows formed with block 0
                 } else {
-                    allowed = fk >= lo && fk < hi;
+                    int64_t abs_fk = frame_abs_ids[fk];
+                    allowed        = abs_fk >= lo && abs_fk < hi;
                 }
                 if (allowed) {
                     mask[static_cast<size_t>(q) * L + k] = 0.0f;
@@ -390,6 +438,7 @@ struct AbotWorldRunner : public GGMLRunner {
     sd::Tensor<float> forward_step(const std::vector<const float*>& frame_latents,  // F_vis pointers {W*H*C}
                                    const std::vector<uint8_t>& frame_actions,
                                    const std::vector<float>& frame_timesteps,  // F_vis values
+                                   const std::vector<int64_t>& frame_abs_ids,  // F_vis absolute walk frame ids
                                    int block_frames,
                                    int n_threads) {
         const int F_vis = static_cast<int>(frame_latents.size());
@@ -438,8 +487,8 @@ struct AbotWorldRunner : public GGMLRunner {
                       rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
         }
 
-        pe_vec                  = build_pe(scene.ref_slots, 16, F_vis, h_len, w_len);
-        std::vector<float> mask = build_mask(n_ref, F_vis, fsl, block_frames);
+        pe_vec                  = build_pe(scene.ref_slots, 16, frame_abs_ids, h_len, w_len);
+        std::vector<float> mask = build_mask(n_ref, frame_abs_ids, fsl);
         const int64_t L         = n_ref + static_cast<int64_t>(F_vis) * fsl;
 
         // ---- graph ----
@@ -478,6 +527,238 @@ struct AbotWorldRunner : public GGMLRunner {
         }
         return std::move(*result);
     }
+
+    // ── KV-cache walk path ───────────────────────────────────────────────────
+    // Cache layout (fixed): per layer i,
+    //   abot.kv.l{i}.{k,v}.base : refs + walk block 0 (n_ref + Fb*fsl tokens)
+    //   abot.kv.l{i}.{k,v}.r{s} : one finalized frame per ring slot, s in
+    //                             [0, ring_slots) rotating oldest-first
+    // K stored {d_head, T, n_head} (roped), V stored {T, d_head, n_head}.
+    // The mask column layout every cached graph uses:
+    //   [ base(refs + block0) | r0..r{R-1} | current rows ]
+    static constexpr int kv_ring_slots = 5;  // window(8) - fpb(3): the current
+                                             // block's exact trailing window
+
+    enum class KvMode {
+        INIT_CAPTURE,  // rows = [refs | clean block0]; captures base, no read
+        DENOISE,       // rows = current noisy block; reads cache
+        APPEND,        // rows = current clean block (t=0); reads cache, captures ring
+    };
+
+    static std::string kv_name(int layer, bool is_k, const std::string& slot) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "abot.kv.l%02d.%s.%s", layer, is_k ? "k" : "v", slot.c_str());
+        return buf;
+    }
+
+    // Additive mask {T_kv, L_q} for the cached graphs. Columns follow the fixed
+    // cache layout; rows are the current block's tokens. Window rules match
+    // build_mask (absolute frame ids); unwritten ring slots (abs < 0) and
+    // out-of-window frames get -INF.
+    std::vector<float> build_mask_kv(int n_ref, int fsl,
+                                     const std::array<int64_t, kv_ring_slots>& ring_abs,
+                                     const std::vector<int64_t>& cur_abs) {
+        const int Fb       = cfg.num_frame_per_block;
+        const int64_t L_q  = static_cast<int64_t>(cur_abs.size()) * fsl;
+        const int64_t T_kv = n_ref + static_cast<int64_t>(Fb + kv_ring_slots + cur_abs.size()) * fsl;
+        std::vector<float> mask(static_cast<size_t>(T_kv) * L_q, -INFINITY);
+        // per-column absolute frame id; -1 = ref (always visible), -2 = empty
+        std::vector<int64_t> col_abs(static_cast<size_t>(T_kv));
+        int64_t c = 0;
+        for (int i = 0; i < n_ref; i++) {
+            col_abs[c++] = -1;
+        }
+        for (int f = 0; f < Fb; f++) {  // pinned block 0
+            std::fill_n(col_abs.begin() + c, fsl, static_cast<int64_t>(f));
+            c += fsl;
+        }
+        for (int s = 0; s < kv_ring_slots; s++) {
+            std::fill_n(col_abs.begin() + c, fsl, ring_abs[static_cast<size_t>(s)] < 0 ? -2 : ring_abs[static_cast<size_t>(s)]);
+            c += fsl;
+        }
+        for (int64_t a : cur_abs) {
+            std::fill_n(col_abs.begin() + c, fsl, a);
+            c += fsl;
+        }
+        for (int64_t q = 0; q < L_q; q++) {
+            const int64_t aq = cur_abs[static_cast<size_t>(q / fsl)];
+            const int64_t bq = aq / Fb;
+            const int64_t hi = (bq + 1) * Fb;
+            const int64_t lo = std::max<int64_t>(0, hi - cfg.local_attn_size);
+            float* row       = mask.data() + static_cast<size_t>(q) * T_kv;
+            for (int64_t k = 0; k < T_kv; k++) {
+                const int64_t ak = col_abs[static_cast<size_t>(k)];
+                if (ak == -1 || (ak >= lo && ak < hi)) {
+                    row[k] = 0.0f;
+                }
+            }
+        }
+        return mask;
+    }
+
+    // One cached-walk forward. DENOISE returns flow tokens for the block;
+    // INIT_CAPTURE/APPEND return the (discarded) flow but persist K/V.
+    sd::Tensor<float> forward_step_kv(KvMode mode,
+                                      const std::vector<const float*>& frame_latents,  // Fb pointers
+                                      uint8_t action_mask,
+                                      const std::vector<float>& frame_timesteps,       // Fb values
+                                      const std::vector<int64_t>& frame_abs_ids,       // Fb values
+                                      const std::array<int64_t, kv_ring_slots>& ring_abs,
+                                      const std::vector<int>& ring_write_slots,        // APPEND: slot per frame
+                                      int n_threads) {
+        const int Fb    = cfg.num_frame_per_block;
+        const int F_cur = static_cast<int>(frame_latents.size());
+        const int ds    = cfg.act_downscale_factor;
+        const int c_unsh = cfg.act_in_dim * ds * ds;
+        int h_len       = static_cast<int>(lat_h) / 2;
+        int w_len       = static_cast<int>(lat_w) / 2;
+        int fsl         = h_len * w_len;
+        const bool with_refs = mode == KvMode::INIT_CAPTURE;
+        // ref tokens present as graph ROWS only in the init pass; as mask/cache
+        // COLUMNS they are always part of the cached base
+        const int n_ref_cols = scene.ref_slots * 16 * 16;
+        int n_ref            = with_refs ? n_ref_cols : 0;
+
+        sd::Tensor<float> x_all({lat_w, lat_h, F_cur, lat_c});
+        for (int f = 0; f < F_cur; f++) {
+            for (int64_t ch = 0; ch < lat_c; ch++) {
+                float* dst       = x_all.data() + (ch * F_cur + f) * lat_w * lat_h;
+                const float* src = frame_latents[static_cast<size_t>(f)] + ch * lat_w * lat_h;
+                memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
+            }
+        }
+        sd::Tensor<float> act({lat_w, lat_h, c_unsh, F_cur});
+        for (int f = 0; f < F_cur; f++) {
+            fill_act_plane(act.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
+                           action_mask, static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
+        }
+        sd::Tensor<float> tvec({F_cur + 1});
+        for (int f = 0; f < F_cur; f++) {
+            tvec.data()[f] = frame_timesteps[static_cast<size_t>(f)];
+        }
+        tvec.data()[F_cur] = 0.0f;
+
+        std::vector<int32_t> rows(static_cast<size_t>(n_ref) + static_cast<size_t>(F_cur) * fsl);
+        for (int i = 0; i < n_ref; i++) {
+            rows[i] = F_cur;
+        }
+        for (int f = 0; f < F_cur; f++) {
+            std::fill(rows.begin() + n_ref + static_cast<size_t>(f) * fsl,
+                      rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
+        }
+
+        pe_vec = build_pe(with_refs ? scene.ref_slots : 0, 16, frame_abs_ids, h_len, w_len);
+        std::vector<float> mask;
+        if (mode == KvMode::INIT_CAPTURE) {
+            mask = build_mask(n_ref, frame_abs_ids, fsl);  // original full block-0 mask
+        } else {
+            mask = build_mask_kv(n_ref_cols, fsl, ring_abs, frame_abs_ids);
+        }
+        const int64_t L_q  = n_ref + static_cast<int64_t>(F_cur) * fsl;
+        const int64_t T_kv = static_cast<int64_t>(mask.size()) / L_q;
+
+        // zero fill for unwritten ring slots (shared per graph)
+        sd::Tensor<float> zero_k({static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
+                                  static_cast<int64_t>(fsl), wan_params.num_heads});
+        sd::Tensor<float> zero_v({static_cast<int64_t>(fsl),
+                                  static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
+                                  wan_params.num_heads});
+        std::fill_n(zero_k.data(), zero_k.numel(), 0.0f);
+        std::fill_n(zero_v.data(), zero_v.numel(), 0.0f);
+
+        int64_t out_h = 0, out_w = 0;
+        auto get_graph = [&]() -> ggml_cgraph* {
+            ggml_cgraph* gf     = ggml_new_graph_custom(compute_ctx, WAN::WAN_GRAPH_SIZE, false);
+            ggml_tensor* x_in   = to_backend_input(x_all);
+            ggml_tensor* act_in = to_backend_input(act);
+            ggml_tensor* t_in   = to_backend_input(tvec);
+            ggml_tensor* ctx_in = to_backend_input(scene.prompt_embeds);
+            ggml_tensor* ref_in = nullptr;
+            ggml_tensor* rm_in  = nullptr;
+            if (with_refs && scene.ref_slots > 0) {
+                ref_in = to_backend_input(scene.ref_latents);
+                rm_in  = to_backend_input(scene.ref_mask);
+            }
+            ggml_tensor* pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2,
+                                                 wan_params.axes_dim_sum / 2,
+                                                 static_cast<int64_t>(pe_vec.size()) / wan_params.axes_dim_sum / 2);
+            set_backend_tensor_data(pe, pe_vec.data());
+            ggml_tensor* mk = ggml_new_tensor_2d(compute_ctx, GGML_TYPE_F32, T_kv, L_q);
+            set_backend_tensor_data(mk, mask.data());
+            ggml_tensor* rw = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_I32, static_cast<int64_t>(rows.size()));
+            set_backend_tensor_data(rw, rows.data());
+
+            ggml_tensor* zk_in = nullptr;
+            ggml_tensor* zv_in = nullptr;
+            if (mode != KvMode::INIT_CAPTURE) {
+                zk_in = to_backend_input(zero_k);
+                zv_in = to_backend_input(zero_v);
+            }
+
+            auto runner_ctx = get_context();
+
+            AbotWan::KvCtxProvider provider = nullptr;
+            if (mode != KvMode::INIT_CAPTURE) {
+                provider = [&, zk_in, zv_in](int layer, ggml_tensor** k_ctx, ggml_tensor** v_ctx) {
+                    ggml_tensor* k_all = runner_ctx.get_cache_tensor(kv_name(layer, true, "base"));
+                    ggml_tensor* v_all = runner_ctx.get_cache_tensor(kv_name(layer, false, "base"));
+                    GGML_ASSERT(k_all != nullptr && v_all != nullptr);
+                    for (int s = 0; s < kv_ring_slots; s++) {
+                        ggml_tensor* ks = nullptr;
+                        ggml_tensor* vs = nullptr;
+                        if (ring_abs[static_cast<size_t>(s)] >= 0) {
+                            ks = runner_ctx.get_cache_tensor(kv_name(layer, true, "r" + std::to_string(s)));
+                            vs = runner_ctx.get_cache_tensor(kv_name(layer, false, "r" + std::to_string(s)));
+                        }
+                        k_all = ggml_concat(compute_ctx, k_all, ks != nullptr ? ks : zk_in, 1);
+                        v_all = ggml_concat(compute_ctx, v_all, vs != nullptr ? vs : zv_in, 0);
+                    }
+                    *k_ctx = k_all;
+                    *v_ctx = v_all;
+                };
+            }
+
+            AbotWan::KvCaptureSink sink = nullptr;
+            std::vector<std::pair<std::string, ggml_tensor*>>* captures = &pending_kv_captures;
+            captures->clear();
+            if (mode == KvMode::INIT_CAPTURE) {
+                sink = [&, captures](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
+                    captures->push_back({kv_name(layer, true, "base"), k_cur});
+                    captures->push_back({kv_name(layer, false, "base"), v_cur});
+                };
+            } else if (mode == KvMode::APPEND) {
+                sink = [&, captures](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
+                    for (int f = 0; f < F_cur; f++) {
+                        const std::string slot = "r" + std::to_string(ring_write_slots[static_cast<size_t>(f)]);
+                        ggml_tensor* kf = ggml_ext_cont(compute_ctx,
+                                                        ggml_ext_slice(compute_ctx, k_cur, 1, f * fsl, (f + 1) * fsl));
+                        ggml_tensor* vf = ggml_ext_cont(compute_ctx,
+                                                        ggml_ext_slice(compute_ctx, v_cur, 0, f * fsl, (f + 1) * fsl));
+                        captures->push_back({kv_name(layer, true, slot), kf});
+                        captures->push_back({kv_name(layer, false, slot), vf});
+                    }
+                };
+            }
+
+            ggml_tensor* out = wan.forward_causal(&runner_ctx, x_in, act_in, t_in, ctx_in,
+                                                  ref_in, rm_in, pe, mk, rw, Fb, out_h, out_w,
+                                                  provider, sink);
+            ggml_build_forward_expand(gf, out);
+            for (auto& cap : *captures) {
+                ggml_build_forward_expand(gf, cap.second);
+                this->cache(cap.first, cap.second);
+            }
+            return gf;
+        };
+
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        if (!result.has_value()) {
+            return {};
+        }
+        return std::move(*result);
+    }
+
+    std::vector<std::pair<std::string, ggml_tensor*>> pending_kv_captures;
 
 private:
     template <typename T>
@@ -555,6 +836,50 @@ public:
     std::vector<std::vector<float>> history;
     std::vector<uint8_t> history_actions;
 
+    // KV-cache walk state (ABOT_KV_CACHE=1): ring of finalized-frame K/V slots
+    bool kv_enabled = false;
+    std::array<int64_t, AbotWorldRunner::kv_ring_slots> kv_ring_abs{};
+    int kv_ring_next = 0;
+    // deferred cache append for the newest block (run after/parallel to decode)
+    bool kv_append_pending = false;
+    std::vector<std::vector<float>> kv_append_frames;
+    uint8_t kv_append_action = 0;
+
+    // Run the deferred cache-append pass for the newest finalized block.
+    bool kv_run_append() {
+        if (!kv_append_pending) {
+            return true;
+        }
+        kv_append_pending = false;
+        const int Fb      = cfg.num_frame_per_block;
+        const int64_t total = static_cast<int64_t>(history.size());
+        std::vector<const float*> frames;
+        std::vector<float> fts;
+        std::vector<int64_t> abs_ids;
+        std::vector<int> write_slots;
+        for (int f = 0; f < Fb; f++) {
+            frames.push_back(kv_append_frames[static_cast<size_t>(f)].data());
+            fts.push_back(cfg.context_noise_t);
+            abs_ids.push_back(total - Fb + f);
+            write_slots.push_back(kv_ring_next);
+            kv_ring_next = (kv_ring_next + 1) % AbotWorldRunner::kv_ring_slots;
+        }
+        // the append pass reads the PRE-append ring; slots being overwritten
+        // this block are already outside every current row's window
+        auto ring_before = kv_ring_abs;
+        auto flow        = runner->forward_step_kv(AbotWorldRunner::KvMode::APPEND,
+                                                   frames, kv_append_action, fts, abs_ids,
+                                                   ring_before, write_slots, n_threads);
+        for (int f = 0; f < Fb; f++) {
+            kv_ring_abs[static_cast<size_t>(write_slots[static_cast<size_t>(f)])] = abs_ids[static_cast<size_t>(f)];
+        }
+        if (flow.empty()) {
+            LOG_ERROR("abot session: kv append pass failed");
+            return false;
+        }
+        return true;
+    }
+
     bool load(ggml_backend_t runtime_backend,
               ggml_backend_t params_backend,
               ggml_backend_t vae_backend,
@@ -577,6 +902,25 @@ public:
         runner = std::make_unique<AbotWorldRunner>(runtime_backend, params_backend,
                                                    ml.get_tensor_storage_map(),
                                                    "model.diffusion_model.", cfg);
+        // Opt-in flash attention for the walk graph (ABOT_FLASH_ATTN=1). The
+        // masked self-attention path supports it (2D additive mask); it avoids
+        // materializing the L x L logits + softmax, cutting both time and VRAM.
+        // KNOWN ISSUE: parity passes for block 0 but collapses for any block
+        // with history (cosine ~0.2 vs goldens on CUDA) - the flash path
+        // mishandles the walk's history mask. Left opt-in for debugging only.
+        if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
+            runner->set_flash_attention_enabled(true);
+            LOG_INFO("abot session: flash attention enabled");
+        }
+        // Opt-in per-layer KV cache for the walk (ABOT_KV_CACHE=1): history
+        // K/V are captured once per finalized block instead of recomputed
+        // every denoise step, so steady-state block graphs carry only the
+        // current block's rows (~3.7x fewer frame-passes per block).
+        if (const char* kc = std::getenv("ABOT_KV_CACHE"); kc != nullptr && kc[0] == '1') {
+            kv_enabled = true;
+            kv_ring_abs.fill(-1);
+            LOG_INFO("abot session: KV cache enabled (ring %d frames)", AbotWorldRunner::kv_ring_slots);
+        }
         if (!runner->alloc_params_buffer()) {
             return false;
         }
@@ -638,23 +982,68 @@ public:
             }
         }
 
+        // Flush a deferred KV append (normally overlapped with decode in step())
+        if (kv_enabled && !kv_run_append()) {
+            return false;
+        }
+
+        // KV-cache fast path: blocks after the first attend cached context K/V,
+        // so each denoise graph carries only the current block's rows. Block 0
+        // (and the non-KV mode) uses the recompute graph below.
+        const bool kv_fast = kv_enabled && !first;
+
+        // Bounded history: feed walk block 0 (pinned - ref rows re-derive their
+        // K/V against it, and its own window is just refs + itself, so it stays
+        // exact) plus the trailing `keep` finalized frames (the current block's
+        // full attention window). The union covers the whole history for short
+        // walks, so goldens/parity are unaffected; beyond that the graph size
+        // is constant instead of growing every block (which OOM'd a 32 GiB GPU
+        // at block 5 at 832x480 F16). history_keep < 0 restores full history.
+        std::vector<size_t> kept;
+        const int keep = cfg.history_keep == 0 ? cfg.local_attn_size : cfg.history_keep;
+        if (!kv_fast) {
+            if (keep < 0) {
+                for (size_t h = 0; h < history.size(); h++) {
+                    kept.push_back(h);
+                }
+            } else {
+                const size_t tail = history.size() > static_cast<size_t>(keep)
+                                        ? history.size() - static_cast<size_t>(keep)
+                                        : 0;
+                for (size_t h = 0; h < history.size(); h++) {
+                    if (h < static_cast<size_t>(Fb) || h >= tail) {
+                        kept.push_back(h);
+                    }
+                }
+            }
+        }
+
         for (size_t s = 0; s < cfg.denoise_steps.size(); s++) {
             const float t_cur = cfg.denoise_steps[s];
             std::vector<const float*> frames;
             std::vector<uint8_t> facts;
             std::vector<float> fts;
-            for (size_t h = 0; h < history.size(); h++) {
-                frames.push_back(history[h].data());
-                facts.push_back(history_actions[h]);
-                fts.push_back(cfg.context_noise_t);
+            std::vector<int64_t> abs_ids;
+            if (!kv_fast) {
+                for (size_t h : kept) {
+                    frames.push_back(history[h].data());
+                    facts.push_back(history_actions[h]);
+                    fts.push_back(cfg.context_noise_t);
+                    abs_ids.push_back(static_cast<int64_t>(h));
+                }
             }
             for (int f = 0; f < Fb; f++) {
                 frames.push_back(xt.data() + static_cast<size_t>(f) * fel);
                 facts.push_back(action_mask);
                 fts.push_back(first && f == 0 ? 0.0f : t_cur);
+                abs_ids.push_back(static_cast<int64_t>(history.size()) + f);
             }
 
-            auto flow = runner->forward_step(frames, facts, fts, Fb, n_threads);
+            auto flow = kv_fast
+                            ? runner->forward_step_kv(AbotWorldRunner::KvMode::DENOISE,
+                                                      frames, action_mask, fts, abs_ids,
+                                                      kv_ring_abs, {}, n_threads)
+                            : runner->forward_step(frames, facts, fts, abs_ids, Fb, n_threads);
             if (flow.empty()) {
                 LOG_ERROR("abot session: forward failed (block %d step %zu)", block, s);
                 return false;
@@ -665,7 +1054,7 @@ public:
             const int h_len = H / 2, w_len = W / 2;
             std::vector<float> x0(static_cast<size_t>(Fb) * fel);
             for (int f = 0; f < Fb; f++) {
-                float sigma     = abot_sigma_of_t(fts[history.size() + f]);
+                float sigma     = abot_sigma_of_t(fts[fts.size() - static_cast<size_t>(Fb) + f]);
                 const float* xf = xt.data() + static_cast<size_t>(f) * fel;
                 float* of       = x0.data() + static_cast<size_t>(f) * fel;
                 for (int hh = 0; hh < h_len; hh++) {
@@ -706,6 +1095,32 @@ public:
                                     xt.begin() + static_cast<long long>(f + 1) * fel);
             history.push_back(out_frames.back());
             history_actions.push_back(action_mask);
+        }
+
+        if (kv_enabled) {
+            if (first) {
+                // initial cache fill: refs + clean block 0 at t = 0
+                std::vector<const float*> cframes;
+                std::vector<float> cfts;
+                std::vector<int64_t> cabs;
+                for (int f = 0; f < Fb; f++) {
+                    cframes.push_back(out_frames[static_cast<size_t>(f)].data());
+                    cfts.push_back(cfg.context_noise_t);
+                    cabs.push_back(f);
+                }
+                auto flow = runner->forward_step_kv(AbotWorldRunner::KvMode::INIT_CAPTURE,
+                                                    cframes, action_mask, cfts, cabs,
+                                                    kv_ring_abs, {}, n_threads);
+                if (flow.empty()) {
+                    LOG_ERROR("abot session: kv init capture failed");
+                    return false;
+                }
+            } else {
+                // defer the ring append so step() can overlap it with decode
+                kv_append_pending = true;
+                kv_append_frames  = out_frames;
+                kv_append_action  = action_mask;
+            }
         }
         return true;
     }
@@ -771,7 +1186,19 @@ public:
         if (!step_latents(action_mask, latents)) {
             return false;
         }
-        sd::Tensor<float> px = decode_last_block();
+        sd::Tensor<float> px;
+        if (kv_enabled && kv_append_pending) {
+            // overlap the taehv decode (vae backend; ideally a second GPU via
+            // "vae=cuda1") with the KV cache-append pass (DiT backend)
+            std::thread decode_thread([&]() { px = decode_last_block(); });
+            const bool append_ok = kv_run_append();
+            decode_thread.join();
+            if (!append_ok) {
+                return false;
+            }
+        } else {
+            px = decode_last_block();
+        }
         if (px.empty()) {
             return false;
         }

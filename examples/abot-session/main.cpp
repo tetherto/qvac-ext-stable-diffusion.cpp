@@ -32,6 +32,100 @@
 #include "abot_world.hpp"
 #include "ggml_extend_backend.h"
 
+static std::vector<uint8_t> parse_actions(const std::string& spec);
+
+// minimal .npy f32 loader (little-endian, C-order) for golden replay
+static bool load_npy_f32(const std::string& path, std::vector<float>& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.good()) {
+        fprintf(stderr, "cannot open %s\n", path.c_str());
+        return false;
+    }
+    char magic[6];
+    f.read(magic, 6);
+    uint8_t ver[2];
+    f.read(reinterpret_cast<char*>(ver), 2);
+    uint16_t hlen = 0;
+    f.read(reinterpret_cast<char*>(&hlen), 2);
+    std::string hdr(hlen, '\0');
+    f.read(hdr.data(), hlen);
+    f.seekg(0, std::ios::end);
+    const std::streamoff total = f.tellg();
+    const std::streamoff data0 = 10 + hlen;
+    out.resize(static_cast<size_t>((total - data0) / 4));
+    f.seekg(data0);
+    f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size() * 4));
+    return f.good();
+}
+
+// Validation walk driving AbotWalkSession directly (bypasses the C API so the
+// golden noise can be injected via noise_override and final latents dumped in
+// sd-abot-walk's format for compare_walk.py). Exercises whichever walk path
+// ABOT_KV_CACHE selects.
+static int run_walkval(const std::string& dit, const std::string& taehv, const std::string& scene,
+                       const std::string& golden, const std::string& actions_spec,
+                       const std::string& latents_out, int blocks_n,
+                       int n_threads, uint64_t seed, const std::string& backend_spec) {
+    SDBackendManager bm;
+    std::string err;
+    if (!bm.init(backend_spec.c_str(), nullptr, false, false, false, false, &err)) {
+        fprintf(stderr, "backend init failed: %s\n", err.c_str());
+        return 1;
+    }
+    ABOT::AbotWalkSession session;
+    if (!session.load(bm.runtime_backend(SDBackendModule::DIFFUSION),
+                      bm.params_backend(SDBackendModule::DIFFUSION),
+                      bm.runtime_backend(SDBackendModule::VAE),
+                      bm.params_backend(SDBackendModule::VAE),
+                      dit, taehv, scene, {}, seed, n_threads)) {
+        fprintf(stderr, "session load failed\n");
+        return 1;
+    }
+    if (!golden.empty()) {
+        session.noise_override = [golden](int block, int step, float* dst, size_t n) -> bool {
+            char nm[512];
+            if (step < 0) {
+                snprintf(nm, sizeof(nm), "%s/b%d_s0_xt.npy", golden.c_str(), block);
+            } else {
+                snprintf(nm, sizeof(nm), "%s/b%d_s%d_eps.npy", golden.c_str(), block, step);
+            }
+            std::vector<float> g;
+            if (!load_npy_f32(nm, g) || g.size() != n) {
+                fprintf(stderr, "golden noise load failed: %s (%zu vs %zu)\n", nm, g.size(), n);
+                return false;
+            }
+            memcpy(dst, g.data(), n * sizeof(float));
+            return true;
+        };
+    }
+    std::vector<uint8_t> acts = parse_actions(actions_spec);
+    if (blocks_n > 0) {
+        acts.resize(static_cast<size_t>(blocks_n), acts.empty() ? 0 : acts.back());
+    }
+    std::ofstream lat_f;
+    if (!latents_out.empty()) {
+        lat_f.open(latents_out, std::ios::binary);
+    }
+    for (size_t b = 0; b < acts.size(); b++) {
+        std::vector<std::vector<float>> frames;
+        const int64_t t0 = ggml_time_ms();
+        if (!session.step_latents(acts[b], frames)) {
+            fprintf(stderr, "step %zu failed\n", b);
+            return 1;
+        }
+        const int64_t t1 = ggml_time_ms();
+        printf("block %zu (mask 0x%02x): latents in %.1fs\n", b, acts[b], (t1 - t0) / 1000.0f);
+        if (lat_f.is_open()) {
+            for (auto& fr : frames) {
+                lat_f.write(reinterpret_cast<const char*>(fr.data()),
+                            static_cast<std::streamsize>(fr.size() * sizeof(float)));
+            }
+        }
+    }
+    printf("walkval done: %zu blocks\n", acts.size());
+    return 0;
+}
+
 static std::vector<uint8_t> parse_actions(const std::string& spec) {
     // "idle:1,W:3" -> per-block key bitmask (W,A,S,D,I,J,K,L = bits 0..7).
     // "idle"/"none" = no keys; any other character must be a valid walk key.
@@ -214,7 +308,8 @@ int main(int argc, char** argv) {
     sd_set_log_callback(sd_log_to_stderr, nullptr);
     std::string mode = "walk", dit, taehv, scene, latents, outdir = ".";
     std::string actions = "idle:1,W:3", backend = "cpu";
-    int threads = 8, lat_w = 52, lat_h = 30, lat_c = 48, fpb = 3;
+    std::string golden, latents_out;
+    int threads = 8, lat_w = 52, lat_h = 30, lat_c = 48, fpb = 3, blocks_n = -1;
     int64_t seed = 42;
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -233,6 +328,9 @@ int main(int argc, char** argv) {
         else if (k == "--lat-h") lat_h = std::stoi(next());
         else if (k == "--lat-c") lat_c = std::stoi(next());
         else if (k == "--fpb") fpb = std::stoi(next());
+        else if (k == "--golden") golden = next();
+        else if (k == "--latents-out") latents_out = next();
+        else if (k == "--blocks") blocks_n = std::stoi(next());
     }
     if (mode == "decode") {
         if (taehv.empty() || latents.empty()) {
@@ -240,6 +338,14 @@ int main(int argc, char** argv) {
             return 2;
         }
         return run_decode(taehv, latents, lat_w, lat_h, lat_c, fpb, outdir, threads, backend);
+    }
+    if (mode == "walkval") {
+        if (dit.empty() || taehv.empty() || scene.empty()) {
+            fprintf(stderr, "walkval mode needs --dit, --taehv and --scene\n");
+            return 2;
+        }
+        return run_walkval(dit, taehv, scene, golden, actions, latents_out, blocks_n,
+                           threads, static_cast<uint64_t>(seed), backend);
     }
     if (dit.empty() || taehv.empty() || scene.empty()) {
         fprintf(stderr, "walk mode needs --dit, --taehv and --scene\n");
