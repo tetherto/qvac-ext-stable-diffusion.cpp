@@ -745,8 +745,19 @@ struct AbotWorldRunner : public GGMLRunner {
                                                   provider, sink);
             ggml_build_forward_expand(gf, out);
             for (auto& cap : *captures) {
-                ggml_build_forward_expand(gf, cap.second);
-                this->cache(cap.first, cap.second);
+                // Captured K/V are also consumed by the attention itself, so
+                // the graph allocator may hand their memory to later nodes once
+                // those consumers ran; the cache persist only happens after the
+                // full graph. Materialize views into their own storage and pin
+                // every capture as a graph output so its bytes survive to the
+                // post-compute cache copy.
+                ggml_tensor* pinned = cap.second;
+                if (pinned->view_src != nullptr) {
+                    pinned = ggml_cont(compute_ctx, pinned);
+                }
+                ggml_set_output(pinned);
+                ggml_build_forward_expand(gf, pinned);
+                this->cache(cap.first, pinned);
             }
             return gf;
         };
@@ -838,6 +849,11 @@ public:
 
     // KV-cache walk state (ABOT_KV_CACHE=1): ring of finalized-frame K/V slots
     bool kv_enabled = false;
+    // ggml backends are not thread-safe: the decode/append overlap is only
+    // legal when DiT and taehv run on distinct backend instances (e.g.
+    // "diffusion=cuda0,vae=cuda1"); on a shared instance (single-GPU Metal)
+    // concurrent graph submission wedges the command queue.
+    bool kv_decode_overlap_safe = false;
     std::array<int64_t, AbotWorldRunner::kv_ring_slots> kv_ring_abs{};
     int kv_ring_next = 0;
     // deferred cache append for the newest block (run after/parallel to decode)
@@ -919,7 +935,10 @@ public:
         if (const char* kc = std::getenv("ABOT_KV_CACHE"); kc != nullptr && kc[0] == '1') {
             kv_enabled = true;
             kv_ring_abs.fill(-1);
-            LOG_INFO("abot session: KV cache enabled (ring %d frames)", AbotWorldRunner::kv_ring_slots);
+            kv_decode_overlap_safe = vae_backend != runtime_backend;
+            LOG_INFO("abot session: KV cache enabled (ring %d frames, decode overlap %s)",
+                     AbotWorldRunner::kv_ring_slots,
+                     kv_decode_overlap_safe ? "on" : "off: shared DiT/taehv backend");
         }
         if (!runner->alloc_params_buffer()) {
             return false;
@@ -1188,13 +1207,21 @@ public:
         }
         sd::Tensor<float> px;
         if (kv_enabled && kv_append_pending) {
-            // overlap the taehv decode (vae backend; ideally a second GPU via
-            // "vae=cuda1") with the KV cache-append pass (DiT backend)
-            std::thread decode_thread([&]() { px = decode_last_block(); });
-            const bool append_ok = kv_run_append();
-            decode_thread.join();
-            if (!append_ok) {
-                return false;
+            if (kv_decode_overlap_safe) {
+                // overlap the taehv decode (vae backend; ideally a second GPU
+                // via "vae=cuda1") with the KV cache-append pass (DiT backend)
+                std::thread decode_thread([&]() { px = decode_last_block(); });
+                const bool append_ok = kv_run_append();
+                decode_thread.join();
+                if (!append_ok) {
+                    return false;
+                }
+            } else {
+                // shared backend instance: serialize (see kv_decode_overlap_safe)
+                if (!kv_run_append()) {
+                    return false;
+                }
+                px = decode_last_block();
             }
         } else {
             px = decode_last_block();
