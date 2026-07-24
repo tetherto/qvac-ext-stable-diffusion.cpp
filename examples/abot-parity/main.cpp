@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
     }
 
     ABOT::AbotWorldConfig cfg;  // window 8 / 3 fpb — matches the golden test config
-    ABOT::AbotWorldRunner runner(be, pbe, ml.get_tensor_storage_map(), "model.diffusion_model.", cfg);
+    ABOT::AbotWorldRunner runner(be, pbe, ml.get_tensor_storage_map(), "model.diffusion_model", cfg);
     if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
         runner.set_flash_attention_enabled(true);
         printf("flash attention enabled\n");

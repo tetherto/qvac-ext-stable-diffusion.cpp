@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
     ABOT::AbotWorldConfig cfg;
     ABOT::AbotWorldRunner runner(backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
                                  backend_manager.params_backend(SDBackendModule::DIFFUSION),
-                                 ml.get_tensor_storage_map(), "model.diffusion_model.", cfg);
+                                 ml.get_tensor_storage_map(), "model.diffusion_model", cfg);
     if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
         runner.set_flash_attention_enabled(true);
         printf("flash attention enabled\n");

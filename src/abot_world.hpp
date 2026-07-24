@@ -647,6 +647,9 @@ struct AbotWorldRunner : public GGMLRunner {
                       rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
         }
 
+        static const bool prof = std::getenv("ABOT_PROF") != nullptr;
+        const int64_t prof_t0  = prof ? ggml_time_ms() : 0;
+
         pe_vec = build_pe(with_refs ? scene.ref_slots : 0, 16, frame_abs_ids, h_len, w_len);
         std::vector<float> mask;
         if (mode == KvMode::INIT_CAPTURE) {
@@ -654,6 +657,7 @@ struct AbotWorldRunner : public GGMLRunner {
         } else {
             mask = build_mask_kv(n_ref_cols, fsl, ring_abs, frame_abs_ids);
         }
+        const int64_t prof_t1 = prof ? ggml_time_ms() : 0;
         const int64_t L_q  = n_ref + static_cast<int64_t>(F_cur) * fsl;
         const int64_t T_kv = static_cast<int64_t>(mask.size()) / L_q;
 
@@ -763,6 +767,12 @@ struct AbotWorldRunner : public GGMLRunner {
         };
 
         auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        if (prof) {
+            const int64_t prof_t2 = ggml_time_ms();
+            const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";
+            LOG_INFO("[prof] kv %s: hostprep=%lldms compute=%lldms",
+                     mode_s, (long long)(prof_t1 - prof_t0), (long long)(prof_t2 - prof_t1));
+        }
         if (!result.has_value()) {
             return {};
         }
@@ -917,7 +927,7 @@ public:
         }
         runner = std::make_unique<AbotWorldRunner>(runtime_backend, params_backend,
                                                    ml.get_tensor_storage_map(),
-                                                   "model.diffusion_model.", cfg);
+                                                   "model.diffusion_model", cfg);  // no trailing dot: GGMLBlock::init appends its own
         // Opt-in flash attention for the walk graph (ABOT_FLASH_ATTN=1). The
         // masked self-attention path supports it (2D additive mask); it avoids
         // materializing the L x L logits + softmax, cutting both time and VRAM.
@@ -1171,7 +1181,12 @@ public:
             }
         }
         sd_tiling_params_t no_tiling = {};
+        static const bool prof = std::getenv("ABOT_PROF") != nullptr;
+        const int64_t dec_t0   = prof ? ggml_time_ms() : 0;
         sd::Tensor<float> px         = tae->decode(n_threads, z, no_tiling, true);
+        if (prof) {
+            LOG_INFO("[prof] taehv decode (%d latents -> px): %lldms", T, (long long)(ggml_time_ms() - dec_t0));
+        }
         if (px.empty()) {
             LOG_ERROR("abot session: taehv decode failed");
             return {};
