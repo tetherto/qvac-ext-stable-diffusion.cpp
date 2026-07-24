@@ -273,6 +273,8 @@ else()
     add_library(${SD_LIB} STATIC ${SD_LIB_SOURCES})
 endif()
 
+option(SD_BUILD_LAM_A2E_SMOKE "Build the LAM-A2E GGUF loader smoke executable" OFF)
+
 if(APPLE)
     sd_set_macos_rpaths(${SD_LIB})
 endif()
@@ -335,12 +337,29 @@ target_include_directories(${SD_LIB} PUBLIC . src include)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)
 target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
 
+if(SD_BUILD_LAM_A2E_SMOKE)
+    add_executable(lam-a2e-smoke tests/lam_a2e_smoke.cpp)
+    target_include_directories(lam-a2e-smoke PRIVATE include)
+    target_link_libraries(lam-a2e-smoke PRIVATE ${SD_LIB})
+    target_compile_features(lam-a2e-smoke PRIVATE cxx_std_17)
+
+    add_executable(lam-a2e-frontend-smoke tests/lam_a2e_frontend_smoke.cpp)
+    target_include_directories(lam-a2e-frontend-smoke PRIVATE include src)
+    target_link_libraries(lam-a2e-frontend-smoke PRIVATE ${SD_LIB})
+    target_compile_features(lam-a2e-frontend-smoke PRIVATE cxx_std_17)
+
+    add_executable(lam-a2e-parity tests/lam_a2e_parity.cpp)
+    target_include_directories(lam-a2e-parity PRIVATE include src)
+    target_link_libraries(lam-a2e-parity PRIVATE ${SD_LIB})
+    target_compile_features(lam-a2e-parity PRIVATE cxx_std_17)
+endif()
+
 
 if (SD_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-set(SD_PUBLIC_HEADERS include/stable-diffusion.h)
+set(SD_PUBLIC_HEADERS include/stable-diffusion.h include/lam-a2e.h)
 set_target_properties(${SD_LIB} PROPERTIES PUBLIC_HEADER "${SD_PUBLIC_HEADERS}")
 
 install(TARGETS ${SD_LIB} LIBRARY PUBLIC_HEADER)
