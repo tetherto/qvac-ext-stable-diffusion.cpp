@@ -178,6 +178,41 @@ jobs:
           path: |
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-vulkan.zip
 
+  ubuntu-latest-lam-a2e:
+    # Compile-checks the isolated LAM audio2expression C API and its smoke /
+    # CPU-parity harness (only built under -DSD_BUILD_LAM_A2E_SMOKE=ON, so the
+    # standard build jobs above don't cover the test targets). This guards
+    # against regressions in include/lam-a2e.h, src/lam_audio2expression.* and
+    # tests/lam_a2e_*.cpp.
+    #
+    # NOTE: this job only *builds* the harness. Running lam-a2e-smoke /
+    # lam-a2e-parity needs the remapped lam-audio2exp GGUF plus the
+    # lipsync-ggml reference fixtures, neither of which is available in CI yet.
+    # Wire the execution step in once those assets are hosted (tracked by
+    # QVAC-22250 / QVAC-22249).
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        id: depends
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential
+
+      - name: Build LAM-A2E smoke + parity targets
+        id: cmake_build
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DGGML_AVX2=ON -DSD_BUILD_EXAMPLES=OFF -DSD_BUILD_LAM_A2E_SMOKE=ON
+          cmake --build . --config Release --target lam-a2e-smoke lam-a2e-frontend-smoke lam-a2e-parity
+
   build-and-push-docker-images:
     name: Build and push container images
     if: ${{ github.event_name != 'pull_request' }}
