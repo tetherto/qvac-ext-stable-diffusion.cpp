@@ -227,6 +227,30 @@ namespace sd::pipeline {
                                value);
     }
 
+    static sd::Tensor<float> make_ltxav_static_reference_video(const sd::Tensor<float>& image, int frames) {
+        if (image.empty() || image.dim() != 4 || frames <= 0) {
+            return {};
+        }
+    
+        const int64_t width    = image.shape()[0];
+        const int64_t height   = image.shape()[1];
+        const int64_t channels = image.shape()[2];
+        const int64_t batches  = image.shape()[3];
+        const int64_t plane    = width * height;
+        sd::Tensor<float> video({width, height, frames, channels, batches});
+    
+        for (int64_t batch = 0; batch < batches; ++batch) {
+            for (int64_t channel = 0; channel < channels; ++channel) {
+                const float* source = image.data() + (batch * channels + channel) * plane;
+                for (int frame = 0; frame < frames; ++frame) {
+                    float* destination = video.data() + ((batch * channels + channel) * frames + frame) * plane;
+                    std::copy_n(source, plane, destination);
+                }
+            }
+        }
+        return video;
+    }
+    
     static sd::Tensor<float> encode_ltxav_condition_image(StableDiffusionGGML* sd,
                                                           const sd::Tensor<float>& image,
                                                           const char* name) {
@@ -497,6 +521,7 @@ namespace sd::pipeline {
 
         sd::Tensor<float> start_image;
         sd::Tensor<float> end_image;
+        std::vector<sd::Tensor<float>> reference_images;
 
         if (sd_vid_gen_params->init_image.data) {
             start_image = ensure_image_tensor_channels(
@@ -508,6 +533,30 @@ namespace sd::pipeline {
             end_image = ensure_image_tensor_channels(
                 sd_image_to_tensor(sd_vid_gen_params->end_image, request->width, request->height),
                 sd->get_image_channels());
+        }
+
+        if (sd_vid_gen_params->reference_images_count < 0 ||
+            (sd_vid_gen_params->reference_images_count > 0 && sd_vid_gen_params->reference_images == nullptr)) {
+            LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+            return std::nullopt;
+        }
+        if (sd_version_is_ltxav(sd->version)) {
+            for (int i = 0; i < sd_vid_gen_params->reference_images_count; ++i) {
+                const sd_image_t& image = sd_vid_gen_params->reference_images[i];
+                if (image.data == nullptr) {
+                    LOG_ERROR("LTX IC-LoRA reference image %d is empty", i);
+                    return std::nullopt;
+                }
+                reference_images.push_back(sd_image_to_tensor(image, request->width, request->height));
+                if (reference_images.back().empty()) {
+                    LOG_ERROR("failed to prepare LTX IC-LoRA reference image %d", i);
+                    return std::nullopt;
+                }
+            }
+        } else if (sd_vid_gen_params->reference_images_count > 0 &&
+                   sd_vid_gen_params->ref_images_count == 0) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return std::nullopt;
         }
 
         if (sd_version_is_minimax_h3(sd->version)) {
@@ -775,6 +824,9 @@ namespace sd::pipeline {
         if (sd_version_is_ltxav(sd->version)) {
             latents.audio_length = get_ltxav_num_audio_latents(request->frames, request->fps);
             latents.audio_latent = make_ltxav_empty_audio_latent(latents.audio_length);
+        } else if (!reference_images.empty()) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return std::nullopt;
         }
 
         if (sd_version_is_ltxav(sd->version)) {
@@ -783,11 +835,30 @@ namespace sd::pipeline {
                 return std::nullopt;
             }
 
-            if (!start_image.empty() || !end_image.empty()) {
+            if (!reference_images.empty() &&
+                (!start_image.empty() || !end_image.empty())) {
+                LOG_ERROR("LTX IC-LoRA reference conditioning cannot be combined with init_image or end_image");
+                return std::nullopt;
+            }
+            if (!reference_images.empty()) {
+                if (sd_vid_gen_params->reference_downscale_factor != 1.f) {
+                    LOG_ERROR("LTX IC-LoRA currently requires reference_downscale_factor=1");
+                    return std::nullopt;
+                }
+                if (sd_vid_gen_params->reference_attention_strength < 0.f ||
+                    sd_vid_gen_params->reference_attention_strength > 1.f) {
+                    LOG_ERROR("LTX IC-LoRA reference_attention_strength must be in [0, 1]");
+                    return std::nullopt;
+                }
+            }
+    
+            if (!start_image.empty() || !end_image.empty() || !reference_images.empty()) {
                 if (!start_image.empty() && !end_image.empty()) {
                     LOG_INFO("FLF2V");
                 } else if (!start_image.empty()) {
                     LOG_INFO("IMG2VID");
+                } else if (!reference_images.empty()) {
+                    LOG_INFO("LTX IC-LoRA reference conditioning");
                 } else {
                     LOG_INFO("END2VID");
                 }
@@ -865,6 +936,38 @@ namespace sd::pipeline {
                     }
                 }
 
+                if (!reference_images.empty()) {
+                    sd::Tensor<float> reference_latents;
+                    for (size_t i = 0; i < reference_images.size(); ++i) {
+                        auto static_reference =
+                            make_ltxav_static_reference_video(reference_images[i], request->frames);
+                        auto reference_latent = sd->encode_first_stage(static_reference);
+                        if (reference_latent.empty()) {
+                            LOG_ERROR("failed to encode LTX IC-LoRA reference image %zu", i);
+                            return std::nullopt;
+                        }
+                        reference_latents = reference_latents.empty()
+                                                ? std::move(reference_latent)
+                                                : sd::ops::concat(reference_latents, reference_latent, 2);
+                    }
+                    if (!apply_video_condition_by_keyframe_index(reference_latents,
+                                                                 0,
+                                                                 "IC-LoRA reference")) {
+                        return std::nullopt;
+                    }
+                    const float reference_strength =
+                        std::clamp(sd_vid_gen_params->reference_attention_strength, 0.f, 1.f);
+                    const int64_t reference_frames = reference_latents.shape()[2];
+                    sd::ops::fill_slice(&latents.denoise_mask,
+                                        2,
+                                        latents.denoise_mask.shape()[2] - reference_frames,
+                                        latents.denoise_mask.shape()[2],
+                                        1.f - reference_strength);
+                    LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
+                             reference_images.size(),
+                             reference_strength);
+                }
+    
                 int64_t t2 = ggml_time_ms();
                 LOG_INFO("encode_first_stage completed, taking %" PRId64 " ms", t2 - t1);
             }
@@ -1216,6 +1319,30 @@ namespace sd::pipeline {
         }
         embeds.cond.c_concat = latents.concat_latent;
         embeds.cond.c_vector = latents.clip_vision_output;
+        if (sd_vid_gen_params->reference_images_count < 0 ||
+            (sd_vid_gen_params->reference_images_count > 0 && sd_vid_gen_params->reference_images == nullptr)) {
+            LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+            return std::nullopt;
+        }
+        if (sd_version_is_ltxav(sd->version)) {
+            for (int i = 0; i < sd_vid_gen_params->reference_images_count; ++i) {
+                const sd_image_t& image = sd_vid_gen_params->reference_images[i];
+                if (image.data == nullptr) {
+                    LOG_ERROR("LTX IC-LoRA reference image %d is empty", i);
+                    return std::nullopt;
+                }
+                reference_images.push_back(sd_image_to_tensor(image, request->width, request->height));
+                if (reference_images.back().empty()) {
+                    LOG_ERROR("failed to prepare LTX IC-LoRA reference image %d", i);
+                    return std::nullopt;
+                }
+            }
+        } else if (sd_vid_gen_params->reference_images_count > 0 &&
+                   sd_vid_gen_params->ref_images_count == 0) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return std::nullopt;
+        }
+
         if (sd_version_is_minimax_h3(sd->version)) {
             embeds.cond.c_ref_images       = latents.ref_latents;
             embeds.cond.c_ref_audios       = latents.reference_audio_latents;
@@ -1241,7 +1368,31 @@ namespace sd::pipeline {
             }
             embeds.uncond.c_concat = latents.concat_latent;
             embeds.uncond.c_vector = latents.clip_vision_output;
-            if (sd_version_is_minimax_h3(sd->version)) {
+            if (sd_vid_gen_params->reference_images_count < 0 ||
+            (sd_vid_gen_params->reference_images_count > 0 && sd_vid_gen_params->reference_images == nullptr)) {
+            LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+            return std::nullopt;
+        }
+        if (sd_version_is_ltxav(sd->version)) {
+            for (int i = 0; i < sd_vid_gen_params->reference_images_count; ++i) {
+                const sd_image_t& image = sd_vid_gen_params->reference_images[i];
+                if (image.data == nullptr) {
+                    LOG_ERROR("LTX IC-LoRA reference image %d is empty", i);
+                    return std::nullopt;
+                }
+                reference_images.push_back(sd_image_to_tensor(image, request->width, request->height));
+                if (reference_images.back().empty()) {
+                    LOG_ERROR("failed to prepare LTX IC-LoRA reference image %d", i);
+                    return std::nullopt;
+                }
+            }
+        } else if (sd_vid_gen_params->reference_images_count > 0 &&
+                   sd_vid_gen_params->ref_images_count == 0) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return std::nullopt;
+        }
+
+        if (sd_version_is_minimax_h3(sd->version)) {
                 embeds.uncond.c_ref_images       = latents.ref_latents;
                 embeds.uncond.c_ref_audios       = latents.reference_audio_latents;
                 embeds.uncond.c_reference_blocks = latents.minimax_reference_blocks;

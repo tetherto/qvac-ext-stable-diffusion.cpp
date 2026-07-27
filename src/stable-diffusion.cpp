@@ -625,6 +625,10 @@ void sd_vid_gen_params_init(sd_vid_gen_params_t* sd_vid_gen_params) {
     sd_vid_gen_params->fps                                   = 16;
     sd_vid_gen_params->moe_boundary                          = 0.875f;
     sd_vid_gen_params->vace_strength                         = 1.f;
+    sd_vid_gen_params->reference_images                      = nullptr;
+    sd_vid_gen_params->reference_images_count                = 0;
+    sd_vid_gen_params->reference_attention_strength          = 1.f;
+    sd_vid_gen_params->reference_downscale_factor            = 1.f;
     sd_vid_gen_params->vae_tiling_params                     = {false, false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
     sd_vid_gen_params->hires.enabled                         = false;
     sd_vid_gen_params->hires.upscaler                        = SD_HIRES_UPSCALER_LATENT;
