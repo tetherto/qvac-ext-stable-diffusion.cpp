@@ -1183,6 +1183,14 @@ ArgOptions SDGenerationParams::get_options() {
          "wan vace strength",
          &vace_strength},
         {"",
+         "--reference-attention-strength",
+         "LTX IC-LoRA reference conditioning strength in [0, 1] (default: 1.0)",
+         &reference_attention_strength},
+        {"",
+         "--reference-downscale-factor",
+         "LTX IC-LoRA reference image downscale factor (currently must be 1.0; default: 1.0)",
+         &reference_downscale_factor},
+        {"",
          "--vae-tile-overlap",
          "tile overlap for vae tiling, in fraction of tile size (default: 0.5)",
          &vae_tiling_params.target_overlap},
@@ -1593,7 +1601,7 @@ ArgOptions SDGenerationParams::get_options() {
          on_high_noise_skip_layers_arg},
         {"-r",
          "--ref-image",
-         "reference image for Flux Kontext or MiniMax-H3 Ref2VA (can be used multiple times)",
+         "reference image for Flux Kontext, MiniMax-H3 Ref2VA, or LTX IC-LoRA video models (can be used multiple times)",
          on_ref_image_arg},
         {"",
          "--ref-video",
@@ -2413,6 +2421,17 @@ bool SDGenerationParams::validate(SDMode mode) {
         return false;
     }
 
+    if (mode == VID_GEN && !ref_image_paths.empty()) {
+        if (reference_attention_strength < 0.f || reference_attention_strength > 1.f) {
+            LOG_ERROR("error: reference attention strength must be in [0, 1]");
+            return false;
+        }
+        if (reference_downscale_factor != 1.f) {
+            LOG_ERROR("error: LTX IC-LoRA currently requires reference downscale factor to be 1");
+            return false;
+        }
+    }
+
     if (sample_params.shifted_timestep < 0 || sample_params.shifted_timestep > 1000) {
         LOG_ERROR("error: shifted_timestep must be in range [0, 1000]");
         return false;
@@ -2662,6 +2681,10 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
     params.ref_audios_count          = static_cast<int>(ref_audio_views.size());
     params.control_frames            = control_frame_views.empty() ? nullptr : control_frame_views.data();
     params.control_frames_size       = static_cast<int>(control_frame_views.size());
+    params.reference_images          = ref_image_views.empty() ? nullptr : ref_image_views.data();
+    params.reference_images_count    = static_cast<int>(ref_image_views.size());
+    params.reference_attention_strength = reference_attention_strength;
+    params.reference_downscale_factor   = reference_downscale_factor;
     params.width                     = get_resolved_width();
     params.height                    = get_resolved_height();
     params.sample_params             = sample_params;
@@ -2764,6 +2787,8 @@ std::string SDGenerationParams::to_string() const {
         << "  video_frames: " << video_frames << ",\n"
         << "  fps: " << fps << ",\n"
         << "  vace_strength: " << vace_strength << ",\n"
+        << "  reference_attention_strength: " << reference_attention_strength << ",\n"
+        << "  reference_downscale_factor: " << reference_downscale_factor << ",\n"
         << "  strength: " << strength << ",\n"
         << "  control_strength: " << control_strength << ",\n"
         << "  seed: " << seed << ",\n"
