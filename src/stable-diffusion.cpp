@@ -3082,6 +3082,10 @@ void sd_vid_gen_params_init(sd_vid_gen_params_t* sd_vid_gen_params) {
     sd_vid_gen_params->fps                                   = 16;
     sd_vid_gen_params->moe_boundary                          = 0.875f;
     sd_vid_gen_params->vace_strength                         = 1.f;
+    sd_vid_gen_params->reference_images                      = nullptr;
+    sd_vid_gen_params->reference_images_count                = 0;
+    sd_vid_gen_params->reference_attention_strength          = 1.f;
+    sd_vid_gen_params->reference_downscale_factor            = 1.f;
     sd_vid_gen_params->vae_tiling_params                     = {false, false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
     sd_vid_gen_params->hires.enabled                         = false;
     sd_vid_gen_params->hires.upscaler                        = SD_HIRES_UPSCALER_LATENT;
@@ -3825,6 +3829,30 @@ static sd::Tensor<float> make_ltxav_video_denoise_mask(const sd::Tensor<float>& 
                             1,
                             1},
                            value);
+}
+
+static sd::Tensor<float> make_ltxav_static_reference_video(const sd::Tensor<float>& image, int frames) {
+    if (image.empty() || image.dim() != 4 || frames <= 0) {
+        return {};
+    }
+
+    const int64_t width    = image.shape()[0];
+    const int64_t height   = image.shape()[1];
+    const int64_t channels = image.shape()[2];
+    const int64_t batches  = image.shape()[3];
+    const int64_t plane    = width * height;
+    sd::Tensor<float> video({width, height, frames, channels, batches});
+
+    for (int64_t batch = 0; batch < batches; ++batch) {
+        for (int64_t channel = 0; channel < channels; ++channel) {
+            const float* source = image.data() + (batch * channels + channel) * plane;
+            for (int frame = 0; frame < frames; ++frame) {
+                float* destination = video.data() + ((batch * channels + channel) * frames + frame) * plane;
+                std::copy_n(source, plane, destination);
+            }
+        }
+    }
+    return video;
 }
 
 static sd::Tensor<float> encode_ltxav_condition_image(sd_ctx_t* sd_ctx,
@@ -4812,6 +4840,7 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
 
     sd::Tensor<float> start_image;
     sd::Tensor<float> end_image;
+    std::vector<sd::Tensor<float>> reference_images;
 
     if (sd_vid_gen_params->init_image.data) {
         start_image = sd_image_to_tensor(sd_vid_gen_params->init_image, request->width, request->height);
@@ -4820,10 +4849,30 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
     if (sd_vid_gen_params->end_image.data) {
         end_image = sd_image_to_tensor(sd_vid_gen_params->end_image, request->width, request->height);
     }
+    if (sd_vid_gen_params->reference_images_count < 0 ||
+        (sd_vid_gen_params->reference_images_count > 0 && sd_vid_gen_params->reference_images == nullptr)) {
+        LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+        return std::nullopt;
+    }
+    for (int i = 0; i < sd_vid_gen_params->reference_images_count; ++i) {
+        const sd_image_t& image = sd_vid_gen_params->reference_images[i];
+        if (image.data == nullptr) {
+            LOG_ERROR("LTX IC-LoRA reference image %d is empty", i);
+            return std::nullopt;
+        }
+        reference_images.push_back(sd_image_to_tensor(image, request->width, request->height));
+        if (reference_images.back().empty()) {
+            LOG_ERROR("failed to prepare LTX IC-LoRA reference image %d", i);
+            return std::nullopt;
+        }
+    }
 
     if (sd_version_is_ltxav(sd_ctx->sd->version)) {
         latents.audio_length = get_ltxav_num_audio_latents(request->frames, request->fps);
         latents.audio_latent = make_ltxav_empty_audio_latent(latents.audio_length);
+    } else if (!reference_images.empty()) {
+        LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+        return std::nullopt;
     }
 
     if (sd_version_is_ltxav(sd_ctx->sd->version)) {
@@ -4832,7 +4881,24 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
             return std::nullopt;
         }
 
-        if (!start_image.empty() || !end_image.empty()) {
+        if (!reference_images.empty() &&
+            (!start_image.empty() || !end_image.empty())) {
+            LOG_ERROR("LTX IC-LoRA reference conditioning cannot be combined with init_image or end_image");
+            return std::nullopt;
+        }
+        if (!reference_images.empty()) {
+            if (sd_vid_gen_params->reference_downscale_factor != 1.f) {
+                LOG_ERROR("LTX IC-LoRA currently requires reference_downscale_factor=1");
+                return std::nullopt;
+            }
+            if (sd_vid_gen_params->reference_attention_strength < 0.f ||
+                sd_vid_gen_params->reference_attention_strength > 1.f) {
+                LOG_ERROR("LTX IC-LoRA reference_attention_strength must be in [0, 1]");
+                return std::nullopt;
+            }
+        }
+
+        if (!start_image.empty() || !end_image.empty() || !reference_images.empty()) {
             if (sd_ctx->sd->vae_decode_only) {
                 LOG_ERROR("LTXAV image conditioning requires VAE encoder weights; create the context with vae_decode_only=false");
                 return std::nullopt;
@@ -4842,6 +4908,8 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                 LOG_INFO("FLF2V");
             } else if (!start_image.empty()) {
                 LOG_INFO("IMG2VID");
+            } else if (!reference_images.empty()) {
+                LOG_INFO("LTX IC-LoRA reference conditioning");
             } else {
                 LOG_INFO("END2VID");
             }
@@ -4917,6 +4985,38 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                 if (!ok) {
                     return std::nullopt;
                 }
+            }
+
+            if (!reference_images.empty()) {
+                sd::Tensor<float> reference_latents;
+                for (size_t i = 0; i < reference_images.size(); ++i) {
+                    auto static_reference =
+                        make_ltxav_static_reference_video(reference_images[i], request->frames);
+                    auto reference_latent = sd_ctx->sd->encode_first_stage(static_reference);
+                    if (reference_latent.empty()) {
+                        LOG_ERROR("failed to encode LTX IC-LoRA reference image %zu", i);
+                        return std::nullopt;
+                    }
+                    reference_latents = reference_latents.empty()
+                                            ? std::move(reference_latent)
+                                            : sd::ops::concat(reference_latents, reference_latent, 2);
+                }
+                if (!apply_video_condition_by_keyframe_index(reference_latents,
+                                                             0,
+                                                             "IC-LoRA reference")) {
+                    return std::nullopt;
+                }
+                const float reference_strength =
+                    std::clamp(sd_vid_gen_params->reference_attention_strength, 0.f, 1.f);
+                const int64_t reference_frames = reference_latents.shape()[2];
+                sd::ops::fill_slice(&latents.denoise_mask,
+                                    2,
+                                    latents.denoise_mask.shape()[2] - reference_frames,
+                                    latents.denoise_mask.shape()[2],
+                                    1.f - reference_strength);
+                LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
+                         reference_images.size(),
+                         reference_strength);
             }
 
             int64_t t2 = ggml_time_ms();

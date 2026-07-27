@@ -404,6 +404,17 @@ typedef struct {
     sd_tiling_params_t vae_tiling_params;
     sd_cache_params_t cache;
     sd_hires_params_t hires;
+    // LTX IC-LoRA reference conditioning. These fields are ignored for
+    // non-LTX video models. Each input is a reference sheet/image that is
+    // expanded into a static reference video before VAE encoding.
+    sd_image_t* reference_images;
+    int reference_images_count;
+    // [0, 1]. Zero disables the reference tokens; one preserves their full
+    // conditioning weight. Defaults are set by sd_vid_gen_params_init().
+    float reference_attention_strength;
+    // The current LTX Ingredients workflow requires 1.0. Values other than
+    // one are rejected until a spatial downscale implementation is added.
+    float reference_downscale_factor;
 } sd_vid_gen_params_t;
 
 typedef struct sd_ctx_t sd_ctx_t;
