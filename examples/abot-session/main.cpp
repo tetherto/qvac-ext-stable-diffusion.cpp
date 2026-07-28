@@ -16,6 +16,8 @@
 //   sd-abot-session --mode decode --taehv taew2_2.gguf --latents walk.bin
 //                   --lat-w 52 --lat-h 30 [--outdir frames]
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -295,6 +297,44 @@ static int run_decode(const std::string& taehv, const std::string& latents_path,
     return 0;
 }
 
+// Create a scene pack natively: umT5 prompt encode + Wan2.2 VAE first-frame
+// encode -> scene.safetensors consumable by the walk/session modes.
+static int run_create_scene(const std::string& t5, const std::string& vae,
+                            const std::string& prompt, const std::string& image_path,
+                            int width, int height, const std::string& scene_out,
+                            int threads, const std::string& backend) {
+    int iw = 0, ih = 0, ic = 0;
+    unsigned char* pixels = stbi_load(image_path.c_str(), &iw, &ih, &ic, 3);
+    if (pixels == nullptr) {
+        fprintf(stderr, "cannot load image '%s'\n", image_path.c_str());
+        return 1;
+    }
+    sd_abot_scene_params_t params;
+    sd_abot_scene_params_init(&params);
+    params.t5_path            = t5.c_str();
+    params.vae_path           = vae.c_str();
+    params.prompt             = prompt.c_str();
+    params.init_image.width   = static_cast<uint32_t>(iw);
+    params.init_image.height  = static_cast<uint32_t>(ih);
+    params.init_image.channel = 3;
+    params.init_image.data    = pixels;
+    params.width              = width;
+    params.height             = height;
+    params.output_path        = scene_out.c_str();
+    params.backend            = backend.c_str();
+    params.n_threads          = threads;
+
+    const bool ok = sd_abot_scene_create(&params);
+    stbi_image_free(pixels);
+    if (!ok) {
+        fprintf(stderr, "scene creation failed\n");
+        return 1;
+    }
+    printf("scene written to %s (%dx%d, prompt %zu chars)\n",
+           scene_out.c_str(), width, height, prompt.size());
+    return 0;
+}
+
 static void sd_log_to_stderr(enum sd_log_level_t level, const char* text, void* data) {
     (void)data;
     if (level >= SD_LOG_INFO) {
@@ -309,7 +349,9 @@ int main(int argc, char** argv) {
     std::string mode = "walk", dit, taehv, scene, latents, outdir = ".";
     std::string actions = "idle:1,W:3", backend = "cpu";
     std::string golden, latents_out;
+    std::string t5, vae, prompt, image_path, scene_out;
     int threads = 8, lat_w = 52, lat_h = 30, lat_c = 48, fpb = 3, blocks_n = -1;
+    int width = 832, height = 480;
     int64_t seed = 42;
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
@@ -331,6 +373,20 @@ int main(int argc, char** argv) {
         else if (k == "--golden") golden = next();
         else if (k == "--latents-out") latents_out = next();
         else if (k == "--blocks") blocks_n = std::stoi(next());
+        else if (k == "--t5") t5 = next();
+        else if (k == "--vae") vae = next();
+        else if (k == "--prompt") prompt = next();
+        else if (k == "--image") image_path = next();
+        else if (k == "--width") width = std::stoi(next());
+        else if (k == "--height") height = std::stoi(next());
+        else if (k == "--scene-out") scene_out = next();
+    }
+    if (mode == "create-scene") {
+        if (t5.empty() || vae.empty() || prompt.empty() || image_path.empty() || scene_out.empty()) {
+            fprintf(stderr, "create-scene mode needs --t5, --vae, --prompt, --image and --scene-out\n");
+            return 2;
+        }
+        return run_create_scene(t5, vae, prompt, image_path, width, height, scene_out, threads, backend);
     }
     if (mode == "decode") {
         if (taehv.empty() || latents.empty()) {

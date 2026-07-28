@@ -532,6 +532,30 @@ SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
 SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
 SD_API void sd_abot_session_free(sd_abot_session_t* session);
 
+// -- ABot-World scene creation -------------------------------------------------
+// Builds the fixed world a session walks in, natively, from a prompt and a
+// first-frame image: umT5-XXL encodes the prompt, the Wan2.2 VAE encodes the
+// image (scaled to cover and center-cropped to width x height), reference
+// slots are zero-filled, and the result is written as a scene pack
+// (scene.safetensors) that sd_abot_session_new() loads via `scene_path`.
+// This replaces the reference implementation's offline PyTorch extraction.
+
+typedef struct {
+    const char* t5_path;      // umT5-XXL GGUF/safetensors (text encoder)
+    const char* vae_path;     // Wan2.2 VAE GGUF/safetensors (48-channel)
+    const char* prompt;       // encoded verbatim (reference demos prefix "| unknown | ")
+    sd_image_t init_image;    // first frame, RGB, any size (cover + center-crop)
+    int width;                // target pixel size; multiples of 32 (default 832x480)
+    int height;
+    const char* output_path;  // scene pack destination (safetensors)
+    const char* backend;      // backend spec string (NULL/"" = default)
+    int n_threads;            // <= 0: physical cores
+    bool offload_params_to_cpu;
+} sd_abot_scene_params_t;
+
+SD_API void sd_abot_scene_params_init(sd_abot_scene_params_t* params);
+SD_API bool sd_abot_scene_create(const sd_abot_scene_params_t* params);
+
 SD_API bool convert(const char* input_path,
                     const char* vae_path,
                     const char* output_path,

@@ -46,6 +46,12 @@
 #include "latent-preview.h"
 #include "name_conversion.h"
 
+// antialiased image fit for ABot scene creation; static keeps the stb
+// implementation local to this TU (examples carry their own copy)
+#define STB_IMAGE_RESIZE_STATIC
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize.h"
+
 const char* sd_vae_format_name(enum sd_vae_format_t format);
 static SDVersion sd_vae_format_to_version(enum sd_vae_format_t format, SDVersion fallback);
 
@@ -5890,4 +5896,204 @@ void sd_abot_session_frames_free(sd_image_t* frames, int num_frames) {
 
 void sd_abot_session_free(sd_abot_session_t* session) {
     delete session;
+}
+
+/* ABot-World scene creation ------------------------------------------------ */
+
+void sd_abot_scene_params_init(sd_abot_scene_params_t* params) {
+    if (params == nullptr) {
+        return;
+    }
+    memset(params, 0, sizeof(sd_abot_scene_params_t));
+    params->width     = 832;
+    params->height    = 480;
+    params->n_threads = -1;
+}
+
+namespace {
+
+// PIL ImageOps.fit semantics: center-crop the source to the target aspect
+// ratio, then resize with an antialiased kernel. The reference pipeline uses
+// LANCZOS; Catmull-Rom is the closest stb filter (validated ≥0.995 latent
+// cosine against the reference pack). Returns interleaved RGB.
+std::vector<uint8_t> abot_fit_cover_center(const sd_image_t& src, int tw, int th) {
+    const uint32_t c = src.channel;
+    int64_t crop_w = src.width, crop_h = src.height;
+    if ((int64_t)src.width * th >= (int64_t)src.height * tw) {
+        crop_w = std::max<int64_t>(1, (int64_t)std::llround((double)src.height * tw / th));
+    } else {
+        crop_h = std::max<int64_t>(1, (int64_t)std::llround((double)src.width * th / tw));
+    }
+    const int64_t x0 = (src.width - crop_w) / 2, y0 = (src.height - crop_h) / 2;
+    std::vector<uint8_t> cropped(crop_w * crop_h * c);
+    for (int64_t y = 0; y < crop_h; y++) {
+        memcpy(cropped.data() + y * crop_w * c,
+               src.data + ((y0 + y) * src.width + x0) * c,
+               static_cast<size_t>(crop_w) * c);
+    }
+    if (crop_w == tw && crop_h == th) {
+        return cropped;
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(tw) * th * c);
+    stbir_resize_uint8_generic(cropped.data(), (int)crop_w, (int)crop_h, 0,
+                               out.data(), tw, th, 0,
+                               (int)c, STBIR_ALPHA_CHANNEL_NONE, 0,
+                               STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM,
+                               STBIR_COLORSPACE_LINEAR, nullptr);
+    return out;
+}
+
+}  // namespace
+
+bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
+    if (params == nullptr ||
+        strlen(SAFE_STR(params->t5_path)) == 0 ||
+        strlen(SAFE_STR(params->vae_path)) == 0 ||
+        strlen(SAFE_STR(params->prompt)) == 0 ||
+        strlen(SAFE_STR(params->output_path)) == 0 ||
+        params->init_image.data == nullptr) {
+        LOG_ERROR("sd_abot_scene_create: t5_path, vae_path, prompt, init_image and output_path are required");
+        return false;
+    }
+    if (params->width % 32 != 0 || params->height % 32 != 0 ||
+        params->width <= 0 || params->height <= 0) {
+        LOG_ERROR("sd_abot_scene_create: width/height must be positive multiples of 32 (got %dx%d)",
+                  params->width, params->height);
+        return false;
+    }
+
+    SDBackendManager backend_manager;
+    std::string err;
+    if (!backend_manager.init(SAFE_STR(params->backend), nullptr,
+                              params->offload_params_to_cpu,
+                              false, false, false, &err)) {
+        LOG_ERROR("sd_abot_scene_create: backend init failed: %s", err.c_str());
+        return false;
+    }
+    int n_threads = params->n_threads;
+    if (n_threads <= 0) {
+        n_threads = sd_get_num_physical_cores();
+    }
+
+    // ── 1. prompt -> umT5-XXL embeddings, padding rows zeroed ──
+    // Mirrors the reference WanTextEncoder: umt5 tokenizer at seq_len 512,
+    // attention-masked encode, embeddings zeroed past the real tokens
+    // (zero_out_masked reproduces `u[v:] = 0`).
+    ModelLoader t5_loader;
+    if (!t5_loader.init_from_file(SAFE_STR(params->t5_path), "text_encoders.t5xxl.transformer.")) {
+        LOG_ERROR("sd_abot_scene_create: cannot open t5 '%s'", params->t5_path);
+        return false;
+    }
+    sd::Tensor<float> prompt_embeds;
+    {
+        // same construction as the engine's Wan text-encoder branch
+        T5CLIPEmbedder t5(backend_manager.runtime_backend(SDBackendModule::TE),
+                          backend_manager.params_backend(SDBackendModule::TE),
+                          t5_loader.get_tensor_storage_map(),
+                          /*use_mask*/ true, /*mask_pad*/ 0, /*is_umt5*/ true);
+        if (!t5.alloc_params_buffer()) {
+            LOG_ERROR("sd_abot_scene_create: t5 alloc failed");
+            return false;
+        }
+        std::map<std::string, ggml_tensor*> t5_tensors;
+        t5.get_param_tensors(t5_tensors);
+        if (!t5_loader.load_tensors(t5_tensors, {}, n_threads)) {
+            LOG_ERROR("sd_abot_scene_create: t5 tensor load failed");
+            return false;
+        }
+        ConditionerParams cp;
+        cp.text            = SAFE_STR(params->prompt);
+        cp.clip_skip       = -1;
+        cp.zero_out_masked = true;
+        SDCondition cond   = t5.get_learned_condition(n_threads, cp);
+        if (cond.c_crossattn.empty()) {
+            LOG_ERROR("sd_abot_scene_create: prompt encode failed");
+            return false;
+        }
+        prompt_embeds = std::move(cond.c_crossattn);
+        t5.free_params_buffer();
+    }
+    if (prompt_embeds.shape()[0] != 4096 || prompt_embeds.shape()[1] != 512) {
+        LOG_ERROR("sd_abot_scene_create: unexpected prompt embedding shape (%lld x %lld)",
+                  (long long)prompt_embeds.shape()[1], (long long)prompt_embeds.shape()[0]);
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: prompt encoded (512 x 4096)");
+
+    // ── 2. image -> aspect crop + antialiased resize -> Wan2.2 VAE latent ──
+    // encode maps [0,1] -> [-1,1] internally; vae_to_diffusion_latents applies
+    // the reference (z - mean) / std per-channel normalization.
+    std::vector<uint8_t> fitted = abot_fit_cover_center(params->init_image, params->width, params->height);
+    sd_image_t fitted_image     = {static_cast<uint32_t>(params->width),
+                                   static_cast<uint32_t>(params->height),
+                                   params->init_image.channel,
+                                   fitted.data()};
+    sd::Tensor<float> image     = sd_image_to_tensor(fitted_image);
+
+    ModelLoader vae_loader;
+    // Wan VAE checkpoints/GGUFs carry canonical relative names (encoder.* /
+    // decoder.*); prefixing with the runner's root makes the map keys line up
+    // with get_param_tensors directly.
+    if (!vae_loader.init_from_file(SAFE_STR(params->vae_path), "first_stage_model.")) {
+        LOG_ERROR("sd_abot_scene_create: cannot open vae '%s'", params->vae_path);
+        return false;
+    }
+    sd::Tensor<float> first_frame;
+    {
+        // the loader canonicalizes vae.* file names to first_stage_model.*
+        WAN::WanVAERunner vae(backend_manager.runtime_backend(SDBackendModule::VAE),
+                              backend_manager.params_backend(SDBackendModule::VAE),
+                              vae_loader.get_tensor_storage_map(), "first_stage_model",
+                              /*decode_only*/ false, VERSION_ABOT_WORLD);
+        if (!vae.alloc_params_buffer()) {
+            LOG_ERROR("sd_abot_scene_create: vae alloc failed");
+            return false;
+        }
+        std::map<std::string, ggml_tensor*> vae_tensors;
+        vae.get_param_tensors(vae_tensors, "first_stage_model");
+        if (!vae_loader.load_tensors(vae_tensors, {}, n_threads)) {
+            LOG_ERROR("sd_abot_scene_create: vae tensor load failed");
+            return false;
+        }
+        sd_tiling_params_t no_tiling = {};
+        auto latents                 = vae.encode(n_threads, image, no_tiling, /*encode_video*/ true);
+        if (latents.empty()) {
+            LOG_ERROR("sd_abot_scene_create: vae encode failed");
+            return false;
+        }
+        latents     = vae.vae_output_to_latents(latents, nullptr);
+        first_frame = vae.vae_to_diffusion_latents(latents);
+        vae.free_params_buffer();
+    }
+    const int64_t lw = first_frame.shape()[0];
+    const int64_t lh = first_frame.shape()[1];
+    const int64_t lc = first_frame.numel() / (lw * lh);
+    if (lc != 48 || lw != params->width / 16 || lh != params->height / 16) {
+        LOG_ERROR("sd_abot_scene_create: unexpected first-frame latent (%lld x %lld x %lld)",
+                  (long long)lw, (long long)lh, (long long)lc);
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: first frame encoded (latent %lld x %lld x 48)",
+             (long long)lw, (long long)lh);
+
+    // ── 3. zero-filled reference slots + write the pack ──
+    // torch layouts: prompt_embeds [1,512,4096], first_frame [1,1,48,lh,lw],
+    // ref_latents [1,K,48,1,g,g], ref_mask [1,K] — contiguous f32, so the ggml
+    // buffers are written as-is (identical flat order).
+    ABOT::AbotSceneCreateConfig scfg;
+    const int64_t K = scfg.ref_slots, g = scfg.ref_grid;
+    std::vector<float> ref_latents(static_cast<size_t>(K * 48 * g * g), 0.0f);
+    std::vector<float> ref_mask(static_cast<size_t>(K), 0.0f);
+
+    std::vector<ABOT::AbotSceneWriter::Entry> entries = {
+        {"prompt_embeds", {1, 512, 4096}, prompt_embeds.data(), prompt_embeds.numel()},
+        {"first_frame_latents", {1, 1, 48, lh, lw}, first_frame.data(), first_frame.numel()},
+        {"ref_latents", {1, K, 48, 1, g, g}, ref_latents.data(), static_cast<int64_t>(ref_latents.size())},
+        {"ref_mask", {1, K}, ref_mask.data(), K},
+    };
+    if (!ABOT::AbotSceneWriter::write(SAFE_STR(params->output_path), entries)) {
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: wrote '%s'", params->output_path);
+    return true;
 }

@@ -1263,6 +1263,88 @@ public:
     }
 };
 
+// ── Scene-pack creation ──────────────────────────────────────────────────────
+// Builds the fixed world a session walks in, natively, from a prompt + first
+// frame image — the offline step the reference performs with the full PyTorch
+// pipeline (extract_scene.py). Components and their reference equivalents:
+//   umT5-XXL encode  -> prompt_embeds [1, 512, 4096]
+//       (WanTextEncoder: HF umt5 tokenizer, seq_len 512, attention-masked
+//        encode, embeddings zeroed past the real tokens — reproduced by
+//        T5CLIPEmbedder(is_umt5, use_mask) with zero_out_masked = true)
+//   Wan2.2 VAE encode -> first_frame_latents [1, 1, 48, H/16, W/16]
+//       (image scaled to cover + center-cropped to (width, height), mapped to
+//        [-1, 1], encoded, then (z - mean) / std per channel — reproduced by
+//        WanVAERunner encode + vae_to_diffusion_latents)
+//   ref_latents/ref_mask -> zero-filled slots (the reference's documented
+//        fallback when no reference images are provided)
+// Output: a scene.safetensors (float32) identical in layout to the reference
+// scene packs, loadable by AbotScenePack::load.
+
+struct AbotSceneWriter {
+    // Minimal safetensors writer (F32, C-order torch shapes) — the mirror of
+    // AbotScenePack's reader.
+    struct Entry {
+        std::string name;
+        std::vector<int64_t> torch_shape;
+        const float* data;
+        int64_t numel;
+    };
+
+    static bool write(const std::string& path, const std::vector<Entry>& entries) {
+        std::string header = "{";
+        uint64_t offset    = 0;
+        for (size_t i = 0; i < entries.size(); i++) {
+            const auto& e = entries[i];
+            if (i > 0) {
+                header += ",";
+            }
+            header += "\"" + e.name + "\":{\"dtype\":\"F32\",\"shape\":[";
+            for (size_t d = 0; d < e.torch_shape.size(); d++) {
+                if (d > 0) {
+                    header += ",";
+                }
+                header += std::to_string(e.torch_shape[d]);
+            }
+            uint64_t nbytes = static_cast<uint64_t>(e.numel) * sizeof(float);
+            header += "],\"data_offsets\":[" + std::to_string(offset) + "," +
+                      std::to_string(offset + nbytes) + "]}";
+            offset += nbytes;
+        }
+        header += "}";
+        // pad header to 8-byte alignment with spaces (safetensors convention)
+        while (header.size() % 8 != 0) {
+            header += " ";
+        }
+
+        std::ofstream f(path, std::ios::binary);
+        if (!f) {
+            LOG_ERROR("scene writer: cannot open '%s'", path.c_str());
+            return false;
+        }
+        uint64_t hlen = header.size();
+        f.write(reinterpret_cast<const char*>(&hlen), 8);
+        f.write(header.data(), static_cast<std::streamsize>(header.size()));
+        for (const auto& e : entries) {
+            f.write(reinterpret_cast<const char*>(e.data),
+                    static_cast<std::streamsize>(e.numel * sizeof(float)));
+        }
+        return f.good();
+    }
+};
+
+struct AbotSceneCreateConfig {
+    std::string prompt;      // encoded verbatim (the reference demo prefixes "| unknown | ")
+    int width      = 832;    // pixel size; must be a multiple of 32 (16x VAE, 2x patch)
+    int height     = 480;
+    int ref_slots  = 5;      // zero-filled reference slots
+    int ref_grid   = 32;     // latent grid per reference slot
+    int latent_c   = 48;     // Wan2.2 VAE channels
+};
+
+// The builder itself (umT5 + Wan-VAE encodes) lives in stable-diffusion.cpp
+// behind sd_abot_scene_create(): it needs the conditioner machinery that only
+// that translation unit includes.
+
 }  // namespace ABOT
 
 #endif  // __ABOT_WORLD_HPP__
