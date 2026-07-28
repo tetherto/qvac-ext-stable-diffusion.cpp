@@ -2617,7 +2617,8 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
                     audio_timesteps_tensor.empty() ? nullptr : &audio_timesteps_tensor,
                     audio_length,
                     frame_rate,
-                    video_positions.empty() ? nullptr : &video_positions};
+                    video_positions.empty() ? nullptr : &video_positions,
+                    local_skip_layers};
             } else if (sd_version_is_minit2i(version)) {
                 diffusion_params.extra = MiniT2IDiffusionExtra{
                     condition.c_vector.empty() ? nullptr : &condition.c_vector};

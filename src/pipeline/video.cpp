@@ -89,7 +89,8 @@ namespace sd::pipeline {
                                                         int fps,
                                                         int spatial_scale,
                                                         int temporal_scale,
-                                                        bool causal_temporal_positioning) {
+                                                        bool causal_temporal_positioning,
+                                                        bool keyframe_first = false) {
         GGML_ASSERT(width > 0 && height > 0 && target_latent_frames > 0);
         GGML_ASSERT(keyframe_latent_frames > 0);
         GGML_ASSERT(fps > 0);
@@ -98,41 +99,38 @@ namespace sd::pipeline {
         sd::Tensor<float> positions({2, 3, total_tokens, 1});
         int64_t token = 0;
 
-        for (int64_t t = 0; t < target_latent_frames; t++) {
-            float t_start = ltxv_latent_corner_to_pixel_frame(t, temporal_scale, causal_temporal_positioning) / static_cast<float>(fps);
-            float t_end   = ltxv_latent_corner_to_pixel_frame(t + 1, temporal_scale, causal_temporal_positioning) / static_cast<float>(fps);
-            for (int64_t h = 0; h < height; h++) {
-                float h_start = static_cast<float>(h * spatial_scale);
-                float h_end   = static_cast<float>((h + 1) * spatial_scale);
-                for (int64_t w = 0; w < width; w++) {
-                    float w_start = static_cast<float>(w * spatial_scale);
-                    float w_end   = static_cast<float>((w + 1) * spatial_scale);
-                    set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
+        auto append_positions = [&](bool keyframe) {
+            const int64_t frame_count = keyframe ? keyframe_latent_frames : target_latent_frames;
+            for (int64_t t = 0; t < frame_count; t++) {
+                const int64_t start_corner = (keyframe ? keyframe_frame_idx : 0) + t;
+                const int64_t end_corner   = start_corner + 1;
+                float t_start              = ltxv_latent_corner_to_pixel_frame(
+                    start_corner, temporal_scale, causal_temporal_positioning);
+                float t_end = ltxv_latent_corner_to_pixel_frame(
+                    end_corner, temporal_scale, causal_temporal_positioning);
+                if (keyframe && keyframe_pixel_frames == 1) {
+                    t_end = t_start + 1.f;
+                }
+                t_start /= static_cast<float>(fps);
+                t_end /= static_cast<float>(fps);
+                for (int64_t h = 0; h < height; h++) {
+                    float h_start = static_cast<float>(h * spatial_scale);
+                    float h_end   = static_cast<float>((h + 1) * spatial_scale);
+                    for (int64_t w = 0; w < width; w++) {
+                        float w_start = static_cast<float>(w * spatial_scale);
+                        float w_end   = static_cast<float>((w + 1) * spatial_scale);
+                        set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
+                    }
                 }
             }
-        }
+        };
 
-        for (int64_t t = 0; t < keyframe_latent_frames; t++) {
-            const int64_t start_corner = keyframe_frame_idx + t;
-            const int64_t end_corner   = keyframe_frame_idx + t + 1;
-            float t_start = ltxv_latent_corner_to_pixel_frame(
-                start_corner, temporal_scale, causal_temporal_positioning);
-            float t_end = ltxv_latent_corner_to_pixel_frame(
-                end_corner, temporal_scale, causal_temporal_positioning);
-            if (keyframe_pixel_frames == 1) {
-                t_end = t_start + 1.f;
-            }
-            t_start /= static_cast<float>(fps);
-            t_end /= static_cast<float>(fps);
-            for (int64_t h = 0; h < height; h++) {
-                float h_start = static_cast<float>(h * spatial_scale);
-                float h_end   = static_cast<float>((h + 1) * spatial_scale);
-                for (int64_t w = 0; w < width; w++) {
-                    float w_start = static_cast<float>(w * spatial_scale);
-                    float w_end   = static_cast<float>((w + 1) * spatial_scale);
-                    set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
-                }
-            }
+        if (keyframe_first) {
+            append_positions(true);
+            append_positions(false);
+        } else {
+            append_positions(false);
+            append_positions(true);
         }
 
         return positions;
@@ -880,7 +878,8 @@ namespace sd::pipeline {
 
                 auto apply_video_condition_by_keyframe_index = [&](const sd::Tensor<float>& keyframes,
                                                                    int frame_idx,
-                                                                   const char* name) -> bool {
+                                                                   const char* name,
+                                                                   bool condition_first = false) -> bool {
                     int64_t keyframe_frames = keyframes.shape()[2];
                     if (keyframe_frames <= 0 || keyframes.shape()[0] != latents.init_latent.shape()[0] ||
                         keyframes.shape()[1] != latents.init_latent.shape()[1] ||
@@ -891,15 +890,21 @@ namespace sd::pipeline {
 
                     latents.video_target_frame_count       = latents.init_latent.shape()[2];
                     latents.video_conditioning_frame_count = keyframe_frames;
-                    latents.init_latent                    = sd::ops::concat(latents.init_latent, keyframes, 2);
+                    latents.video_conditioning_first       = condition_first;
 
-                    auto keyframe_mask      = sd::full<float>({keyframes.shape()[0],
-                                                               keyframes.shape()[1],
-                                                               keyframes.shape()[2],
-                                                               1,
-                                                               1},
+                    auto keyframe_mask = sd::full<float>({keyframes.shape()[0],
+                                                          keyframes.shape()[1],
+                                                          keyframes.shape()[2],
+                                                          1,
+                                                          1},
                                                               conditioned_mask);
-                    latents.denoise_mask    = sd::ops::concat(latents.denoise_mask, keyframe_mask, 2);
+                    if (condition_first) {
+                        latents.init_latent  = sd::ops::concat(keyframes, latents.init_latent, 2);
+                        latents.denoise_mask = sd::ops::concat(keyframe_mask, latents.denoise_mask, 2);
+                    } else {
+                        latents.init_latent  = sd::ops::concat(latents.init_latent, keyframes, 2);
+                        latents.denoise_mask = sd::ops::concat(latents.denoise_mask, keyframe_mask, 2);
+                    }
                     latents.video_positions = build_ltxv_video_positions(latents.init_latent.shape()[0],
                                                                          latents.init_latent.shape()[1],
                                                                          latents.video_target_frame_count,
@@ -909,7 +914,8 @@ namespace sd::pipeline {
                                                                          request->fps,
                                                                          request->vae_scale_factor,
                                                                          8,
-                                                                         true);
+                                                                         true,
+                                                                         condition_first);
                     return true;
                 };
 
@@ -960,7 +966,8 @@ namespace sd::pipeline {
                     }
                     if (!apply_video_condition_by_keyframe_index(reference_latents,
                                                                  0,
-                                                                 "IC-LoRA reference")) {
+                                                                 "IC-LoRA reference",
+                                                                 true)) {
                         return std::nullopt;
                     }
                     const float reference_strength =
@@ -968,8 +975,8 @@ namespace sd::pipeline {
                     const int64_t reference_frames = reference_latents.shape()[2];
                     sd::ops::fill_slice(&latents.denoise_mask,
                                         2,
-                                        latents.denoise_mask.shape()[2] - reference_frames,
-                                        latents.denoise_mask.shape()[2],
+                                        0,
+                                        reference_frames,
                                         1.f - reference_strength);
                     LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
                              reference_images.size(),
@@ -2097,7 +2104,8 @@ namespace sd::pipeline {
         if (latents.video_conditioning_frame_count > 0) {
             int64_t target_frames = latents.video_target_frame_count > 0 ? latents.video_target_frame_count
                                                                          : final_latent.shape()[2] - latents.video_conditioning_frame_count;
-            final_latent          = sd::ops::slice(final_latent, 2, 0, target_frames);
+            int64_t target_start  = latents.video_conditioning_first ? latents.video_conditioning_frame_count : 0;
+            final_latent          = sd::ops::slice(final_latent, 2, target_start, target_start + target_frames);
         }
 
         if (latents.ref_image_num > 0) {

@@ -33,6 +33,7 @@ namespace sd::pipeline {
         int64_t ref_image_num                  = 0;
         int64_t video_conditioning_frame_count = 0;
         int64_t video_target_frame_count       = 0;
+        bool video_conditioning_first          = false;
         int audio_length                       = 0;
     };
 
