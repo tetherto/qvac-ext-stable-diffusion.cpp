@@ -1209,7 +1209,8 @@ namespace LTXV {
                                                       ggml_tensor* a_cross_gate_timestep,
                                                       ggml_tensor* v_prompt_timestep,
                                                       ggml_tensor* a_prompt_timestep,
-                                                      ggml_tensor* self_attention_mask = nullptr) {
+                                                      ggml_tensor* self_attention_mask = nullptr,
+                                                      bool skip_video_self_attention   = false) {
             auto attn1               = std::dynamic_pointer_cast<CrossAttention>(blocks["attn1"]);
             auto audio_attn1         = std::dynamic_pointer_cast<CrossAttention>(blocks["audio_attn1"]);
             auto attn2               = std::dynamic_pointer_cast<CrossAttention>(blocks["attn2"]);
@@ -1227,10 +1228,12 @@ namespace LTXV {
             bool run_v2a = run_ax;
 
             auto v_mods = get_ada_values(ctx, v_table, v_timestep, v_dim, cross_attention_adaln ? 9 : 6);
-            auto v_norm = rms_norm(ctx->ggml_ctx, vx);
-            v_norm      = LTXV::modulate(ctx->ggml_ctx, v_norm, v_mods[0], v_mods[1]);
-            auto v_sa   = attn1->forward(ctx, v_norm, nullptr, self_attention_mask, v_pe);
-            vx          = ggml_add(ctx->ggml_ctx, vx, apply_gate(ctx->ggml_ctx, v_sa, v_mods[2]));
+            if (!skip_video_self_attention) {
+                auto v_norm = rms_norm(ctx->ggml_ctx, vx);
+                v_norm      = LTXV::modulate(ctx->ggml_ctx, v_norm, v_mods[0], v_mods[1]);
+                auto v_sa   = attn1->forward(ctx, v_norm, nullptr, self_attention_mask, v_pe);
+                vx          = ggml_add(ctx->ggml_ctx, vx, apply_gate(ctx->ggml_ctx, v_sa, v_mods[2]));
+            }
             auto v_txt  = apply_text_cross_attention(ctx,
                                                      vx,
                                                      v_context,
@@ -1556,7 +1559,8 @@ namespace LTXV {
                                                       ggml_tensor* v_cross_pe,
                                                       ggml_tensor* a_cross_pe,
                                                       ggml_tensor* video_connector_pe,
-                                                      ggml_tensor* audio_connector_pe) {
+                                                      ggml_tensor* audio_connector_pe,
+                                                      const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto patchify_proj       = std::dynamic_pointer_cast<Linear>(blocks["patchify_proj"]);
             auto audio_patchify_proj = std::dynamic_pointer_cast<Linear>(blocks["audio_patchify_proj"]);
             auto adaln_single        = std::dynamic_pointer_cast<AdaLayerNormSingle>(blocks["adaln_single"]);
@@ -1631,26 +1635,33 @@ namespace LTXV {
 
             for (int i = 0; i < config.num_layers; i++) {
                 auto block = std::dynamic_pointer_cast<BasicAVTransformerBlock>(blocks["transformer_blocks." + std::to_string(i)]);
-                auto out   = block->forward(ctx,
-                                            vx,
-                                            ax,
-                                            v_context,
-                                            a_context,
-                                            nullptr,
-                                            v_timestep_mod,
-                                            a_timestep_mod,
-                                            v_pe,
-                                            a_pe,
-                                            v_cross_pe,
-                                            a_cross_pe,
-                                            av_ca_video_scale_shift_timestep,
-                                            av_ca_audio_scale_shift_timestep,
-                                            av_ca_a2v_gate_noise_timestep,
-                                            av_ca_v2a_gate_noise_timestep,
-                                            v_prompt_timestep_mod,
-                                            a_prompt_timestep_mod);
-                vx         = out.first;
-                ax         = out.second;
+                const bool skip_video_self_attention =
+                    skip_video_self_attention_blocks != nullptr &&
+                    std::find(skip_video_self_attention_blocks->begin(),
+                              skip_video_self_attention_blocks->end(),
+                              i) != skip_video_self_attention_blocks->end();
+                auto out = block->forward(ctx,
+                                          vx,
+                                          ax,
+                                          v_context,
+                                          a_context,
+                                          nullptr,
+                                          v_timestep_mod,
+                                          a_timestep_mod,
+                                          v_pe,
+                                          a_pe,
+                                          v_cross_pe,
+                                          a_cross_pe,
+                                          av_ca_video_scale_shift_timestep,
+                                          av_ca_audio_scale_shift_timestep,
+                                          av_ca_a2v_gate_noise_timestep,
+                                          av_ca_v2a_gate_noise_timestep,
+                                          v_prompt_timestep_mod,
+                                          a_prompt_timestep_mod,
+                                          nullptr,
+                                          skip_video_self_attention);
+                vx       = out.first;
+                ax       = out.second;
                 sd::ggml_graph_cut::mark_graph_cut(vx, "ltxav.transformer_blocks." + std::to_string(i), "vx");
                 sd::ggml_graph_cut::mark_graph_cut(ax, "ltxav.transformer_blocks." + std::to_string(i), "ax");
             }
@@ -1771,7 +1782,8 @@ namespace LTXV {
                                  const sd::Tensor<float>& audio_timesteps_tensor = {},
                                  int audio_length                                = 0,
                                  float frame_rate                                = 24.f,
-                                 const sd::Tensor<float>& video_positions_tensor = {}) {
+                                 const sd::Tensor<float>& video_positions_tensor          = {},
+                                 const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto split_inputs = split_av_latents(x_tensor, audio_length);
             vx_input_cache    = split_inputs.first;
             if (!audio_x_tensor.empty()) {
@@ -1921,7 +1933,8 @@ namespace LTXV {
                                             video_cross_pe,
                                             audio_cross_pe,
                                             video_connector_pe,
-                                            audio_connector_pe);
+                                            audio_connector_pe,
+                                            skip_video_self_attention_blocks);
             auto out        = merge_av_latents(compute_ctx, out_pair.first, out_pair.second);
             ggml_build_forward_expand(gf, out);
             return gf;
@@ -1935,9 +1948,18 @@ namespace LTXV {
                                   const sd::Tensor<float>& audio_timesteps = {},
                                   int audio_length                         = 0,
                                   float frame_rate                         = 24.f,
-                                  const sd::Tensor<float>& video_positions = {}) {
+                                  const sd::Tensor<float>& video_positions                 = {},
+                                  const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto get_graph = [&]() -> ggml_cgraph* {
-                return build_graph(x, timesteps, context, audio_x, audio_timesteps, audio_length, frame_rate, video_positions);
+                return build_graph(x,
+                                   timesteps,
+                                   context,
+                                   audio_x,
+                                   audio_timesteps,
+                                   audio_length,
+                                   frame_rate,
+                                   video_positions,
+                                   skip_video_self_attention_blocks);
             };
             auto out = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
             return out;
@@ -1956,7 +1978,8 @@ namespace LTXV {
                            tensor_or_empty(extra->audio_timesteps),
                            extra->audio_length,
                            extra->frame_rate,
-                           tensor_or_empty(extra->video_positions));
+                           tensor_or_empty(extra->video_positions),
+                           extra->skip_video_self_attention_blocks);
         }
 
         void test(const std::string& x_path,
