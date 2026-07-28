@@ -4513,8 +4513,12 @@ static sd::Tensor<float> build_ltxv_video_positions(int64_t width,
     }
 
     for (int64_t t = 0; t < keyframe_latent_frames; t++) {
-        float t_start = static_cast<float>(keyframe_frame_idx + t * temporal_scale);
-        float t_end   = static_cast<float>(keyframe_frame_idx + (t + 1) * temporal_scale);
+        const int64_t start_corner = keyframe_frame_idx + t;
+        const int64_t end_corner   = keyframe_frame_idx + t + 1;
+        float t_start = ltxv_latent_corner_to_pixel_frame(
+            start_corner, temporal_scale, causal_temporal_positioning);
+        float t_end = ltxv_latent_corner_to_pixel_frame(
+            end_corner, temporal_scale, causal_temporal_positioning);
         if (keyframe_pixel_frames == 1) {
             t_end = t_start + 1.f;
         }
@@ -6233,6 +6237,10 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
             return std::nullopt;
         }
         if (!reference_images.empty()) {
+            if (reference_images.size() != 1) {
+                LOG_ERROR("LTX Ingredients requires exactly one composite reference sheet");
+                return std::nullopt;
+            }
             if (sd_vid_gen_params->reference_downscale_factor != 1.f) {
                 LOG_ERROR("LTX IC-LoRA currently requires reference_downscale_factor=1");
                 return std::nullopt;
