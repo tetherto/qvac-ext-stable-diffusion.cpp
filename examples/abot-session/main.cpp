@@ -303,11 +303,16 @@ static int run_create_scene(const std::string& t5, const std::string& vae,
                             const std::string& prompt, const std::string& image_path,
                             int width, int height, const std::string& scene_out,
                             int threads, const std::string& backend) {
+    // --image is optional: without it a text-only scene is written (block 0
+    // generated from noise under the prompt)
     int iw = 0, ih = 0, ic = 0;
-    unsigned char* pixels = stbi_load(image_path.c_str(), &iw, &ih, &ic, 3);
-    if (pixels == nullptr) {
-        fprintf(stderr, "cannot load image '%s'\n", image_path.c_str());
-        return 1;
+    unsigned char* pixels = nullptr;
+    if (!image_path.empty()) {
+        pixels = stbi_load(image_path.c_str(), &iw, &ih, &ic, 3);
+        if (pixels == nullptr) {
+            fprintf(stderr, "cannot load image '%s'\n", image_path.c_str());
+            return 1;
+        }
     }
     sd_abot_scene_params_t params;
     sd_abot_scene_params_init(&params);
@@ -382,8 +387,9 @@ int main(int argc, char** argv) {
         else if (k == "--scene-out") scene_out = next();
     }
     if (mode == "create-scene") {
-        if (t5.empty() || vae.empty() || prompt.empty() || image_path.empty() || scene_out.empty()) {
-            fprintf(stderr, "create-scene mode needs --t5, --vae, --prompt, --image and --scene-out\n");
+        if (t5.empty() || prompt.empty() || scene_out.empty() || (vae.empty() && !image_path.empty())) {
+            fprintf(stderr, "create-scene mode needs --t5, --prompt and --scene-out; "
+                            "--image is optional (text-only scene without it; --vae required with --image)\n");
             return 2;
         }
         return run_create_scene(t5, vae, prompt, image_path, width, height, scene_out, threads, backend);

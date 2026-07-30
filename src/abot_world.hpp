@@ -87,6 +87,9 @@ struct AbotScenePack {
     sd::Tensor<float> ref_latents;          // {32, 32, C, K} (T=1 squeezed)
     sd::Tensor<float> ref_mask;             // {K}
     int ref_slots = 0;
+    // false = text-only scene: block-0 frame 0 is generated from noise
+    // instead of being pinned to first_frame_latents
+    bool has_first_frame = true;
 
     // Minimal safetensors reader (F32 tensors only — the scene pack is fp32).
     // Torch shapes map to ggml ne reversed; trailing singleton dims dropped.
@@ -145,6 +148,15 @@ struct AbotScenePack {
             return false;
         }
         first_frame_latents.resize({sh[4], sh[3], sh[2], 1});
+        // optional first_frame_mask: 0 = text-only scene (do NOT pin block-0
+        // frame 0; it is generated from noise). Missing = 1 (back-compat).
+        {
+            sd::Tensor<float> ffm;
+            std::vector<int64_t> msh;
+            if (fetch("first_frame_mask", ffm, msh) && ffm.numel() >= 1) {
+                has_first_frame = ffm.data()[0] > 0.5f;
+            }
+        }
         if (fetch("ref_latents", ref_latents, sh)) {               // [1,K,C,1,32,32]
             ref_slots = static_cast<int>(sh[1]);
             // stored per-slot [C,1,32,32]; conv needs ne {32,32,K,C}:
@@ -1003,10 +1015,14 @@ public:
         const int block  = static_cast<int>(history.size()) / Fb;
         const float* ff  = runner->scene.first_frame_latents.data();
 
+        // text-only scenes (first_frame_mask = 0) generate block-0 frame 0
+        // from noise instead of pinning it to the scene's first-frame latent
+        const bool pin_first = first && runner->scene.has_first_frame;
+
         std::vector<float> xt(static_cast<size_t>(Fb) * fel);
         if (!noise_override || !noise_override(block, -1, xt.data(), xt.size())) {
             rng.fill(xt.data(), xt.size());
-            if (first) {
+            if (pin_first) {
                 memcpy(xt.data(), ff, fel * sizeof(float));  // pin frame 0 to the scene
             }
         }
@@ -1064,7 +1080,7 @@ public:
             for (int f = 0; f < Fb; f++) {
                 frames.push_back(xt.data() + static_cast<size_t>(f) * fel);
                 facts.push_back(action_mask);
-                fts.push_back(first && f == 0 ? 0.0f : t_cur);
+                fts.push_back(pin_first && f == 0 ? 0.0f : t_cur);
                 abs_ids.push_back(static_cast<int64_t>(history.size()) + f);
             }
 
@@ -1113,7 +1129,7 @@ public:
             } else {
                 xt = std::move(x0);
             }
-            if (first) {
+            if (pin_first) {
                 memcpy(xt.data(), ff, fel * sizeof(float));  // keep frame 0 pinned
             }
         }

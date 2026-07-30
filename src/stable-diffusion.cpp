@@ -5946,13 +5946,29 @@ std::vector<uint8_t> abot_fit_cover_center(const sd_image_t& src, int tw, int th
 }  // namespace
 
 bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
+    // init_image is optional: without it the pack carries a zero first-frame
+    // latent + first_frame_mask=0 and the walk generates block 0 from noise
+    // under the prompt alone (text-only world, TI2V-style).
+    //
+    // VALIDATED CAVEAT (RTX 5090, 2026-07): the plumbing works end to end, but
+    // the current distilled ABot-World-0-5B-LF checkpoint ("ci2v") cannot
+    // bootstrap a coherent first frame from noise in its 4 distilled steps -
+    // text-only scenes come out as degenerate non-navigable texture. Keep the
+    // capability gated behind the pack's first_frame_mask; it becomes useful
+    // only with a T2V-capable checkpoint. Front-ends should require an image.
+    //
+    // Image-input notes (also validated): decoding is stb (magic-byte based,
+    // extension ignored; JPEG/PNG reliable, no WebP/AVIF/HEIC), EXIF rotation
+    // is NOT honored, alpha is dropped, and any resolution is accepted - the
+    // cover-scale + center-crop below means small inputs upscale (soft output)
+    // and extreme aspect ratios lose everything outside the center crop.
+    const bool has_image = params != nullptr && params->init_image.data != nullptr;
     if (params == nullptr ||
         strlen(SAFE_STR(params->t5_path)) == 0 ||
-        strlen(SAFE_STR(params->vae_path)) == 0 ||
+        (has_image && strlen(SAFE_STR(params->vae_path)) == 0) ||
         strlen(SAFE_STR(params->prompt)) == 0 ||
-        strlen(SAFE_STR(params->output_path)) == 0 ||
-        params->init_image.data == nullptr) {
-        LOG_ERROR("sd_abot_scene_create: t5_path, vae_path, prompt, init_image and output_path are required");
+        strlen(SAFE_STR(params->output_path)) == 0) {
+        LOG_ERROR("sd_abot_scene_create: t5_path, prompt and output_path are required (vae_path too when init_image is set)");
         return false;
     }
     if (params->width % 32 != 0 || params->height % 32 != 0 ||
@@ -6023,6 +6039,14 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
     // ── 2. image -> aspect crop + antialiased resize -> Wan2.2 VAE latent ──
     // encode maps [0,1] -> [-1,1] internally; vae_to_diffusion_latents applies
     // the reference (z - mean) / std per-channel normalization.
+    sd::Tensor<float> first_frame;
+    if (!has_image) {
+        // text-only world: zero first-frame latent, marked inactive below
+        first_frame.resize({params->width / 16, params->height / 16, 48});
+        std::fill_n(first_frame.data(), first_frame.numel(), 0.0f);
+        LOG_INFO("sd_abot_scene_create: no init image - text-only scene (block 0 from noise)");
+    }
+    if (has_image) {
     std::vector<uint8_t> fitted = abot_fit_cover_center(params->init_image, params->width, params->height);
     sd_image_t fitted_image     = {static_cast<uint32_t>(params->width),
                                    static_cast<uint32_t>(params->height),
@@ -6038,7 +6062,6 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
         LOG_ERROR("sd_abot_scene_create: cannot open vae '%s'", params->vae_path);
         return false;
     }
-    sd::Tensor<float> first_frame;
     {
         // the loader canonicalizes vae.* file names to first_stage_model.*
         WAN::WanVAERunner vae(backend_manager.runtime_backend(SDBackendModule::VAE),
@@ -6065,6 +6088,7 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
         first_frame = vae.vae_to_diffusion_latents(latents);
         vae.free_params_buffer();
     }
+    }
     const int64_t lw = first_frame.shape()[0];
     const int64_t lh = first_frame.shape()[1];
     const int64_t lc = first_frame.numel() / (lw * lh);
@@ -6084,12 +6108,16 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
     const int64_t K = scfg.ref_slots, g = scfg.ref_grid;
     std::vector<float> ref_latents(static_cast<size_t>(K * 48 * g * g), 0.0f);
     std::vector<float> ref_mask(static_cast<size_t>(K), 0.0f);
+    // first_frame_mask: 1 = pin block-0 frame 0 to first_frame_latents;
+    // 0 = text-only scene, block 0 generated from noise (loader default: 1)
+    float first_frame_mask = has_image ? 1.0f : 0.0f;
 
     std::vector<ABOT::AbotSceneWriter::Entry> entries = {
         {"prompt_embeds", {1, 512, 4096}, prompt_embeds.data(), prompt_embeds.numel()},
         {"first_frame_latents", {1, 1, 48, lh, lw}, first_frame.data(), first_frame.numel()},
         {"ref_latents", {1, K, 48, 1, g, g}, ref_latents.data(), static_cast<int64_t>(ref_latents.size())},
         {"ref_mask", {1, K}, ref_mask.data(), K},
+        {"first_frame_mask", {1, 1}, &first_frame_mask, 1},
     };
     if (!ABOT::AbotSceneWriter::write(SAFE_STR(params->output_path), entries)) {
         return false;
