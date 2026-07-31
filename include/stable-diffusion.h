@@ -542,9 +542,12 @@ SD_API void sd_abot_session_free(sd_abot_session_t* session);
 
 typedef struct {
     const char* t5_path;      // umT5-XXL GGUF/safetensors (text encoder)
-    const char* vae_path;     // Wan2.2 VAE GGUF/safetensors (48-channel)
+    const char* vae_path;     // Wan2.2 VAE GGUF/safetensors (48-channel); may be NULL without init_image
     const char* prompt;       // encoded verbatim (reference demos prefix "| unknown | ")
-    sd_image_t init_image;    // first frame, RGB, any size (cover + center-crop)
+    sd_image_t init_image;    // first frame, RGB, any size (cover + center-crop).
+                              // data == NULL writes a text-only pack (first_frame_mask = 0,
+                              // block 0 from noise) - gated: the distilled checkpoint cannot
+                              // bootstrap a first frame, so front-ends should require an image
     int width;                // target pixel size; multiples of 32 (default 832x480)
     int height;
     const char* output_path;  // scene pack destination (safetensors)

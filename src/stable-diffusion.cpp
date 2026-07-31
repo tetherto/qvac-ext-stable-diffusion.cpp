@@ -3109,8 +3109,8 @@ struct sd_ctx_t {
 };
 
 static bool sd_version_supports_video_generation(SDVersion version) {
-    // ABot-World loads like a Wan model but is causal/interactive-only: it
-    // supports neither batch capability until the causal session API lands.
+    // ABot-World loads like a Wan model but is causal/interactive-only: it is
+    // driven through the sd_abot_session_* API, never the batch entrypoints.
     if (sd_version_is_abot_world(version)) {
         return false;
     }
@@ -3537,8 +3537,7 @@ struct GenerationRequest {
         }
         LOG_ERROR(
             "ABot-World models are not supported by batch generate_image()/generate_video(); "
-            "the causal interactive session API is not implemented yet "
-            "(model loading and inspection are supported)");
+            "drive them through the interactive session API (sd_abot_session_new/step) instead");
         valid = false;
     }
 
@@ -6040,29 +6039,22 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
     // encode maps [0,1] -> [-1,1] internally; vae_to_diffusion_latents applies
     // the reference (z - mean) / std per-channel normalization.
     sd::Tensor<float> first_frame;
-    if (!has_image) {
-        // text-only world: zero first-frame latent, marked inactive below
-        first_frame.resize({params->width / 16, params->height / 16, 48});
-        std::fill_n(first_frame.data(), first_frame.numel(), 0.0f);
-        LOG_INFO("sd_abot_scene_create: no init image - text-only scene (block 0 from noise)");
-    }
     if (has_image) {
-    std::vector<uint8_t> fitted = abot_fit_cover_center(params->init_image, params->width, params->height);
-    sd_image_t fitted_image     = {static_cast<uint32_t>(params->width),
-                                   static_cast<uint32_t>(params->height),
-                                   params->init_image.channel,
-                                   fitted.data()};
-    sd::Tensor<float> image     = sd_image_to_tensor(fitted_image);
+        std::vector<uint8_t> fitted = abot_fit_cover_center(params->init_image, params->width, params->height);
+        sd_image_t fitted_image     = {static_cast<uint32_t>(params->width),
+                                       static_cast<uint32_t>(params->height),
+                                       params->init_image.channel,
+                                       fitted.data()};
+        sd::Tensor<float> image     = sd_image_to_tensor(fitted_image);
 
-    ModelLoader vae_loader;
-    // Wan VAE checkpoints/GGUFs carry canonical relative names (encoder.* /
-    // decoder.*); prefixing with the runner's root makes the map keys line up
-    // with get_param_tensors directly.
-    if (!vae_loader.init_from_file(SAFE_STR(params->vae_path), "first_stage_model.")) {
-        LOG_ERROR("sd_abot_scene_create: cannot open vae '%s'", params->vae_path);
-        return false;
-    }
-    {
+        ModelLoader vae_loader;
+        // Wan VAE checkpoints/GGUFs carry canonical relative names (encoder.* /
+        // decoder.*); prefixing with the runner's root makes the map keys line
+        // up with get_param_tensors directly.
+        if (!vae_loader.init_from_file(SAFE_STR(params->vae_path), "first_stage_model.")) {
+            LOG_ERROR("sd_abot_scene_create: cannot open vae '%s'", params->vae_path);
+            return false;
+        }
         // the loader canonicalizes vae.* file names to first_stage_model.*
         WAN::WanVAERunner vae(backend_manager.runtime_backend(SDBackendModule::VAE),
                               backend_manager.params_backend(SDBackendModule::VAE),
@@ -6087,7 +6079,10 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
         latents     = vae.vae_output_to_latents(latents, nullptr);
         first_frame = vae.vae_to_diffusion_latents(latents);
         vae.free_params_buffer();
-    }
+    } else {
+        // text-only world: zero first-frame latent, marked inactive below
+        first_frame.resize({params->width / 16, params->height / 16, 48});
+        std::fill_n(first_frame.data(), first_frame.numel(), 0.0f);
     }
     const int64_t lw = first_frame.shape()[0];
     const int64_t lh = first_frame.shape()[1];
@@ -6097,7 +6092,8 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
                   (long long)lw, (long long)lh, (long long)lc);
         return false;
     }
-    LOG_INFO("sd_abot_scene_create: first frame encoded (latent %lld x %lld x 48)",
+    LOG_INFO("sd_abot_scene_create: first frame %s (latent %lld x %lld x 48)",
+             has_image ? "encoded" : "zeroed - text-only scene, block 0 from noise",
              (long long)lw, (long long)lh);
 
     // ── 3. zero-filled reference slots + write the pack ──

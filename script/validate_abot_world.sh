@@ -6,7 +6,7 @@
 #   1. an ABot GGUF is detected as "ABot-World" and all tensors load (incl. the
 #      act_control_adapter action-conditioning block);
 #   2. the batch generate_video() path rejects it with the explanatory error
-#      (the causal interactive session is a separate, not-yet-landed feature);
+#      (ABot is driven through the sd_abot_session_* API, never the batch paths);
 #   3. (optional) a stock Wan model still detects + generates unchanged, proving
 #      no regression from the sd_version_is_wan_ti2v_family() refactor.
 #
