@@ -18,8 +18,10 @@ a rolling attention window and a 4-step distilled sampler.
   session owns the DiT + taehv decoder + a scene pack; each
   `step(action_mask)` (bits 0..7 = W,A,S,D,I,J,K,L held) generates one latent
   block and returns its decoded RGB frames. Opt-in per-layer KV cache
-  (`ABOT_KV_CACHE=1`) captures history K/V once per finalized block instead of
-  recomputing it every denoise step; `ABOT_PROF=1` prints per-stage timings.
+  (`sd_abot_session_params_t.kv_cache`) captures history K/V once per finalized
+  block instead of recomputing it every denoise step; it is validated against
+  the attention window at load. `params.profile` (or `ABOT_PROF=1`) prints
+  per-stage timings.
 - **Native scene creation** (`sd_abot_scene_create`): builds the scene pack a
   session walks in from a prompt + first-frame image, on-device — umT5-XXL
   encodes the prompt, the Wan2.2 VAE encodes the image — replacing the

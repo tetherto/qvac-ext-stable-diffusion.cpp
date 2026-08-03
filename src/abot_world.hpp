@@ -69,7 +69,20 @@ struct AbotWorldConfig {
     // < 0 = unbounded (previous behavior: full-history recompute, VRAM grows
     // every block until OOM).
     int history_keep = 0;
+    // Per-layer history KV cache: capture finalized-block K/V once instead of
+    // recomputing them every denoise step. Requires local_attn_size -
+    // num_frame_per_block <= AbotWorldRunner::kv_ring_slots (validated at
+    // session load; the ring is compile-time sized).
+    bool kv_cache = false;
+    // Per-stage timing logs ([prof] lines). ABOT_PROF=1 also enables, so the
+    // switch stays reachable without an API change in field debugging.
+    bool profile = false;
 };
+
+static inline bool abot_prof_env() {
+    static const bool v = std::getenv("ABOT_PROF") != nullptr;
+    return v;
+}
 
 static inline float abot_sigma_of_t(float t) {
     return t / 1000.0f;  // warped steps satisfy t = sigma' * 1000 exactly
@@ -93,26 +106,59 @@ struct AbotScenePack {
 
     // Minimal safetensors reader (F32 tensors only — the scene pack is fp32).
     // Torch shapes map to ggml ne reversed; trailing singleton dims dropped.
+    // Packs are portable artifacts (downloaded reference packs, packs shared
+    // between machines), so every field read from the file is validated as
+    // untrusted input: bounded header, npos-checked parsing, positive dims
+    // with an overflow-safe element cap, per-tensor rank/layout checks, and
+    // data ranges checked against the file size.
     bool load(const std::string& path) {
+        // scene-pack headers are ~1 KB; the element cap is far above the
+        // largest legitimate tensor (prompt_embeds, 2M floats) but bounds a
+        // hostile allocation to 1 GiB
+        constexpr uint64_t MAX_HEADER  = 16ull * 1024 * 1024;
+        constexpr int64_t MAX_ELEMENTS = int64_t(1) << 28;
+        constexpr int64_t MAX_REF_SLOTS = 64;
+
         std::ifstream f(path, std::ios::binary);
         if (!f) {
             LOG_ERROR("scene pack: cannot open '%s'", path.c_str());
             return false;
         }
+        f.seekg(0, std::ios::end);
+        const int64_t file_size = static_cast<int64_t>(f.tellg());
+        f.seekg(0);
         uint64_t hlen = 0;
         f.read(reinterpret_cast<char*>(&hlen), 8);
+        if (f.gcount() != 8 || hlen == 0 || hlen > MAX_HEADER ||
+            static_cast<int64_t>(8 + hlen) > file_size) {
+            LOG_ERROR("scene pack: invalid header length in '%s'", path.c_str());
+            return false;
+        }
         std::string header(hlen, '\0');
         f.read(header.data(), static_cast<std::streamsize>(hlen));
+        if (static_cast<uint64_t>(f.gcount()) != hlen) {
+            LOG_ERROR("scene pack: truncated header in '%s'", path.c_str());
+            return false;
+        }
         const uint64_t data_base = 8 + hlen;
 
+        // false = absent OR malformed; `bad` distinguishes (malformed packs
+        // must fail the load even for optional tensors)
+        bool bad   = false;
         auto fetch = [&](const std::string& name, sd::Tensor<float>& out,
                          std::vector<int64_t>& torch_shape) -> bool {
             size_t p = header.find("\"" + name + "\"");
             if (p == std::string::npos) {
                 return false;
             }
-            size_t sp = header.find("\"shape\"", p);
-            size_t sb = header.find('[', sp), se = header.find(']', sb);
+            const size_t sp = header.find("\"shape\"", p);
+            const size_t sb = sp == std::string::npos ? std::string::npos : header.find('[', sp);
+            const size_t se = sb == std::string::npos ? std::string::npos : header.find(']', sb);
+            if (se == std::string::npos) {
+                LOG_ERROR("scene pack: tensor '%s' has no shape", name.c_str());
+                bad = true;
+                return false;
+            }
             torch_shape.clear();
             for (size_t q = sb + 1; q < se;) {
                 while (q < se && (header[q] == ' ' || header[q] == ',')) q++;
@@ -120,11 +166,30 @@ struct AbotScenePack {
                 torch_shape.push_back(strtoll(header.c_str() + q, nullptr, 10));
                 while (q < se && header[q] != ',') q++;
             }
-            size_t op = header.find("\"data_offsets\"", p);
-            size_t ob = header.find('[', op);
-            uint64_t off0 = strtoull(header.c_str() + ob + 1, nullptr, 10);
-            int64_t n = 1;
-            for (auto s : torch_shape) n *= s;
+            const size_t op = header.find("\"data_offsets\"", p);
+            const size_t ob = op == std::string::npos ? std::string::npos : header.find('[', op);
+            if (ob == std::string::npos) {
+                LOG_ERROR("scene pack: tensor '%s' has no data_offsets", name.c_str());
+                bad = true;
+                return false;
+            }
+            const uint64_t off0 = strtoull(header.c_str() + ob + 1, nullptr, 10);
+            int64_t n           = 1;
+            for (auto s : torch_shape) {
+                if (s <= 0 || n > MAX_ELEMENTS / s) {
+                    LOG_ERROR("scene pack: tensor '%s' has an invalid shape", name.c_str());
+                    bad = true;
+                    return false;
+                }
+                n *= s;
+            }
+            if (off0 > static_cast<uint64_t>(file_size) ||
+                data_base + off0 + static_cast<uint64_t>(n) * sizeof(float) >
+                    static_cast<uint64_t>(file_size)) {
+                LOG_ERROR("scene pack: tensor '%s' data exceeds the file", name.c_str());
+                bad = true;
+                return false;
+            }
             std::vector<int64_t> ne;  // reversed, no trailing 1s beyond 4
             for (auto it = torch_shape.rbegin(); it != torch_shape.rend(); ++it) {
                 if (*it != 1 || ne.size() < 1) ne.push_back(*it);
@@ -136,15 +201,39 @@ struct AbotScenePack {
             }
             f.seekg(static_cast<std::streamoff>(data_base + off0));
             f.read(reinterpret_cast<char*>(out.data()), n * static_cast<int64_t>(sizeof(float)));
-            return f.good();
+            if (!f.good()) {
+                LOG_ERROR("scene pack: tensor '%s' read failed", name.c_str());
+                bad = true;
+                return false;
+            }
+            return true;
+        };
+        // rank + leading-singleton layout check per named tensor: the resizes
+        // below index fixed positions and reinterpret the buffer contiguously
+        auto expect = [&](const char* name, const std::vector<int64_t>& sh,
+                          size_t rank, std::initializer_list<size_t> one_dims) -> bool {
+            if (sh.size() != rank) {
+                LOG_ERROR("scene pack: tensor '%s' has rank %zu, expected %zu",
+                          name, sh.size(), rank);
+                return false;
+            }
+            for (size_t d : one_dims) {
+                if (sh[d] != 1) {
+                    LOG_ERROR("scene pack: tensor '%s' dim %zu must be 1", name, d);
+                    return false;
+                }
+            }
+            return true;
         };
 
         std::vector<int64_t> sh;
-        if (!fetch("prompt_embeds", prompt_embeds, sh)) {          // [1,512,4096]
+        if (!fetch("prompt_embeds", prompt_embeds, sh) ||          // [1,512,4096]
+            !expect("prompt_embeds", sh, 3, {0})) {
             return false;
         }
         prompt_embeds.resize({sh[2], sh[1], 1, 1});
-        if (!fetch("first_frame_latents", first_frame_latents, sh)) {  // [1,1,C,H,W]
+        if (!fetch("first_frame_latents", first_frame_latents, sh) ||  // [1,1,C,H,W]
+            !expect("first_frame_latents", sh, 5, {0, 1})) {
             return false;
         }
         first_frame_latents.resize({sh[4], sh[3], sh[2], 1});
@@ -155,9 +244,14 @@ struct AbotScenePack {
             std::vector<int64_t> msh;
             if (fetch("first_frame_mask", ffm, msh) && ffm.numel() >= 1) {
                 has_first_frame = ffm.data()[0] > 0.5f;
+            } else if (bad) {
+                return false;
             }
         }
         if (fetch("ref_latents", ref_latents, sh)) {               // [1,K,C,1,32,32]
+            if (!expect("ref_latents", sh, 6, {0, 3}) || sh[1] > MAX_REF_SLOTS) {
+                return false;
+            }
             ref_slots = static_cast<int>(sh[1]);
             // stored per-slot [C,1,32,32]; conv needs ne {32,32,K,C}:
             // torch order is (K,C,32,32) contiguous -> need transpose to {W,H,K,C}
@@ -172,10 +266,13 @@ struct AbotScenePack {
             }
             ref_latents = std::move(re);
             std::vector<int64_t> msh;
-            if (!fetch("ref_mask", ref_mask, msh)) {
+            if (!fetch("ref_mask", ref_mask, msh) || ref_mask.numel() != ref_slots) {
+                LOG_ERROR("scene pack: ref_mask missing or does not match ref_latents");
                 return false;
             }
             ref_mask.resize({ref_slots});
+        } else if (bad) {
+            return false;
         }
         return true;
     }
@@ -659,8 +756,8 @@ struct AbotWorldRunner : public GGMLRunner {
                       rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
         }
 
-        static const bool prof = std::getenv("ABOT_PROF") != nullptr;
-        const int64_t prof_t0  = prof ? ggml_time_ms() : 0;
+        const bool prof       = cfg.profile || abot_prof_env();
+        const int64_t prof_t0 = prof ? ggml_time_ms() : 0;
 
         pe_vec = build_pe(with_refs ? scene.ref_slots : 0, 16, frame_abs_ids, h_len, w_len);
         std::vector<float> mask;
@@ -869,7 +966,7 @@ public:
     std::vector<std::vector<float>> history;
     std::vector<uint8_t> history_actions;
 
-    // KV-cache walk state (ABOT_KV_CACHE=1): ring of finalized-frame K/V slots
+    // KV-cache walk state (cfg.kv_cache): ring of finalized-frame K/V slots
     bool kv_enabled = false;
     // ggml backends are not thread-safe: the decode/append overlap is only
     // legal when DiT and taehv run on distinct backend instances (e.g.
@@ -959,21 +1056,36 @@ public:
         runner = std::make_unique<AbotWorldRunner>(runtime_backend, params_backend,
                                                    ml.get_tensor_storage_map(),
                                                    "model.diffusion_model", cfg);  // no trailing dot: GGMLBlock::init appends its own
-        // Opt-in flash attention for the walk graph (ABOT_FLASH_ATTN=1). The
-        // masked self-attention path supports it (2D additive mask); it avoids
-        // materializing the L x L logits + softmax, cutting both time and VRAM.
-        // KNOWN ISSUE: parity passes for block 0 but collapses for any block
+#ifdef SD_ABOT_FLASH_ATTN_DEBUG
+        // Debug-only flash attention for the walk graph (ABOT_FLASH_ATTN=1 in
+        // a build compiled with SD_ABOT_FLASH_ATTN_DEBUG). The masked
+        // self-attention path supports it (2D additive mask), but it is
+        // KNOWN BROKEN: parity passes for block 0 and collapses for any block
         // with history (cosine ~0.2 vs goldens on CUDA) - the flash path
-        // mishandles the walk's history mask. Left opt-in for debugging only.
+        // mishandles the walk's history mask. Deliberately not reachable in
+        // production builds until that is fixed.
         if (const char* fa = std::getenv("ABOT_FLASH_ATTN"); fa != nullptr && fa[0] == '1') {
             runner->set_flash_attention_enabled(true);
-            LOG_INFO("abot session: flash attention enabled");
+            LOG_WARN("abot session: DEBUG flash attention enabled - output is wrong for any block with history");
         }
-        // Opt-in per-layer KV cache for the walk (ABOT_KV_CACHE=1): history
+#endif
+        // Opt-in per-layer KV cache for the walk (params.kv_cache): history
         // K/V are captured once per finalized block instead of recomputed
         // every denoise step, so steady-state block graphs carry only the
         // current block's rows (~3.7x fewer frame-passes per block).
-        if (const char* kc = std::getenv("ABOT_KV_CACHE"); kc != nullptr && kc[0] == '1') {
+        if (cfg.kv_cache) {
+            // The ring physically holds kv_ring_slots history frames beyond
+            // the current block. A larger window would not just be masked -
+            // its frames would be structurally absent as K/V columns, so the
+            // walk would silently attend less context than configured.
+            if (cfg.local_attn_size - cfg.num_frame_per_block > AbotWorldRunner::kv_ring_slots) {
+                LOG_ERROR(
+                    "abot session: kv_cache requires local_attn_size - num_frame_per_block <= %d "
+                    "(the compiled KV ring size); got local_attn_size=%d, num_frame_per_block=%d. "
+                    "Reduce the window or disable the KV cache.",
+                    AbotWorldRunner::kv_ring_slots, cfg.local_attn_size, cfg.num_frame_per_block);
+                return false;
+            }
             kv_enabled = true;
             kv_ring_abs.fill(-1);
             kv_decode_overlap_safe = vae_backend != runtime_backend;
@@ -1223,8 +1335,8 @@ public:
             }
         }
         sd_tiling_params_t no_tiling = {};
-        static const bool prof = std::getenv("ABOT_PROF") != nullptr;
-        const int64_t dec_t0   = prof ? ggml_time_ms() : 0;
+        const bool prof              = cfg.profile || abot_prof_env();
+        const int64_t dec_t0         = prof ? ggml_time_ms() : 0;
         sd::Tensor<float> px         = tae->decode(n_threads, z, no_tiling, true);
         if (prof) {
             LOG_INFO("[prof] taehv decode (%d latents -> px): %lldms", T, (long long)(ggml_time_ms() - dec_t0));

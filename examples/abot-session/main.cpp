@@ -63,23 +63,26 @@ static bool load_npy_f32(const std::string& path, std::vector<float>& out) {
 // Validation walk driving AbotWalkSession directly (bypasses the C API so the
 // golden noise can be injected via noise_override and final latents dumped in
 // sd-abot-walk's format for compare_walk.py). Exercises whichever walk path
-// ABOT_KV_CACHE selects.
+// --kv-cache selects.
 static int run_walkval(const std::string& dit, const std::string& taehv, const std::string& scene,
                        const std::string& golden, const std::string& actions_spec,
                        const std::string& latents_out, int blocks_n,
-                       int n_threads, uint64_t seed, const std::string& backend_spec) {
+                       int n_threads, uint64_t seed, const std::string& backend_spec,
+                       bool kv_cache) {
     SDBackendManager bm;
     std::string err;
     if (!bm.init(backend_spec.c_str(), nullptr, false, false, false, false, &err)) {
         fprintf(stderr, "backend init failed: %s\n", err.c_str());
         return 1;
     }
+    ABOT::AbotWorldConfig wcfg;
+    wcfg.kv_cache = kv_cache;
     ABOT::AbotWalkSession session;
     if (!session.load(bm.runtime_backend(SDBackendModule::DIFFUSION),
                       bm.params_backend(SDBackendModule::DIFFUSION),
                       bm.runtime_backend(SDBackendModule::VAE),
                       bm.params_backend(SDBackendModule::VAE),
-                      dit, taehv, scene, {}, seed, n_threads)) {
+                      dit, taehv, scene, wcfg, seed, n_threads)) {
         fprintf(stderr, "session load failed\n");
         return 1;
     }
@@ -170,15 +173,19 @@ static bool write_png(const std::string& path, const uint8_t* rgb, int w, int h)
 
 static int run_walk(const std::string& dit, const std::string& taehv, const std::string& scene,
                     const std::string& actions_spec, const std::string& outdir,
-                    int threads, int64_t seed, const std::string& backend) {
+                    int threads, int64_t seed, const std::string& backend,
+                    bool kv_cache, bool profile, int local_attn_size) {
     sd_abot_session_params_t params;
     sd_abot_session_params_init(&params);
-    params.dit_model_path = dit.c_str();
-    params.taehv_path     = taehv.c_str();
-    params.scene_path     = scene.c_str();
-    params.backend        = backend.c_str();
-    params.n_threads      = threads;
-    params.seed           = seed;
+    params.dit_model_path  = dit.c_str();
+    params.taehv_path      = taehv.c_str();
+    params.scene_path      = scene.c_str();
+    params.backend         = backend.c_str();
+    params.n_threads       = threads;
+    params.seed            = seed;
+    params.kv_cache        = kv_cache;
+    params.profile         = profile;
+    params.local_attn_size = local_attn_size;
 
     sd_abot_session_t* session = sd_abot_session_new(&params);
     if (session == nullptr) {
@@ -356,8 +363,9 @@ int main(int argc, char** argv) {
     std::string golden, latents_out;
     std::string t5, vae, prompt, image_path, scene_out;
     int threads = 8, lat_w = 52, lat_h = 30, lat_c = 48, fpb = 3, blocks_n = -1;
-    int width = 832, height = 480;
-    int64_t seed = 42;
+    int width = 832, height = 480, local_attn_size = 0;
+    int64_t seed  = 42;
+    bool kv_cache = false, profile = false;
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
         auto next     = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : std::string(); };
@@ -385,6 +393,9 @@ int main(int argc, char** argv) {
         else if (k == "--width") width = std::stoi(next());
         else if (k == "--height") height = std::stoi(next());
         else if (k == "--scene-out") scene_out = next();
+        else if (k == "--kv-cache") kv_cache = true;
+        else if (k == "--profile") profile = true;
+        else if (k == "--local-attn") local_attn_size = std::stoi(next());
     }
     if (mode == "create-scene") {
         if (t5.empty() || prompt.empty() || scene_out.empty() || (vae.empty() && !image_path.empty())) {
@@ -407,11 +418,12 @@ int main(int argc, char** argv) {
             return 2;
         }
         return run_walkval(dit, taehv, scene, golden, actions, latents_out, blocks_n,
-                           threads, static_cast<uint64_t>(seed), backend);
+                           threads, static_cast<uint64_t>(seed), backend, kv_cache);
     }
     if (dit.empty() || taehv.empty() || scene.empty()) {
         fprintf(stderr, "walk mode needs --dit, --taehv and --scene\n");
         return 2;
     }
-    return run_walk(dit, taehv, scene, actions, outdir, threads, seed, backend);
+    return run_walk(dit, taehv, scene, actions, outdir, threads, seed, backend,
+                    kv_cache, profile, local_attn_size);
 }

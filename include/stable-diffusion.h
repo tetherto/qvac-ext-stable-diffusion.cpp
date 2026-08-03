@@ -517,8 +517,14 @@ typedef struct {
     int n_threads;               // <= 0: physical cores
     int64_t seed;                // walk noise seed
     int num_frame_per_block;     // <= 0: model default (3)
-    int local_attn_size;         // <= 0: scene/deploy default; latent-frame window
+    int local_attn_size;         // <= 0: compiled default (8). The upstream deployed config
+                                 // uses 21; with kv_cache the window is validated against the
+                                 // compile-time KV ring and larger values fail at load.
     bool offload_params_to_cpu;
+    bool kv_cache;               // per-layer history KV cache (~3.7x fewer frame-passes per
+                                 // block). Requires local_attn_size - num_frame_per_block <=
+                                 // the compiled ring size (5); violations fail session_new.
+    bool profile;                // per-stage timing logs (ABOT_PROF=1 also enables)
 } sd_abot_session_params_t;
 
 SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);

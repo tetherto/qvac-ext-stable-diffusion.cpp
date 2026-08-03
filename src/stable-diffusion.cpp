@@ -5797,11 +5797,13 @@ void sd_abot_session_params_init(sd_abot_session_params_t* params) {
     memset(params, 0, sizeof(sd_abot_session_params_t));
     params->n_threads           = -1;
     params->seed                = 42;
-    params->num_frame_per_block = 0;  // model default
-    params->local_attn_size     = 0;  // config default
+    params->num_frame_per_block = 0;      // model default
+    params->local_attn_size     = 0;      // compiled default
+    params->kv_cache            = false;  // opt-in; validated against the KV ring
+    params->profile             = false;
 }
 
-sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
+static sd_abot_session_t* sd_abot_session_new_impl(const sd_abot_session_params_t* params) {
     if (params == nullptr ||
         strlen(SAFE_STR(params->dit_model_path)) == 0 ||
         strlen(SAFE_STR(params->taehv_path)) == 0 ||
@@ -5809,7 +5811,7 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
         LOG_ERROR("sd_abot_session_new: dit_model_path, taehv_path and scene_path are required");
         return nullptr;
     }
-    auto* s = new (std::nothrow) sd_abot_session_t();
+    std::unique_ptr<sd_abot_session_t> s(new (std::nothrow) sd_abot_session_t());
     if (s == nullptr) {
         return nullptr;
     }
@@ -5818,7 +5820,6 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
                                  params->offload_params_to_cpu,
                                  false, false, false, &err)) {
         LOG_ERROR("sd_abot_session_new: backend init failed: %s", err.c_str());
-        delete s;
         return nullptr;
     }
     ABOT::AbotWorldConfig cfg;
@@ -5828,6 +5829,8 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
     if (params->local_attn_size > 0) {
         cfg.local_attn_size = params->local_attn_size;
     }
+    cfg.kv_cache = params->kv_cache;
+    cfg.profile  = params->profile;
     int n_threads = params->n_threads;
     if (n_threads <= 0) {
         n_threads = sd_get_num_physical_cores();
@@ -5842,15 +5845,30 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
                          cfg,
                          static_cast<uint64_t>(params->seed),
                          n_threads)) {
-        delete s;
         return nullptr;
     }
-    return s;
+    return s.release();
 }
 
-sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
-                                 uint32_t action_mask,
-                                 int* num_frames_out) {
+// Exception barrier: the session parses caller-supplied files (the scene pack
+// is a portable, potentially untrusted artifact), and this is an extern "C"
+// boundary - a bad_alloc/length_error escaping here would terminate the
+// embedding host instead of returning an error.
+sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
+    try {
+        return sd_abot_session_new_impl(params);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_session_new: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("sd_abot_session_new: unknown exception");
+        return nullptr;
+    }
+}
+
+static sd_image_t* sd_abot_session_step_impl(sd_abot_session_t* session,
+                                             uint32_t action_mask,
+                                             int* num_frames_out) {
     if (num_frames_out != nullptr) {
         *num_frames_out = 0;
     }
@@ -5881,6 +5899,28 @@ sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
         *num_frames_out = static_cast<int>(rgb_frames.size());
     }
     return result;
+}
+
+// Exception barrier (see sd_abot_session_new); an exception mid-step also
+// leaves the walk state inconsistent, so it is a terminal session failure.
+sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
+                                 uint32_t action_mask,
+                                 int* num_frames_out) {
+    try {
+        return sd_abot_session_step_impl(session, action_mask, num_frames_out);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_session_step: %s", e.what());
+        if (session != nullptr) {
+            session->session.fail_session("exception during step");
+        }
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("sd_abot_session_step: unknown exception");
+        if (session != nullptr) {
+            session->session.fail_session("exception during step");
+        }
+        return nullptr;
+    }
 }
 
 void sd_abot_session_frames_free(sd_image_t* frames, int num_frames) {
@@ -5944,7 +5984,7 @@ std::vector<uint8_t> abot_fit_cover_center(const sd_image_t& src, int tw, int th
 
 }  // namespace
 
-bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
+static bool sd_abot_scene_create_impl(const sd_abot_scene_params_t* params) {
     // init_image is optional: without it the pack carries a zero first-frame
     // latent + first_frame_mask=0 and the walk generates block 0 from noise
     // under the prompt alone (text-only world, TI2V-style).
@@ -6120,4 +6160,17 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
     }
     LOG_INFO("sd_abot_scene_create: wrote '%s'", params->output_path);
     return true;
+}
+
+// Exception barrier (see sd_abot_session_new).
+bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
+    try {
+        return sd_abot_scene_create_impl(params);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_scene_create: %s", e.what());
+        return false;
+    } catch (...) {
+        LOG_ERROR("sd_abot_scene_create: unknown exception");
+        return false;
+    }
 }
