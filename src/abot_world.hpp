@@ -883,38 +883,57 @@ public:
     std::vector<std::vector<float>> kv_append_frames;
     uint8_t kv_append_action = 0;
 
+    // Terminal failure state. A failed step is not retryable: the RNG has
+    // advanced, and history / ring metadata / backend cache tensors may sit at
+    // different logical block numbers (backend cache writes can be partially
+    // applied when a graph fails, so rollback is not reliable). The session
+    // poisons itself instead of returning as a reusable object; callers must
+    // free it and create a new one.
+    bool failed = false;
+
+    bool fail_session(const char* reason) {
+        if (!failed) {
+            LOG_ERROR("abot session: terminal failure (%s); free and recreate the session", reason);
+        }
+        failed            = true;
+        kv_append_pending = false;
+        return false;
+    }
+
     // Run the deferred cache-append pass for the newest finalized block.
     bool kv_run_append() {
         if (!kv_append_pending) {
             return true;
         }
-        kv_append_pending = false;
-        const int Fb      = cfg.num_frame_per_block;
+        const int Fb        = cfg.num_frame_per_block;
         const int64_t total = static_cast<int64_t>(history.size());
         std::vector<const float*> frames;
         std::vector<float> fts;
         std::vector<int64_t> abs_ids;
         std::vector<int> write_slots;
+        int next_ring_slot = kv_ring_next;
         for (int f = 0; f < Fb; f++) {
             frames.push_back(kv_append_frames[static_cast<size_t>(f)].data());
             fts.push_back(cfg.context_noise_t);
             abs_ids.push_back(total - Fb + f);
-            write_slots.push_back(kv_ring_next);
-            kv_ring_next = (kv_ring_next + 1) % AbotWorldRunner::kv_ring_slots;
+            write_slots.push_back(next_ring_slot);
+            next_ring_slot = (next_ring_slot + 1) % AbotWorldRunner::kv_ring_slots;
         }
-        // the append pass reads the PRE-append ring; slots being overwritten
-        // this block are already outside every current row's window
-        auto ring_before = kv_ring_abs;
-        auto flow        = runner->forward_step_kv(AbotWorldRunner::KvMode::APPEND,
-                                                   frames, kv_append_action, fts, abs_ids,
-                                                   ring_before, write_slots, n_threads);
+        // the append pass reads the PRE-append ring (slots being overwritten
+        // this block are already outside every current row's window), so
+        // kv_ring_abs must not be touched until the graph has succeeded
+        auto flow = runner->forward_step_kv(AbotWorldRunner::KvMode::APPEND,
+                                            frames, kv_append_action, fts, abs_ids,
+                                            kv_ring_abs, write_slots, n_threads);
+        if (flow.empty()) {
+            return fail_session("kv append pass failed");
+        }
+        // commit host-side bookkeeping only after successful execution
+        kv_ring_next = next_ring_slot;
         for (int f = 0; f < Fb; f++) {
             kv_ring_abs[static_cast<size_t>(write_slots[static_cast<size_t>(f)])] = abs_ids[static_cast<size_t>(f)];
         }
-        if (flow.empty()) {
-            LOG_ERROR("abot session: kv append pass failed");
-            return false;
-        }
+        kv_append_pending = false;
         return true;
     }
 
@@ -1008,7 +1027,12 @@ public:
 
     // Generate the next latent block under `action_mask` (bits: W,A,S,D,I,J,K,L).
     // Appends num_frame_per_block clean frames to history; returns them.
+    // A false return is terminal (see fail_session): recreate the session.
     bool step_latents(uint8_t action_mask, std::vector<std::vector<float>>& out_frames) {
+        if (failed) {
+            LOG_ERROR("abot session: step called after terminal failure; recreate the session");
+            return false;
+        }
         const int Fb     = cfg.num_frame_per_block;
         const size_t fel = static_cast<size_t>(frame_elems());
         const bool first = history.empty();
@@ -1091,7 +1115,7 @@ public:
                             : runner->forward_step(frames, facts, fts, abs_ids, Fb, n_threads);
             if (flow.empty()) {
                 LOG_ERROR("abot session: forward failed (block %d step %zu)", block, s);
-                return false;
+                return fail_session("denoise forward failed");
             }
 
             const int H = static_cast<int>(runner->lat_h), W = static_cast<int>(runner->lat_w);
@@ -1157,8 +1181,10 @@ public:
                                                     cframes, action_mask, cfts, cabs,
                                                     kv_ring_abs, {}, n_threads);
                 if (flow.empty()) {
-                    LOG_ERROR("abot session: kv init capture failed");
-                    return false;
+                    // history is already committed for this block; without the
+                    // base cache a later step would take the kv_fast path into
+                    // a missing-tensor assert - poison instead
+                    return fail_session("kv initial capture failed");
                 }
             } else {
                 // defer the ring append so step() can overlap it with decode
@@ -1228,10 +1254,15 @@ public:
     }
 
     // Convenience: step + decode to 8-bit RGB frames (row-major, interleaved).
+    // A false return is terminal (see fail_session): recreate the session.
     bool step(uint8_t action_mask,
               std::vector<std::vector<uint8_t>>& rgb_frames,
               int64_t& px_w,
               int64_t& px_h) {
+        if (failed) {
+            LOG_ERROR("abot session: step called after terminal failure; recreate the session");
+            return false;
+        }
         std::vector<std::vector<float>> latents;
         if (!step_latents(action_mask, latents)) {
             return false;
@@ -1258,7 +1289,9 @@ public:
             px = decode_last_block();
         }
         if (px.empty()) {
-            return false;
+            // history advanced but the block's frames are lost; the RNG has
+            // moved on either way, so the walk can no longer be reproduced
+            return fail_session("frame decode failed");
         }
         px_w = px.shape()[0];
         px_h = px.shape()[1];

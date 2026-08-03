@@ -526,6 +526,9 @@ SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* pa
 // Generate the next block under `action_mask` (bit 0..7 = W,A,S,D,I,J,K,L held).
 // Returns a malloc'd array of `*num_frames_out` RGB frames (free each .data and
 // the array with sd_abot_session_frames_free), or NULL on failure.
+// A failed step is terminal: the session's RNG, history, and internal caches
+// may no longer be consistent, so every later step on it fails immediately -
+// free the session with sd_abot_session_free() and create a new one.
 SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
                                         uint32_t action_mask,
                                         int* num_frames_out);
