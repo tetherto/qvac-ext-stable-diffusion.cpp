@@ -500,6 +500,74 @@ SD_API sd_image_t upscale(upscaler_ctx_t* upscaler_ctx,
 
 SD_API int get_upscale_factor(upscaler_ctx_t* upscaler_ctx);
 
+// -- ABot-World interactive walk session --------------------------------------
+// ABot-World is a causal world model: it generates video block-by-block under
+// per-block keyboard actions instead of one batch call. A session owns the DiT
+// + taehv decoder and a fixed scene pack; each step() generates one latent
+// block and returns its decoded RGB frames. Standalone (no sd_ctx_t needed);
+// the batch generate_image()/generate_video() APIs keep rejecting ABot models.
+
+typedef struct sd_abot_session_t sd_abot_session_t;
+
+typedef struct {
+    const char* dit_model_path;  // ABot-World DiT GGUF (F16 or Q8_0)
+    const char* taehv_path;      // taew2_2 GGUF (streaming pixel decoder)
+    const char* scene_path;      // scene pack safetensors (prompt/first-frame/ref latents)
+    const char* backend;         // backend spec string (NULL/"" = default, e.g. "cpu", "cuda")
+    int n_threads;               // <= 0: physical cores
+    int64_t seed;                // walk noise seed
+    int num_frame_per_block;     // <= 0: model default (3)
+    int local_attn_size;         // <= 0: compiled default (8). The upstream deployed config
+                                 // uses 21; with kv_cache the window is validated against the
+                                 // compile-time KV ring and larger values fail at load.
+    bool offload_params_to_cpu;
+    bool kv_cache;               // per-layer history KV cache (~3.7x fewer frame-passes per
+                                 // block). Requires local_attn_size - num_frame_per_block <=
+                                 // the compiled ring size (5); violations fail session_new.
+    bool profile;                // per-stage timing logs (ABOT_PROF=1 also enables)
+} sd_abot_session_params_t;
+
+SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);
+SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params);
+// Generate the next block under `action_mask` (bit 0..7 = W,A,S,D,I,J,K,L held).
+// Returns a malloc'd array of `*num_frames_out` RGB frames (free each .data and
+// the array with sd_abot_session_frames_free), or NULL on failure.
+// A failed step is terminal: the session's RNG, history, and internal caches
+// may no longer be consistent, so every later step on it fails immediately -
+// free the session with sd_abot_session_free() and create a new one.
+SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
+                                        uint32_t action_mask,
+                                        int* num_frames_out);
+SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
+SD_API void sd_abot_session_free(sd_abot_session_t* session);
+
+// -- ABot-World scene creation -------------------------------------------------
+// Builds the fixed world a session walks in, natively, from a prompt and a
+// first-frame image: umT5-XXL encodes the prompt, the Wan2.2 VAE encodes the
+// image (scaled to cover and center-cropped to width x height), reference
+// slots are zero-filled, and the result is written as a scene pack
+// (scene.safetensors) that sd_abot_session_new() loads via `scene_path`.
+// This replaces the reference implementation's offline PyTorch extraction.
+
+typedef struct {
+    const char* t5_path;      // umT5-XXL GGUF/safetensors (text encoder)
+    const char* vae_path;     // Wan2.2 VAE GGUF/safetensors (48-channel); may be NULL without init_image
+    const char* prompt;       // encoded verbatim (reference demos prefix "| unknown | ")
+    sd_image_t init_image;    // first frame, RGB, any size (cover + center-crop).
+                              // data == NULL writes a text-only pack (first_frame_mask = 0,
+                              // block 0 from noise) - gated: the distilled checkpoint cannot
+                              // bootstrap a first frame, so front-ends should require an image
+    int width;                // target pixel size; multiples of 32 (default 832x480)
+    int height;
+    const char* output_path;  // scene pack destination (safetensors)
+    const char* backend;      // backend spec string (NULL/"" = default)
+    int n_threads;            // <= 0: physical cores
+    bool offload_params_to_cpu;
+} sd_abot_scene_params_t;
+
+SD_API void sd_abot_scene_params_init(sd_abot_scene_params_t* params);
+SD_API bool sd_abot_scene_create(const sd_abot_scene_params_t* params);
+
 SD_API bool convert(const char* input_path,
                     const char* vae_path,
                     const char* output_path,

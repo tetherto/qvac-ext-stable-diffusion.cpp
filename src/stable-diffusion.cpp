@@ -30,6 +30,7 @@
 #include "ltx_latent_upscaler.hpp"
 #include "ltx_vae.hpp"
 #include "ltxv.hpp"
+#include "abot_world.hpp"
 #include "mmdit.hpp"
 #include "pid.hpp"
 #include "pmid.hpp"
@@ -44,6 +45,12 @@
 
 #include "latent-preview.h"
 #include "name_conversion.h"
+
+// antialiased image fit for ABot scene creation; static keeps the stb
+// implementation local to this TU (examples carry their own copy)
+#define STB_IMAGE_RESIZE_STATIC
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize.h"
 
 const char* sd_vae_format_name(enum sd_vae_format_t format);
 static SDVersion sd_vae_format_to_version(enum sd_vae_format_t format, SDVersion fallback);
@@ -86,6 +93,7 @@ const char* model_version_to_str[] = {
     "Longcat-Image",
     "PiD",
     "Ideogram 4",
+    "ABot-World",
 };
 
 const char* sampling_methods_str[] = {
@@ -2125,7 +2133,7 @@ public:
             sd::Tensor<float> timesteps_tensor({static_cast<int64_t>(timesteps_vec.size())}, timesteps_vec);
             sd::Tensor<float> guidance_tensor({1}, std::vector<float>{guidance.distilled_guidance});
             sd::Tensor<float> noised_input = x * c_in;
-            if (!denoise_mask.empty() && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version))) {
+            if (!denoise_mask.empty() && (sd_version_is_wan_ti2v_family(version) || sd_version_is_ltxav(version))) {
                 noised_input = noised_input * denoise_mask + init_latent * (1.0f - denoise_mask);
             }
 
@@ -2374,7 +2382,7 @@ public:
         if (sd_version_is_dit(version)) {
             if (sd_version_is_ltxav(version)) {
                 latent_channel = 128;
-            } else if (version == VERSION_WAN2_2_TI2V) {
+            } else if (sd_version_is_wan_ti2v_family(version)) {
                 latent_channel = 48;
             } else if (version == VERSION_HIDREAM_O1) {
                 latent_channel = 3;
@@ -3101,10 +3109,18 @@ struct sd_ctx_t {
 };
 
 static bool sd_version_supports_video_generation(SDVersion version) {
+    // ABot-World loads like a Wan model but is causal/interactive-only: it is
+    // driven through the sd_abot_session_* API, never the batch entrypoints.
+    if (sd_version_is_abot_world(version)) {
+        return false;
+    }
     return version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_ltxav(version);
 }
 
 static bool sd_version_supports_image_generation(SDVersion version) {
+    if (sd_version_is_abot_world(version)) {
+        return false;
+    }
     return !sd_version_supports_video_generation(version);
 }
 
@@ -3509,7 +3525,24 @@ struct GenerationRequest {
         valid = false;
     }
 
+    // ABot-World is a causal/interactive model: it must be driven block-by-block
+    // with a KV cache, per-block keyboard actions, and its distilled 4-step
+    // schedule. Both batch entrypoints (generate_image and generate_video) build
+    // a GenerationRequest, so rejecting here covers every batch door with one
+    // check; running these weights through the batch recipes would silently
+    // produce corrupted output. Model loading and inspection remain supported.
+    void reject_abot_world_batch_generation(sd_ctx_t* sd_ctx) {
+        if (!sd_version_is_abot_world(sd_ctx->sd->version)) {
+            return;
+        }
+        LOG_ERROR(
+            "ABot-World models are not supported by batch generate_image()/generate_video(); "
+            "drive them through the interactive session API (sd_abot_session_new/step) instead");
+        valid = false;
+    }
+
     void resolve(sd_ctx_t* sd_ctx) {
+        reject_abot_world_batch_generation(sd_ctx);
         align_generation_request_size();
         resolve_hires();
         seed = resolve_seed(seed);
@@ -5392,6 +5425,8 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     }
     int64_t t0                    = ggml_time_ms();
     sd_ctx->sd->vae_tiling_params = sd_vid_gen_params->vae_tiling_params;
+    // ABot-World (causal/interactive-only) is rejected inside
+    // GenerationRequest::resolve(), which covers generate_image() too.
     GenerationRequest request(sd_ctx, sd_vid_gen_params);
     if (!request.valid) {
         return false;
@@ -5746,4 +5781,396 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         free_sd_audio(generated_audio);
     }
     return true;
+}
+
+/* ABot-World interactive walk session ------------------------------------- */
+
+struct sd_abot_session_t {
+    SDBackendManager backend_manager;
+    ABOT::AbotWalkSession session;
+};
+
+void sd_abot_session_params_init(sd_abot_session_params_t* params) {
+    if (params == nullptr) {
+        return;
+    }
+    memset(params, 0, sizeof(sd_abot_session_params_t));
+    params->n_threads           = -1;
+    params->seed                = 42;
+    params->num_frame_per_block = 0;      // model default
+    params->local_attn_size     = 0;      // compiled default
+    params->kv_cache            = false;  // opt-in; validated against the KV ring
+    params->profile             = false;
+}
+
+static sd_abot_session_t* sd_abot_session_new_impl(const sd_abot_session_params_t* params) {
+    if (params == nullptr ||
+        strlen(SAFE_STR(params->dit_model_path)) == 0 ||
+        strlen(SAFE_STR(params->taehv_path)) == 0 ||
+        strlen(SAFE_STR(params->scene_path)) == 0) {
+        LOG_ERROR("sd_abot_session_new: dit_model_path, taehv_path and scene_path are required");
+        return nullptr;
+    }
+    std::unique_ptr<sd_abot_session_t> s(new (std::nothrow) sd_abot_session_t());
+    if (s == nullptr) {
+        return nullptr;
+    }
+    std::string err;
+    if (!s->backend_manager.init(SAFE_STR(params->backend), nullptr,
+                                 params->offload_params_to_cpu,
+                                 false, false, false, &err)) {
+        LOG_ERROR("sd_abot_session_new: backend init failed: %s", err.c_str());
+        return nullptr;
+    }
+    ABOT::AbotWorldConfig cfg;
+    if (params->num_frame_per_block > 0) {
+        cfg.num_frame_per_block = params->num_frame_per_block;
+    }
+    if (params->local_attn_size > 0) {
+        cfg.local_attn_size = params->local_attn_size;
+    }
+    cfg.kv_cache = params->kv_cache;
+    cfg.profile  = params->profile;
+    int n_threads = params->n_threads;
+    if (n_threads <= 0) {
+        n_threads = sd_get_num_physical_cores();
+    }
+    if (!s->session.load(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
+                         s->backend_manager.params_backend(SDBackendModule::DIFFUSION),
+                         s->backend_manager.runtime_backend(SDBackendModule::VAE),
+                         s->backend_manager.params_backend(SDBackendModule::VAE),
+                         SAFE_STR(params->dit_model_path),
+                         SAFE_STR(params->taehv_path),
+                         SAFE_STR(params->scene_path),
+                         cfg,
+                         static_cast<uint64_t>(params->seed),
+                         n_threads)) {
+        return nullptr;
+    }
+    return s.release();
+}
+
+// Exception barrier: the session parses caller-supplied files (the scene pack
+// is a portable, potentially untrusted artifact), and this is an extern "C"
+// boundary - a bad_alloc/length_error escaping here would terminate the
+// embedding host instead of returning an error.
+sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params) {
+    try {
+        return sd_abot_session_new_impl(params);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_session_new: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("sd_abot_session_new: unknown exception");
+        return nullptr;
+    }
+}
+
+static sd_image_t* sd_abot_session_step_impl(sd_abot_session_t* session,
+                                             uint32_t action_mask,
+                                             int* num_frames_out) {
+    if (num_frames_out != nullptr) {
+        *num_frames_out = 0;
+    }
+    if (session == nullptr) {
+        return nullptr;
+    }
+    std::vector<std::vector<uint8_t>> rgb_frames;
+    int64_t px_w = 0, px_h = 0;
+    if (!session->session.step(static_cast<uint8_t>(action_mask & 0xFF), rgb_frames, px_w, px_h)) {
+        return nullptr;
+    }
+    sd_image_t* result = (sd_image_t*)calloc(rgb_frames.size(), sizeof(sd_image_t));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < rgb_frames.size(); i++) {
+        result[i].width   = static_cast<uint32_t>(px_w);
+        result[i].height  = static_cast<uint32_t>(px_h);
+        result[i].channel = 3;
+        result[i].data    = (uint8_t*)malloc(rgb_frames[i].size());
+        if (result[i].data == nullptr) {
+            sd_abot_session_frames_free(result, static_cast<int>(i));
+            return nullptr;
+        }
+        memcpy(result[i].data, rgb_frames[i].data(), rgb_frames[i].size());
+    }
+    if (num_frames_out != nullptr) {
+        *num_frames_out = static_cast<int>(rgb_frames.size());
+    }
+    return result;
+}
+
+// Exception barrier (see sd_abot_session_new); an exception mid-step also
+// leaves the walk state inconsistent, so it is a terminal session failure.
+sd_image_t* sd_abot_session_step(sd_abot_session_t* session,
+                                 uint32_t action_mask,
+                                 int* num_frames_out) {
+    try {
+        return sd_abot_session_step_impl(session, action_mask, num_frames_out);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_session_step: %s", e.what());
+        if (session != nullptr) {
+            session->session.fail_session("exception during step");
+        }
+        return nullptr;
+    } catch (...) {
+        LOG_ERROR("sd_abot_session_step: unknown exception");
+        if (session != nullptr) {
+            session->session.fail_session("exception during step");
+        }
+        return nullptr;
+    }
+}
+
+void sd_abot_session_frames_free(sd_image_t* frames, int num_frames) {
+    if (frames == nullptr) {
+        return;
+    }
+    for (int i = 0; i < num_frames; i++) {
+        free(frames[i].data);
+    }
+    free(frames);
+}
+
+void sd_abot_session_free(sd_abot_session_t* session) {
+    delete session;
+}
+
+/* ABot-World scene creation ------------------------------------------------ */
+
+void sd_abot_scene_params_init(sd_abot_scene_params_t* params) {
+    if (params == nullptr) {
+        return;
+    }
+    memset(params, 0, sizeof(sd_abot_scene_params_t));
+    params->width     = 832;
+    params->height    = 480;
+    params->n_threads = -1;
+}
+
+namespace {
+
+// PIL ImageOps.fit semantics: center-crop the source to the target aspect
+// ratio, then resize with an antialiased kernel. The reference pipeline uses
+// LANCZOS; Catmull-Rom is the closest stb filter (validated ≥0.995 latent
+// cosine against the reference pack). Returns interleaved RGB.
+std::vector<uint8_t> abot_fit_cover_center(const sd_image_t& src, int tw, int th) {
+    const uint32_t c = src.channel;
+    int64_t crop_w = src.width, crop_h = src.height;
+    if ((int64_t)src.width * th >= (int64_t)src.height * tw) {
+        crop_w = std::max<int64_t>(1, (int64_t)std::llround((double)src.height * tw / th));
+    } else {
+        crop_h = std::max<int64_t>(1, (int64_t)std::llround((double)src.width * th / tw));
+    }
+    const int64_t x0 = (src.width - crop_w) / 2, y0 = (src.height - crop_h) / 2;
+    std::vector<uint8_t> cropped(crop_w * crop_h * c);
+    for (int64_t y = 0; y < crop_h; y++) {
+        memcpy(cropped.data() + y * crop_w * c,
+               src.data + ((y0 + y) * src.width + x0) * c,
+               static_cast<size_t>(crop_w) * c);
+    }
+    if (crop_w == tw && crop_h == th) {
+        return cropped;
+    }
+    std::vector<uint8_t> out(static_cast<size_t>(tw) * th * c);
+    stbir_resize_uint8_generic(cropped.data(), (int)crop_w, (int)crop_h, 0,
+                               out.data(), tw, th, 0,
+                               (int)c, STBIR_ALPHA_CHANNEL_NONE, 0,
+                               STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM,
+                               STBIR_COLORSPACE_LINEAR, nullptr);
+    return out;
+}
+
+}  // namespace
+
+static bool sd_abot_scene_create_impl(const sd_abot_scene_params_t* params) {
+    // init_image is optional: without it the pack carries a zero first-frame
+    // latent + first_frame_mask=0 and the walk generates block 0 from noise
+    // under the prompt alone (text-only world, TI2V-style).
+    //
+    // VALIDATED CAVEAT (RTX 5090, 2026-07): the plumbing works end to end, but
+    // the current distilled ABot-World-0-5B-LF checkpoint ("ci2v") cannot
+    // bootstrap a coherent first frame from noise in its 4 distilled steps -
+    // text-only scenes come out as degenerate non-navigable texture. Keep the
+    // capability gated behind the pack's first_frame_mask; it becomes useful
+    // only with a T2V-capable checkpoint. Front-ends should require an image.
+    //
+    // Image-input notes (also validated): decoding is stb (magic-byte based,
+    // extension ignored; JPEG/PNG reliable, no WebP/AVIF/HEIC), EXIF rotation
+    // is NOT honored, alpha is dropped, and any resolution is accepted - the
+    // cover-scale + center-crop below means small inputs upscale (soft output)
+    // and extreme aspect ratios lose everything outside the center crop.
+    const bool has_image = params != nullptr && params->init_image.data != nullptr;
+    if (params == nullptr ||
+        strlen(SAFE_STR(params->t5_path)) == 0 ||
+        (has_image && strlen(SAFE_STR(params->vae_path)) == 0) ||
+        strlen(SAFE_STR(params->prompt)) == 0 ||
+        strlen(SAFE_STR(params->output_path)) == 0) {
+        LOG_ERROR("sd_abot_scene_create: t5_path, prompt and output_path are required (vae_path too when init_image is set)");
+        return false;
+    }
+    if (params->width % 32 != 0 || params->height % 32 != 0 ||
+        params->width <= 0 || params->height <= 0) {
+        LOG_ERROR("sd_abot_scene_create: width/height must be positive multiples of 32 (got %dx%d)",
+                  params->width, params->height);
+        return false;
+    }
+
+    SDBackendManager backend_manager;
+    std::string err;
+    if (!backend_manager.init(SAFE_STR(params->backend), nullptr,
+                              params->offload_params_to_cpu,
+                              false, false, false, &err)) {
+        LOG_ERROR("sd_abot_scene_create: backend init failed: %s", err.c_str());
+        return false;
+    }
+    int n_threads = params->n_threads;
+    if (n_threads <= 0) {
+        n_threads = sd_get_num_physical_cores();
+    }
+
+    // ── 1. prompt -> umT5-XXL embeddings, padding rows zeroed ──
+    // Mirrors the reference WanTextEncoder: umt5 tokenizer at seq_len 512,
+    // attention-masked encode, embeddings zeroed past the real tokens
+    // (zero_out_masked reproduces `u[v:] = 0`).
+    ModelLoader t5_loader;
+    if (!t5_loader.init_from_file(SAFE_STR(params->t5_path), "text_encoders.t5xxl.transformer.")) {
+        LOG_ERROR("sd_abot_scene_create: cannot open t5 '%s'", params->t5_path);
+        return false;
+    }
+    sd::Tensor<float> prompt_embeds;
+    {
+        // same construction as the engine's Wan text-encoder branch
+        T5CLIPEmbedder t5(backend_manager.runtime_backend(SDBackendModule::TE),
+                          backend_manager.params_backend(SDBackendModule::TE),
+                          t5_loader.get_tensor_storage_map(),
+                          /*use_mask*/ true, /*mask_pad*/ 0, /*is_umt5*/ true);
+        if (!t5.alloc_params_buffer()) {
+            LOG_ERROR("sd_abot_scene_create: t5 alloc failed");
+            return false;
+        }
+        std::map<std::string, ggml_tensor*> t5_tensors;
+        t5.get_param_tensors(t5_tensors);
+        if (!t5_loader.load_tensors(t5_tensors, {}, n_threads)) {
+            LOG_ERROR("sd_abot_scene_create: t5 tensor load failed");
+            return false;
+        }
+        ConditionerParams cp;
+        cp.text            = SAFE_STR(params->prompt);
+        cp.clip_skip       = -1;
+        cp.zero_out_masked = true;
+        SDCondition cond   = t5.get_learned_condition(n_threads, cp);
+        if (cond.c_crossattn.empty()) {
+            LOG_ERROR("sd_abot_scene_create: prompt encode failed");
+            return false;
+        }
+        prompt_embeds = std::move(cond.c_crossattn);
+        t5.free_params_buffer();
+    }
+    if (prompt_embeds.shape()[0] != 4096 || prompt_embeds.shape()[1] != 512) {
+        LOG_ERROR("sd_abot_scene_create: unexpected prompt embedding shape (%lld x %lld)",
+                  (long long)prompt_embeds.shape()[1], (long long)prompt_embeds.shape()[0]);
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: prompt encoded (512 x 4096)");
+
+    // ── 2. image -> aspect crop + antialiased resize -> Wan2.2 VAE latent ──
+    // encode maps [0,1] -> [-1,1] internally; vae_to_diffusion_latents applies
+    // the reference (z - mean) / std per-channel normalization.
+    sd::Tensor<float> first_frame;
+    if (has_image) {
+        std::vector<uint8_t> fitted = abot_fit_cover_center(params->init_image, params->width, params->height);
+        sd_image_t fitted_image     = {static_cast<uint32_t>(params->width),
+                                       static_cast<uint32_t>(params->height),
+                                       params->init_image.channel,
+                                       fitted.data()};
+        sd::Tensor<float> image     = sd_image_to_tensor(fitted_image);
+
+        ModelLoader vae_loader;
+        // Wan VAE checkpoints/GGUFs carry canonical relative names (encoder.* /
+        // decoder.*); prefixing with the runner's root makes the map keys line
+        // up with get_param_tensors directly.
+        if (!vae_loader.init_from_file(SAFE_STR(params->vae_path), "first_stage_model.")) {
+            LOG_ERROR("sd_abot_scene_create: cannot open vae '%s'", params->vae_path);
+            return false;
+        }
+        // the loader canonicalizes vae.* file names to first_stage_model.*
+        WAN::WanVAERunner vae(backend_manager.runtime_backend(SDBackendModule::VAE),
+                              backend_manager.params_backend(SDBackendModule::VAE),
+                              vae_loader.get_tensor_storage_map(), "first_stage_model",
+                              /*decode_only*/ false, VERSION_ABOT_WORLD);
+        if (!vae.alloc_params_buffer()) {
+            LOG_ERROR("sd_abot_scene_create: vae alloc failed");
+            return false;
+        }
+        std::map<std::string, ggml_tensor*> vae_tensors;
+        vae.get_param_tensors(vae_tensors, "first_stage_model");
+        if (!vae_loader.load_tensors(vae_tensors, {}, n_threads)) {
+            LOG_ERROR("sd_abot_scene_create: vae tensor load failed");
+            return false;
+        }
+        sd_tiling_params_t no_tiling = {};
+        auto latents                 = vae.encode(n_threads, image, no_tiling, /*encode_video*/ true);
+        if (latents.empty()) {
+            LOG_ERROR("sd_abot_scene_create: vae encode failed");
+            return false;
+        }
+        latents     = vae.vae_output_to_latents(latents, nullptr);
+        first_frame = vae.vae_to_diffusion_latents(latents);
+        vae.free_params_buffer();
+    } else {
+        // text-only world: zero first-frame latent, marked inactive below
+        first_frame.resize({params->width / 16, params->height / 16, 48});
+        std::fill_n(first_frame.data(), first_frame.numel(), 0.0f);
+    }
+    const int64_t lw = first_frame.shape()[0];
+    const int64_t lh = first_frame.shape()[1];
+    const int64_t lc = first_frame.numel() / (lw * lh);
+    if (lc != 48 || lw != params->width / 16 || lh != params->height / 16) {
+        LOG_ERROR("sd_abot_scene_create: unexpected first-frame latent (%lld x %lld x %lld)",
+                  (long long)lw, (long long)lh, (long long)lc);
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: first frame %s (latent %lld x %lld x 48)",
+             has_image ? "encoded" : "zeroed - text-only scene, block 0 from noise",
+             (long long)lw, (long long)lh);
+
+    // ── 3. zero-filled reference slots + write the pack ──
+    // torch layouts: prompt_embeds [1,512,4096], first_frame [1,1,48,lh,lw],
+    // ref_latents [1,K,48,1,g,g], ref_mask [1,K] — contiguous f32, so the ggml
+    // buffers are written as-is (identical flat order).
+    ABOT::AbotSceneCreateConfig scfg;
+    const int64_t K = scfg.ref_slots, g = scfg.ref_grid;
+    std::vector<float> ref_latents(static_cast<size_t>(K * 48 * g * g), 0.0f);
+    std::vector<float> ref_mask(static_cast<size_t>(K), 0.0f);
+    // first_frame_mask: 1 = pin block-0 frame 0 to first_frame_latents;
+    // 0 = text-only scene, block 0 generated from noise (loader default: 1)
+    float first_frame_mask = has_image ? 1.0f : 0.0f;
+
+    std::vector<ABOT::AbotSceneWriter::Entry> entries = {
+        {"prompt_embeds", {1, 512, 4096}, prompt_embeds.data(), prompt_embeds.numel()},
+        {"first_frame_latents", {1, 1, 48, lh, lw}, first_frame.data(), first_frame.numel()},
+        {"ref_latents", {1, K, 48, 1, g, g}, ref_latents.data(), static_cast<int64_t>(ref_latents.size())},
+        {"ref_mask", {1, K}, ref_mask.data(), K},
+        {"first_frame_mask", {1, 1}, &first_frame_mask, 1},
+    };
+    if (!ABOT::AbotSceneWriter::write(SAFE_STR(params->output_path), entries)) {
+        return false;
+    }
+    LOG_INFO("sd_abot_scene_create: wrote '%s'", params->output_path);
+    return true;
+}
+
+// Exception barrier (see sd_abot_session_new).
+bool sd_abot_scene_create(const sd_abot_scene_params_t* params) {
+    try {
+        return sd_abot_scene_create_impl(params);
+    } catch (const std::exception& e) {
+        LOG_ERROR("sd_abot_scene_create: %s", e.what());
+        return false;
+    } catch (...) {
+        LOG_ERROR("sd_abot_scene_create: unknown exception");
+        return false;
+    }
 }

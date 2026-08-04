@@ -1136,7 +1136,7 @@ namespace WAN {
                      const std::string prefix                       = "",
                      bool decode_only                               = false,
                      SDVersion version                              = VERSION_WAN2)
-            : decode_only(decode_only), ae(decode_only, version == VERSION_WAN2_2_TI2V), VAE(version, backend, params_backend) {
+            : decode_only(decode_only), ae(decode_only, sd_version_is_wan_ti2v_family(version)), VAE(version, backend, params_backend) {
             ae.init(params_ctx, tensor_storage_map, prefix);
         }
 
@@ -1422,6 +1422,100 @@ namespace WAN {
             x = o_proj->forward(ctx, x);  // [N, n_token, dim]
             return x;
         }
+
+        // Self-attention over the current rows with externally cached context
+        // K/V (ABot causal walk KV cache): K = [k_ctx | rope(k(x))],
+        // V = [v_ctx | v(x)] along the token dim; the additive mask selects
+        // each row's visible window. Optionally hands back this call's roped K
+        // and per-token V so the caller can persist them into the cache.
+        //   x:     [N=1, n_token, dim] (current rows only; pe covers them)
+        //   k_ctx: {d_head, T_ctx, n_head} roped at capture time, or nullptr
+        //   v_ctx: {T_ctx, d_head, n_head} per-token rows, or nullptr
+        //   mask:  {T_ctx + n_token, n_token} additive f32
+        // The attention math mirrors ggml_ext_attention_ext's non-flash path
+        // op-for-op so numerics match the recompute path.
+        ggml_tensor* forward_kv(GGMLRunnerContext* ctx,
+                                ggml_tensor* x,
+                                ggml_tensor* pe,
+                                ggml_tensor* mask,
+                                ggml_tensor* k_ctx,
+                                ggml_tensor* v_ctx,
+                                ggml_tensor** k_cur_out,
+                                ggml_tensor** v_cur_out) {
+            auto gctx       = ctx->ggml_ctx;
+            int64_t N       = x->ne[2];
+            int64_t n_token = x->ne[1];
+
+            auto q_proj = std::dynamic_pointer_cast<Linear>(blocks["q"]);
+            auto k_proj = std::dynamic_pointer_cast<Linear>(blocks["k"]);
+            auto v_proj = std::dynamic_pointer_cast<Linear>(blocks["v"]);
+            auto o_proj = std::dynamic_pointer_cast<Linear>(blocks["o"]);
+            auto norm_q = std::dynamic_pointer_cast<UnaryBlock>(blocks["norm_q"]);
+            auto norm_k = std::dynamic_pointer_cast<UnaryBlock>(blocks["norm_k"]);
+
+            auto q = q_proj->forward(ctx, x);
+            q      = norm_q->forward(ctx, q);
+            auto k = k_proj->forward(ctx, x);
+            k      = norm_k->forward(ctx, k);
+            auto v = v_proj->forward(ctx, x);
+
+            q = ggml_reshape_4d(gctx, q, head_dim, num_heads, n_token, N);
+            k = ggml_reshape_4d(gctx, k, head_dim, num_heads, n_token, N);
+            v = ggml_reshape_4d(gctx, v, head_dim, num_heads, n_token, N);
+
+            // rope q/k with the same fused kernel Rope::attention prefers so the
+            // cached path shares its numerics; fall back to apply_rope otherwise.
+            static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+            ggml_tensor* q_r                 = nullptr;
+            ggml_tensor* k_r                 = nullptr;
+            if (!fused_disabled) {
+                auto q_fused = ggml_rope_flux(gctx, q, pe);
+                auto k_fused = ggml_rope_flux(gctx, k, pe);
+                if (ggml_backend_supports_op(ctx->backend, q_fused) &&
+                    ggml_backend_supports_op(ctx->backend, k_fused)) {
+                    q_r = q_fused;
+                    k_r = k_fused;
+                }
+            }
+            if (q_r == nullptr) {
+                q_r = Rope::apply_rope(gctx, q, pe, true);  // {d_head, n_token, n_head*N}
+                k_r = Rope::apply_rope(gctx, k, pe, true);
+            }
+
+            // v to per-token rows {n_token, d_head, n_head*N} (the layout the
+            // naive attention consumes and the cache stores)
+            ggml_tensor* v_p = ggml_ext_cont(gctx, ggml_permute(gctx, v, 1, 2, 0, 3));
+            v_p              = ggml_reshape_3d(gctx, v_p, n_token, head_dim, num_heads * N);
+
+            if (k_cur_out != nullptr) {
+                *k_cur_out = ggml_ext_cont(gctx, k_r);
+                k_r        = *k_cur_out;
+            }
+            if (v_cur_out != nullptr) {
+                *v_cur_out = v_p;
+            }
+
+            ggml_tensor* K = k_ctx != nullptr ? ggml_concat(gctx, k_ctx, k_r, 1) : k_r;
+            ggml_tensor* V = v_ctx != nullptr ? ggml_concat(gctx, v_ctx, v_p, 0) : v_p;
+
+            const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+            ggml_tensor* kq   = ggml_mul_mat(gctx, K, q_r);  // {T_kv, n_token, n_head*N}
+            ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+            kq = ggml_scale_inplace(gctx, kq, scale);
+            if (mask != nullptr) {
+                kq = ggml_add_inplace(gctx, kq, mask);  // {T_kv, n_token} broadcast over heads
+            }
+            kq = ggml_soft_max_inplace(gctx, kq);
+
+            ggml_tensor* kqv = ggml_mul_mat(gctx, V, kq);  // {d_head, n_token, n_head*N}
+            kqv              = ggml_reshape_4d(gctx, kqv, head_dim, n_token, num_heads, N);
+            kqv              = ggml_permute(gctx, kqv, 0, 2, 1, 3);
+            kqv              = ggml_ext_cont(gctx, kqv);
+            kqv              = ggml_reshape_3d(gctx, kqv, head_dim * num_heads, n_token, N);
+
+            x = o_proj->forward(ctx, kqv);  // [N, n_token, dim]
+            return x;
+        }
     };
 
     class WanCrossAttention : public WanSelfAttention {
@@ -1611,10 +1705,12 @@ namespace WAN {
                                      ggml_tensor* e,
                                      ggml_tensor* pe,
                                      ggml_tensor* context,
-                                     int64_t context_img_len = 257) {
+                                     int64_t context_img_len = 257,
+                                     ggml_tensor* attn_mask  = nullptr) {
             // x: [N, n_token, dim]
             // e: [N, 6, dim] or [N, T, 6, dim]
             // context: [N, context_img_len + context_txt_len, dim]
+            // attn_mask: optional additive self-attention mask (ABot causal walk)
             // return [N, n_token, dim]
 
             auto modulation = params["modulation"];
@@ -1633,7 +1729,60 @@ namespace WAN {
             auto y = norm1->forward(ctx, x);
             y      = ggml_add(ctx->ggml_ctx, y, modulate_mul(ctx->ggml_ctx, y, es[1]));
             y      = modulate_add(ctx->ggml_ctx, y, es[0]);
-            y      = self_attn->forward(ctx, y, pe);
+            y      = self_attn->forward(ctx, y, pe, attn_mask);
+
+            x = ggml_add(ctx->ggml_ctx, x, modulate_mul(ctx->ggml_ctx, y, es[2]));
+
+            // cross-attention
+            x = ggml_add(ctx->ggml_ctx,
+                         x,
+                         cross_attn->forward(ctx, norm3->forward(ctx, x), context, context_img_len));
+
+            // ffn
+            y = norm2->forward(ctx, x);
+            y = ggml_add(ctx->ggml_ctx, y, modulate_mul(ctx->ggml_ctx, y, es[4]));
+            y = modulate_add(ctx->ggml_ctx, y, es[3]);
+
+            y = ffn_0->forward(ctx, y);
+            y = ggml_ext_gelu(ctx->ggml_ctx, y, true);
+            y = ffn_2->forward(ctx, y);
+
+            x = ggml_add(ctx->ggml_ctx, x, modulate_mul(ctx->ggml_ctx, y, es[5]));
+
+            return x;
+        }
+
+        // Same block math as forward(), with the self-attention consuming
+        // externally cached context K/V (and optionally emitting this call's
+        // K/V for capture). Used by the ABot causal walk KV-cache path.
+        ggml_tensor* forward_cached(GGMLRunnerContext* ctx,
+                                    ggml_tensor* x,
+                                    ggml_tensor* e,
+                                    ggml_tensor* pe,
+                                    ggml_tensor* context,
+                                    int64_t context_img_len,
+                                    ggml_tensor* attn_mask,
+                                    ggml_tensor* k_ctx,
+                                    ggml_tensor* v_ctx,
+                                    ggml_tensor** k_cur_out,
+                                    ggml_tensor** v_cur_out) {
+            auto modulation = params["modulation"];
+            e               = ggml_add(ctx->ggml_ctx, e, modulation);
+            auto es         = ggml_ext_chunk(ctx->ggml_ctx, e, 6, 1);
+
+            auto norm1      = std::dynamic_pointer_cast<LayerNorm>(blocks["norm1"]);
+            auto self_attn  = std::dynamic_pointer_cast<WanSelfAttention>(blocks["self_attn"]);
+            auto norm3      = std::dynamic_pointer_cast<UnaryBlock>(blocks["norm3"]);
+            auto cross_attn = std::dynamic_pointer_cast<WanCrossAttention>(blocks["cross_attn"]);
+            auto norm2      = std::dynamic_pointer_cast<LayerNorm>(blocks["norm2"]);
+            auto ffn_0      = std::dynamic_pointer_cast<Linear>(blocks["ffn.0"]);
+            auto ffn_2      = std::dynamic_pointer_cast<Linear>(blocks["ffn.2"]);
+
+            // self-attention
+            auto y = norm1->forward(ctx, x);
+            y      = ggml_add(ctx->ggml_ctx, y, modulate_mul(ctx->ggml_ctx, y, es[1]));
+            y      = modulate_add(ctx->ggml_ctx, y, es[0]);
+            y      = self_attn->forward_kv(ctx, y, pe, attn_mask, k_ctx, v_ctx, k_cur_out, v_cur_out);
 
             x = ggml_add(ctx->ggml_ctx, x, modulate_mul(ctx->ggml_ctx, y, es[2]));
 
@@ -1815,6 +1964,10 @@ namespace WAN {
         int64_t out_dim                        = 16;
         int64_t num_heads                      = 16;
         int num_layers                         = 32;
+        // ABot-World (causal Wan2.2-TI2V-5B + keyboard-action conditioning)
+        bool abot_world                 = false;
+        int64_t act_in_dim              = 32;   // 8 keys x 4 (repeat_interleave)
+        int act_downscale_factor        = 16;   // pixel-unshuffle factor before conv
         int vace_layers                        = 0;
         int64_t vace_in_dim                    = 96;
         std::map<int, int> vace_layers_mapping = {};
@@ -1826,6 +1979,38 @@ namespace WAN {
         // wan2.1 1.3B: 1536/12, wan2.1/2.2 14B: 5120/40, wan2.2 5B: 3074/24
         std::vector<int> axes_dim = {44, 42, 42};
         int64_t axes_dim_sum      = 128;
+    };
+
+    // ABot-World action-conditioning adapter ("SimpleAdapter" in the reference
+    // implementation, github.com/amap-cvlab/ABot-World wan/modules/model.py):
+    //   pixel_unshuffle(x16) -> Conv2d(act_in_dim*16*16 -> dim, k=2, s=2)
+    //   -> ResidualBlock(conv1 3x3 p1 -> ReLU -> conv2 3x3 p1 -> +residual)
+    // The pixel-unshuffle is a host-side data rearrangement of the broadcast
+    // keyboard-action planes; forward() expects the already-unshuffled tensor
+    // [W/16, H/16, act_in_dim*256, N*T] and returns [W/32, H/32, dim, N*T],
+    // i.e. one feature per latent-token cell (matches patch_embedding grid).
+    class ActControlAdapter : public GGMLBlock {
+    public:
+        ActControlAdapter(int64_t act_in_dim, int64_t dim, int downscale_factor) {
+            int64_t unshuffled_dim = act_in_dim * downscale_factor * downscale_factor;
+            blocks["conv"]                    = std::shared_ptr<GGMLBlock>(new Conv2d(unshuffled_dim, dim, {2, 2}, {2, 2}));
+            blocks["residual_blocks.0.conv1"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+            blocks["residual_blocks.0.conv2"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+        }
+
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
+            auto conv  = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
+            auto conv1 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv1"]);
+            auto conv2 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv2"]);
+
+            x             = conv->forward(ctx, x);
+            auto residual = x;
+            x             = conv1->forward(ctx, x);
+            x             = ggml_relu_inplace(ctx->ggml_ctx, x);
+            x             = conv2->forward(ctx, x);
+            x             = ggml_add(ctx->ggml_ctx, x, residual);
+            return x;
+        }
     };
 
     class Wan : public GGMLBlock {
@@ -1870,6 +2055,12 @@ namespace WAN {
             // img_emb
             if (params.model_type == "i2v") {
                 blocks["img_emb"] = std::shared_ptr<GGMLBlock>(new MLPProj(1280, params.dim, params.flf_pos_embed_token_number));
+            }
+
+            // ABot-World keyboard-action adapter
+            if (params.abot_world) {
+                blocks["act_control_adapter"] = std::shared_ptr<GGMLBlock>(
+                    new ActControlAdapter(params.act_in_dim, params.dim, params.act_downscale_factor));
             }
 
             // vace
@@ -2145,8 +2336,15 @@ namespace WAN {
             }
 
             if (wan_params.num_layers == 30) {
-                if (version == VERSION_WAN2_2_TI2V) {
-                    desc                 = "Wan2.2-TI2V-5B";
+                if (version == VERSION_WAN2_2_TI2V || sd_version_is_abot_world(version)) {
+                    // ABot-World-0-5B-LF shares the Wan2.2-TI2V-5B backbone and
+                    // adds the act_control_adapter (keyboard-action conditioning).
+                    if (sd_version_is_abot_world(version)) {
+                        desc                  = "ABot-World-5B";
+                        wan_params.abot_world = true;
+                    } else {
+                        desc = "Wan2.2-TI2V-5B";
+                    }
                     wan_params.dim       = 3072;
                     wan_params.eps       = 1e-06f;
                     wan_params.ffn_dim   = 14336;

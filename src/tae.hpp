@@ -302,7 +302,8 @@ public:
     }
 };
 
-ggml_tensor*
+// inline: this header is included from more than one translation unit
+inline ggml_tensor*
 patchify(ggml_context* ctx,
          ggml_tensor* x,
          int64_t patch_size,
@@ -332,10 +333,10 @@ patchify(ggml_context* ctx,
     return x;
 }
 
-ggml_tensor* unpatchify(ggml_context* ctx,
-                        ggml_tensor* x,
-                        int64_t patch_size,
-                        int64_t b = 1) {
+inline ggml_tensor* unpatchify(ggml_context* ctx,
+                               ggml_tensor* x,
+                               int64_t patch_size,
+                               int64_t b = 1) {
     // x: [f, b*c*r*q, h, w]
     // return: [f, b*c, h*q, w*r]
     if (patch_size == 1) {
@@ -525,7 +526,7 @@ public:
     TAEHV(bool decode_only = true, SDVersion version = VERSION_WAN2, bool is_wide = false)
         : decode_only(decode_only), version(version), is_wide(is_wide) {
         int patch = 1;
-        if (version == VERSION_WAN2_2_TI2V) {
+        if (sd_version_is_wan_ti2v_family(version)) {
             z_channels = 48;
             patch      = 2;
         } else if (sd_version_is_ltxav(version)) {

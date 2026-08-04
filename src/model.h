@@ -51,6 +51,7 @@ enum SDVersion {
     VERSION_LONGCAT,
     VERSION_PID,
     VERSION_IDEOGRAM4,
+    VERSION_ABOT_WORLD,
     VERSION_COUNT,
 };
 
@@ -117,11 +118,23 @@ static inline bool sd_version_is_ltxav(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_abot_world(SDVersion version) {
+    // ABot-World-0-5B-LF: causal/interactive derivative of Wan2.2-TI2V-5B
+    // (extra act_control_adapter.* tensors; same latent space and VAE family).
+    return version == VERSION_ABOT_WORLD;
+}
+
 static inline bool sd_version_is_wan(SDVersion version) {
-    if (version == VERSION_WAN2 || version == VERSION_WAN2_2_I2V || version == VERSION_WAN2_2_TI2V) {
+    if (version == VERSION_WAN2 || version == VERSION_WAN2_2_I2V || version == VERSION_WAN2_2_TI2V ||
+        sd_version_is_abot_world(version)) {
         return true;
     }
     return false;
+}
+
+// Wan models that use the Wan2.2 TI2V latent space (48ch, 16x) and VAE.
+static inline bool sd_version_is_wan_ti2v_family(SDVersion version) {
+    return version == VERSION_WAN2_2_TI2V || sd_version_is_abot_world(version);
 }
 
 static inline bool sd_version_is_qwen_image(SDVersion version) {
