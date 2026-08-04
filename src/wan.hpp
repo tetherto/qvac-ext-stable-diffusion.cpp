@@ -1397,6 +1397,18 @@ namespace WAN {
             // x: [N, n_token, dim]
             // pe: [n_token, d_head/2, 2, 2]
             // return [N, n_token, dim]
+            if (mask != nullptr) {
+                // Masked self-attention (only the ABot causal walk passes a
+                // mask): compose the mask explicitly (scale -> add -> soft_max)
+                // via the KV-cache formulation with no cached context, instead
+                // of the fused masked soft_max - the CUDA soft_max kernel of
+                // the ggml revision the registry's 2026-07-03 port line ships
+                // (50cf5630) rejects the fused op's 2D-mask head broadcast
+                // ("SOFT_MAX failed, invalid argument"). forward_kv mirrors
+                // the fused path op-for-op; both formulations pass the
+                // golden-replay gates.
+                return forward_kv(ctx, x, pe, mask, nullptr, nullptr, nullptr, nullptr);
+            }
             int64_t N       = x->ne[2];
             int64_t n_token = x->ne[1];
 
