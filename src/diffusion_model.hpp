@@ -3,6 +3,7 @@
 
 #include "anima.hpp"
 #include "flux.hpp"
+#include "ltx2.hpp"
 #include "mmdit.hpp"
 #include "qwen_image.hpp"
 #include "unet.hpp"
@@ -376,6 +377,70 @@ struct WanModel : public DiffusionModel {
                            diffusion_params.vace_strength,
                            output,
                            output_ctx);
+    }
+};
+
+struct Ltx2Model : public DiffusionModel {
+    std::string prefix;
+    LTX2::Ltx2Runner ltx2;
+
+    Ltx2Model(ggml_backend_t backend,
+              bool offload_params_to_cpu,
+              const String2TensorStorage& tensor_storage_map = {},
+              const std::string prefix                       = "model.diffusion_model")
+        : prefix(prefix), ltx2(backend, offload_params_to_cpu, tensor_storage_map, prefix) {
+    }
+
+    std::string get_desc() override {
+        return ltx2.get_desc();
+    }
+
+    void alloc_params_buffer() override {
+        ltx2.alloc_params_buffer();
+    }
+
+    void free_params_buffer() override {
+        ltx2.free_params_buffer();
+    }
+
+    void free_compute_buffer() override {
+        ltx2.free_compute_buffer();
+    }
+
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) override {
+        ltx2.get_param_tensors(tensors, prefix);
+    }
+
+    size_t get_params_buffer_size() override {
+        return ltx2.get_params_buffer_size();
+    }
+
+    void set_weight_adapter(const std::shared_ptr<WeightAdapter>& adapter) override {
+        ltx2.set_weight_adapter(adapter);
+    }
+
+    int64_t get_adm_in_channels() override {
+        return 0;
+    }
+
+    void set_flash_attention_enabled(bool enabled) override {
+        ltx2.set_flash_attention_enabled(enabled);
+    }
+
+    void set_circular_axes(bool circular_x, bool circular_y) override {
+        ltx2.set_circular_axes(circular_x, circular_y);
+    }
+
+    bool compute(int n_threads,
+                 DiffusionParams diffusion_params,
+                 struct ggml_tensor** output     = nullptr,
+                 struct ggml_context* output_ctx = nullptr) override {
+        return ltx2.compute(n_threads,
+                            diffusion_params.x,
+                            diffusion_params.timesteps,
+                            diffusion_params.context,
+                            output,
+                            output_ctx);
     }
 };
 

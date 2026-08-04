@@ -1072,6 +1072,10 @@ SDVersion ModelLoader::get_sd_version() {
             if (tensor_storage.name.find("model.diffusion_model.cap_embedder.0.weight") != std::string::npos) {
                 return VERSION_Z_IMAGE;
             }
+            if (tensor_storage.name.find("model.diffusion_model.video_embeddings_connector.") != std::string::npos ||
+                tensor_storage.name.find("model.diffusion_model.patchify_proj.weight") != std::string::npos) {
+                return VERSION_LTX2;
+            }
             if (tensor_storage.name.find("model.diffusion_model.blocks.0.cross_attn.norm_k.weight") != std::string::npos) {
                 is_wan = true;
             }
