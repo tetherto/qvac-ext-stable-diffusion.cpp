@@ -72,33 +72,12 @@ namespace LTXV {
         return max_block + 1;
     }
 
-    __STATIC_INLINE__ std::vector<float> generate_freq_grid(float theta,
-                                                            int positional_dims,
-                                                            int dim) {
-        const int n_elem     = 2 * positional_dims;
-        const int freq_count = dim / n_elem;
-
-        std::vector<float> out(freq_count);
-        if (freq_count <= 0) {
-            return out;
-        }
-        if (freq_count == 1) {
-            out[0] = 1.5707963267948966f;
-            return out;
-        }
-
-        const float half_pi   = 1.5707963267948966f;
-        const float log_theta = std::log(theta);
-        for (int i = 0; i < freq_count; i++) {
-            float ratio = static_cast<float>(i) / static_cast<float>(freq_count - 1);
-            out[i]      = std::exp(log_theta * ratio) * half_pi;
-        }
-        return out;
-    }
-
-    __STATIC_INLINE__ std::vector<double> generate_freq_grid_double(double theta,
-                                                                    int positional_dims,
-                                                                    int dim) {
+    // Prepare RoPE matrices once on the host in binary64, then round the shared
+    // table to F32 before copying it to any backend. This avoids backend trig
+    // implementations and single-precision intermediate differences.
+    __STATIC_INLINE__ std::vector<double> generate_freq_grid(double theta,
+                                                             int positional_dims,
+                                                             int dim) {
         const int n_elem     = 2 * positional_dims;
         const int freq_count = dim / n_elem;
 
@@ -107,30 +86,30 @@ namespace LTXV {
             return out;
         }
         if (freq_count == 1) {
-            out[0] = 1.5707963267948966;
+            out[0] = 0x1.921fb54442d18p+0;
             return out;
         }
 
-        const double half_pi   = 1.5707963267948966;
+        const double half_pi   = 0x1.921fb54442d18p+0;
         const double log_theta = std::log(theta);
         for (int i = 0; i < freq_count; i++) {
             double ratio = static_cast<double>(i) / static_cast<double>(freq_count - 1);
-            out[i]       = std::exp(log_theta * ratio) * half_pi;
+            out[i]      = std::exp(log_theta * ratio) * half_pi;
         }
         return out;
     }
 
     __STATIC_INLINE__ std::vector<float> build_rope_matrix_from_frequencies(
-        const std::vector<std::vector<float>>& frequencies,
+        const std::vector<std::vector<double>>& frequencies,
         int dim) {
         const int half_dim = dim / 2;
         std::vector<float> out(static_cast<size_t>(frequencies.size()) * static_cast<size_t>(half_dim) * 4, 0.f);
 
         for (size_t token = 0; token < frequencies.size(); token++) {
             for (int i = 0; i < half_dim; i++) {
-                float angle = i < static_cast<int>(frequencies[token].size()) ? frequencies[token][i] : 0.f;
-                float c     = std::cos(angle);
-                float s     = std::sin(angle);
+                double angle = i < static_cast<int>(frequencies[token].size()) ? frequencies[token][i] : 0.0;
+                float c      = static_cast<float>(std::cos(angle));
+                float s      = static_cast<float>(std::sin(angle));
 
                 size_t base   = (token * static_cast<size_t>(half_dim) + static_cast<size_t>(i)) * 4;
                 out[base + 0] = c;
@@ -143,8 +122,8 @@ namespace LTXV {
         return out;
     }
 
-    __STATIC_INLINE__ std::vector<std::vector<float>> split_frequencies_by_heads(
-        const std::vector<std::vector<float>>& frequencies,
+    __STATIC_INLINE__ std::vector<std::vector<double>> split_frequencies_by_heads(
+        const std::vector<std::vector<double>>& frequencies,
         int inner_dim,
         int num_heads) {
         GGML_ASSERT(num_heads > 0);
@@ -153,9 +132,9 @@ namespace LTXV {
         const int per_head_half_dim = inner_half_dim / num_heads;
         GGML_ASSERT(inner_half_dim % num_heads == 0);
 
-        std::vector<std::vector<float>> out(
+        std::vector<std::vector<double>> out(
             frequencies.size() * static_cast<size_t>(num_heads),
-            std::vector<float>(per_head_half_dim, 0.f));
+            std::vector<double>(per_head_half_dim, 0.0));
 
         for (size_t token = 0; token < frequencies.size(); token++) {
             GGML_ASSERT(static_cast<int>(frequencies[token].size()) == inner_half_dim);
@@ -180,11 +159,11 @@ namespace LTXV {
                                                                  bool use_middle_indices_grid                       = false) {
         GGML_ASSERT(max_pos.size() == 3);
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = generate_freq_grid(theta, 3, dim);
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 3, dim);
         const int half_dim               = dim / 2;
         const int pad_size               = half_dim - static_cast<int>(indices.size()) * 3;
 
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(width * height * frames), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(width * height * frames), std::vector<double>(half_dim, 0.0));
 
         const int scale_t = std::get<0>(vae_scale_factors);
         const int scale_h = std::get<1>(vae_scale_factors);
@@ -192,45 +171,45 @@ namespace LTXV {
 
         size_t token = 0;
         for (int64_t t = 0; t < frames; t++) {
-            float pixel_t = static_cast<float>(t * scale_t);
+            double pixel_t = static_cast<double>(t * scale_t);
             if (causal_temporal_positioning) {
-                pixel_t = std::max(0.f, pixel_t + 1.f - scale_t);
+                pixel_t = std::max(0.0, pixel_t + 1.0 - scale_t);
             }
-            pixel_t /= frame_rate;
+            pixel_t /= static_cast<double>(frame_rate);
             if (use_middle_indices_grid) {
-                float end = static_cast<float>((t + 1) * scale_t);
+                double end = static_cast<double>((t + 1) * scale_t);
                 if (causal_temporal_positioning) {
-                    end = std::max(0.f, end + 1.f - scale_t);
+                    end = std::max(0.0, end + 1.0 - scale_t);
                 }
-                end /= frame_rate;
-                pixel_t = 0.5f * (pixel_t + end);
+                end /= static_cast<double>(frame_rate);
+                pixel_t = 0.5 * (pixel_t + end);
             }
 
             for (int64_t h = 0; h < height; h++) {
-                float pixel_h = static_cast<float>(h * scale_h);
+                double pixel_h = static_cast<double>(h * scale_h);
                 if (use_middle_indices_grid) {
-                    pixel_h += 0.5f * static_cast<float>(scale_h);
+                    pixel_h += 0.5 * static_cast<double>(scale_h);
                 }
                 for (int64_t w = 0; w < width; w++) {
-                    float pixel_w = static_cast<float>(w * scale_w);
+                    double pixel_w = static_cast<double>(w * scale_w);
                     if (use_middle_indices_grid) {
-                        pixel_w += 0.5f * static_cast<float>(scale_w);
+                        pixel_w += 0.5 * static_cast<double>(scale_w);
                     }
 
                     int out_idx = 0;
                     for (int i = 0; i < pad_size; i++) {
-                        freqs[token][out_idx++] = 0.f;
+                        freqs[token][out_idx++] = 0.0;
                     }
 
-                    const float coords[3] = {
+                    const double coords[3] = {
                         pixel_t / max_pos[0],
                         pixel_h / max_pos[1],
                         pixel_w / max_pos[2],
                     };
 
-                    for (float index : indices) {
+                    for (double index : indices) {
                         for (int axis = 0; axis < 3; axis++) {
-                            freqs[token][out_idx++] = index * (coords[axis] * 2.f - 1.f);
+                            freqs[token][out_idx++] = index * (coords[axis] * 2.0 - 1.0);
                         }
                     }
                     token++;
@@ -260,30 +239,30 @@ namespace LTXV {
         }
 
         const int64_t tokens             = positions.shape()[2];
-        const std::vector<float> indices = generate_freq_grid(theta, 3, dim);
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 3, dim);
         const int half_dim               = dim / 2;
         const int pad_size               = half_dim - static_cast<int>(indices.size()) * 3;
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(tokens), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(tokens), std::vector<double>(half_dim, 0.0));
 
         for (int64_t token = 0; token < tokens; token++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[token][out_idx++] = 0.f;
+                freqs[token][out_idx++] = 0.0;
             }
 
-            float coords[3];
+            double coords[3];
             for (int axis = 0; axis < 3; axis++) {
-                float start  = positions.dim() == 4 ? positions.index(0, axis, token, 0)
-                                                    : positions.index(0, axis, token);
-                float end    = positions.dim() == 4 ? positions.index(1, axis, token, 0)
-                                                    : positions.index(1, axis, token);
-                float coord  = use_middle_indices_grid ? 0.5f * (start + end) : start;
-                coords[axis] = coord / static_cast<float>(max_pos[axis]);
+                double start = positions.dim() == 4 ? static_cast<double>(positions.index(0, axis, token, 0))
+                                                    : static_cast<double>(positions.index(0, axis, token));
+                double end   = positions.dim() == 4 ? static_cast<double>(positions.index(1, axis, token, 0))
+                                                    : static_cast<double>(positions.index(1, axis, token));
+                double coord = use_middle_indices_grid ? 0.5 * (start + end) : start;
+                coords[axis] = coord / static_cast<double>(max_pos[axis]);
             }
 
-            for (float index : indices) {
+            for (double index : indices) {
                 for (int axis = 0; axis < 3; axis++) {
-                    freqs[token][out_idx++] = index * (coords[axis] * 2.f - 1.f);
+                    freqs[token][out_idx++] = index * (coords[axis] * 2.0 - 1.0);
                 }
             }
         }
@@ -301,29 +280,21 @@ namespace LTXV {
                                                               float positional_scale = 4096.f,
                                                               bool double_precision  = false) {
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = double_precision ? std::vector<float>() : generate_freq_grid(theta, 1, dim);
-        const std::vector<double> indices_d =
-            double_precision ? generate_freq_grid_double(static_cast<double>(theta), 1, dim) : std::vector<double>();
+        (void) double_precision;  // Kept for source compatibility; preparation is always binary64.
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 1, dim);
         const int half_dim = dim / 2;
-        const int pad_size = half_dim - static_cast<int>(double_precision ? indices_d.size() : indices.size());
+        const int pad_size = half_dim - static_cast<int>(indices.size());
 
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(seq_len), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(seq_len), std::vector<double>(half_dim, 0.0));
         for (int64_t pos = 0; pos < seq_len; pos++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[static_cast<size_t>(pos)][out_idx++] = 0.f;
+                freqs[static_cast<size_t>(pos)][out_idx++] = 0.0;
             }
 
-            if (double_precision) {
-                double coord = static_cast<double>(pos) / static_cast<double>(positional_scale);
-                for (double index : indices_d) {
-                    freqs[static_cast<size_t>(pos)][out_idx++] = static_cast<float>(index * (coord * 2.0 - 1.0));
-                }
-            } else {
-                float coord = static_cast<float>(pos) / positional_scale;
-                for (float index : indices) {
-                    freqs[static_cast<size_t>(pos)][out_idx++] = index * (coord * 2.f - 1.f);
-                }
+            double coord = static_cast<double>(pos) / static_cast<double>(positional_scale);
+            for (double index : indices) {
+                freqs[static_cast<size_t>(pos)][out_idx++] = index * (coord * 2.0 - 1.0);
             }
         }
 
@@ -830,28 +801,20 @@ namespace LTXV {
                                                                           float max_pos         = 20.f,
                                                                           bool double_precision = false) {
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = double_precision ? std::vector<float>() : generate_freq_grid(theta, 1, dim);
-        const std::vector<double> indices_d =
-            double_precision ? generate_freq_grid_double(static_cast<double>(theta), 1, dim) : std::vector<double>();
+        (void) double_precision;  // Kept for source compatibility; preparation is always binary64.
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 1, dim);
         const int half_dim = dim / 2;
-        const int pad_size = half_dim - static_cast<int>(double_precision ? indices_d.size() : indices.size());
+        const int pad_size = half_dim - static_cast<int>(indices.size());
 
-        std::vector<std::vector<float>> freqs(coords.size(), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(coords.size(), std::vector<double>(half_dim, 0.0));
         for (size_t pos = 0; pos < coords.size(); pos++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[pos][out_idx++] = 0.f;
+                freqs[pos][out_idx++] = 0.0;
             }
-            if (double_precision) {
-                double coord = static_cast<double>(coords[pos]) / static_cast<double>(max_pos);
-                for (double index : indices_d) {
-                    freqs[pos][out_idx++] = static_cast<float>(index * (coord * 2.0 - 1.0));
-                }
-            } else {
-                float coord = coords[pos] / max_pos;
-                for (float index : indices) {
-                    freqs[pos][out_idx++] = index * (coord * 2.f - 1.f);
-                }
+            double coord = static_cast<double>(coords[pos]) / static_cast<double>(max_pos);
+            for (double index : indices) {
+                freqs[pos][out_idx++] = index * (coord * 2.0 - 1.0);
             }
         }
         if (num_heads > 1) {
@@ -1189,8 +1152,8 @@ namespace LTXV {
 
         LTXAVModelBlock(const LTXAVParams& params)
             : cfg(params) {
-            blocks["patchify_proj"]       = std::make_shared<Linear>(cfg.in_channels, cfg.hidden_size, true, true);
-            blocks["audio_patchify_proj"] = std::make_shared<Linear>(cfg.audio_in_channels, cfg.audio_hidden_size, true, true);
+            blocks["patchify_proj"]       = std::make_shared<Linear>(cfg.in_channels, cfg.hidden_size, true, true, true);
+            blocks["audio_patchify_proj"] = std::make_shared<Linear>(cfg.audio_in_channels, cfg.audio_hidden_size, true, true, true);
             blocks["adaln_single"]        = std::make_shared<AdaLayerNormSingle>(cfg.hidden_size, cfg.cross_attention_adaln ? 9 : 6);
             blocks["audio_adaln_single"]  = std::make_shared<AdaLayerNormSingle>(cfg.audio_hidden_size, cfg.cross_attention_adaln ? 9 : 6);
             if (cfg.cross_attention_adaln) {
