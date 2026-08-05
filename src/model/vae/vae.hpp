@@ -124,6 +124,7 @@ public:
         int64_t t0              = ggml_time_ms();
         sd::Tensor<float> input = x;
         sd::Tensor<float> output;
+        set_tiling_params(tiling_params);
         if (scale_input) {
             scale_tensor_to_minus1_1(&input);
         }

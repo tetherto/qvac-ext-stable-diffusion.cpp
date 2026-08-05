@@ -2,8 +2,12 @@
 #define __SD_MODEL_VAE_LTX_VAE_HPP__
 
 #include <algorithm>
+#include <array>
+#include <exception>
 #include <fstream>
+#include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -13,8 +17,23 @@
 #include "model/vae/vae.hpp"
 #include "model/vae/wan_vae.hpp"
 #include "model_loader.h"
+#include "ltx_vae_temporal.hpp"
 
 namespace LTXVAE {
+
+    struct EncoderStreamingGraphState {
+        std::vector<ggml_tensor*> previous_conv_history;
+        std::vector<ggml_tensor*> next_conv_history;
+        std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> previous_pending_x = {};
+        std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> previous_pending_h = {};
+        std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> next_pending_x     = {};
+        std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> next_pending_h     = {};
+        size_t conv_index = 0;
+        int temporal_level = 0;
+        bool allow_missing_history = false;
+        bool preflight             = false;
+        bool exact                 = true;
+    };
 
     static inline ggml_tensor* apply_scale_shift(ggml_context* ctx,
                                                  ggml_tensor* x,
@@ -135,6 +154,41 @@ namespace LTXVAE {
             return conv->forward(ctx, x);
         }
 
+        ggml_tensor* forward_encoder_chunk(GGMLRunnerContext* ctx,
+                                           ggml_tensor* x,
+                                           EncoderStreamingGraphState& state) {
+            auto conv     = std::dynamic_pointer_cast<Conv3d>(blocks["conv"]);
+            const int pad = time_kernel_size - 1;
+            GGML_ASSERT(x != nullptr);
+            GGML_ASSERT(x->ne[2] > 0);
+
+            ggml_tensor* history = state.conv_index < state.previous_conv_history.size()
+                                       ? state.previous_conv_history[state.conv_index]
+                                       : nullptr;
+            if (history == nullptr) {
+                if (!state.allow_missing_history && !state.preflight) {
+                    state.exact = false;
+                }
+                auto first_frame = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, 1);
+                history         = first_frame;
+                for (int i = 1; i < pad; ++i) {
+                    history = ggml_concat(ctx->ggml_ctx, history, first_frame, 2);
+                }
+            }
+
+            GGML_ASSERT(history->ne[2] == pad);
+            auto padded = pad > 0 ? ggml_concat(ctx->ggml_ctx, history, x, 2) : x;
+            auto next_history = ggml_ext_slice(ctx->ggml_ctx,
+                                               padded,
+                                               2,
+                                               padded->ne[2] - pad,
+                                               padded->ne[2]);
+            next_history = ggml_cont(ctx->ggml_ctx, next_history);
+            state.next_conv_history.push_back(next_history);
+            state.conv_index++;
+            return conv->forward(ctx, padded);
+        }
+
         // Chunked forward: uses feat_map to carry temporal context across frames.
         // feat_map[feat_idx] holds the last `pad` frames from the previous chunk at
         // this layer.  nullptr means first chunk → fall back to repeat-first-frame.
@@ -239,12 +293,17 @@ namespace LTXVAE {
     public:
         ResnetBlock3D(int64_t channels,
                       float eps                  = 1e-6f,
-                      bool timestep_conditioning = false)
+                      bool timestep_conditioning = false,
+                      bool force_conv_prec_f32   = false)
             : channels(channels), timestep_conditioning(timestep_conditioning) {
             blocks["norm1"] = std::make_shared<PixelNorm3D>(eps);
-            blocks["conv1"] = std::make_shared<CausalConv3d>(channels, channels, 3);
+            blocks["conv1"] = std::make_shared<CausalConv3d>(
+                channels, channels, 3, std::tuple<int, int, int>{1, 1, 1},
+                1, true, force_conv_prec_f32);
             blocks["norm2"] = std::make_shared<PixelNorm3D>(eps);
-            blocks["conv2"] = std::make_shared<CausalConv3d>(channels, channels, 3);
+            blocks["conv2"] = std::make_shared<CausalConv3d>(
+                channels, channels, 3, std::tuple<int, int, int>{1, 1, 1},
+                1, true, force_conv_prec_f32);
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
@@ -334,6 +393,23 @@ namespace LTXVAE {
 
             return ggml_add(ctx->ggml_ctx, h, x);
         }
+
+        ggml_tensor* forward_encoder_chunk(GGMLRunnerContext* ctx,
+                                           ggml_tensor* x,
+                                           EncoderStreamingGraphState& state) {
+            auto norm1 = std::dynamic_pointer_cast<PixelNorm3D>(blocks["norm1"]);
+            auto conv1 = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv1"]);
+            auto norm2 = std::dynamic_pointer_cast<PixelNorm3D>(blocks["norm2"]);
+            auto conv2 = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv2"]);
+
+            auto h = norm1->forward(ctx, x);
+            h      = ggml_silu_inplace(ctx->ggml_ctx, h);
+            h      = conv1->forward_encoder_chunk(ctx, h, state);
+            h      = norm2->forward(ctx, h);
+            h      = ggml_silu_inplace(ctx->ggml_ctx, h);
+            h      = conv2->forward_encoder_chunk(ctx, h, state);
+            return ggml_add(ctx->ggml_ctx, h, x);
+        }
     };
 
     struct UNetMidBlock3D : public GGMLBlock {
@@ -343,7 +419,8 @@ namespace LTXVAE {
 
         UNetMidBlock3D(int64_t channels,
                        int num_layers,
-                       bool timestep_conditioning)
+                       bool timestep_conditioning,
+                       bool force_conv_prec_f32 = false)
             : channels(channels),
               num_layers(num_layers),
               timestep_conditioning(timestep_conditioning) {
@@ -351,7 +428,12 @@ namespace LTXVAE {
                 blocks["time_embedder"] = std::make_shared<PixArtAlphaCombinedTimestepSizeEmbeddings>(channels * 4);
             }
             for (int i = 0; i < num_layers; i++) {
-                blocks["res_blocks." + std::to_string(i)] = std::make_shared<ResnetBlock3D>(channels, 1e-6f, timestep_conditioning);
+                blocks["res_blocks." + std::to_string(i)] =
+                    std::make_shared<ResnetBlock3D>(
+                        channels,
+                        1e-6f,
+                        timestep_conditioning,
+                        force_conv_prec_f32);
             }
         }
 
@@ -390,6 +472,17 @@ namespace LTXVAE {
             for (int i = 0; i < num_layers; i++) {
                 auto resnet = std::dynamic_pointer_cast<ResnetBlock3D>(blocks["res_blocks." + std::to_string(i)]);
                 x           = resnet->forward(ctx, x, timestep_embed, causal, feat_map, feat_idx, chunk_idx, temporal_pad);
+            }
+            return x;
+        }
+
+        ggml_tensor* forward_encoder_chunk(GGMLRunnerContext* ctx,
+                                           ggml_tensor* x,
+                                           EncoderStreamingGraphState& state) {
+            GGML_ASSERT(!timestep_conditioning);
+            for (int i = 0; i < num_layers; i++) {
+                auto resnet = std::dynamic_pointer_cast<ResnetBlock3D>(blocks["res_blocks." + std::to_string(i)]);
+                x           = resnet->forward_encoder_chunk(ctx, x, state);
             }
             return x;
         }
@@ -524,6 +617,84 @@ namespace LTXVAE {
             auto residual = skip_downsample->forward(ctx, x);
             auto h        = conv->forward(ctx, x, causal);
             h             = conv_downsample->forward(ctx, h);
+            return ggml_add(ctx->ggml_ctx, h, residual);
+        }
+
+        ggml_tensor* forward_encoder_chunk(GGMLRunnerContext* ctx,
+                                           ggml_tensor* x,
+                                           const EncoderTemporalPhase& phase,
+                                           EncoderStreamingGraphState& state) {
+            auto conv            = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv"]);
+            auto skip_downsample = std::dynamic_pointer_cast<WAN::AvgDown3D>(blocks["skip_downsample"]);
+            auto conv_downsample = std::dynamic_pointer_cast<WAN::AvgDown3D>(blocks["conv_downsample"]);
+
+            if (factor_t == 1) {
+                auto h        = conv->forward_encoder_chunk(ctx, x, state);
+                auto residual = skip_downsample->forward(ctx, x);
+                h             = conv_downsample->forward(ctx, h);
+                return ggml_add(ctx->ggml_ctx, h, residual);
+            }
+
+            GGML_ASSERT(factor_t == 2);
+            const int level = state.temporal_level++;
+            GGML_ASSERT(level < LTX_ENCODER_TEMPORAL_LEVELS);
+            if (x == nullptr || x->ne[2] != phase.level_input_frames[level]) {
+                state.exact = false;
+                return nullptr;
+            }
+
+            if (phase.first_frame[level]) {
+                auto first_frame = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, 1);
+                x                = ggml_concat(ctx->ggml_ctx, first_frame, x, 2);
+            }
+
+            auto h = conv->forward_encoder_chunk(ctx, x, state);
+            if (phase.pending_before[level]) {
+                ggml_tensor* pending_x = state.previous_pending_x[level];
+                ggml_tensor* pending_h = state.previous_pending_h[level];
+                if (pending_x == nullptr || pending_h == nullptr) {
+                    if (!state.preflight) {
+                        state.exact = false;
+                    }
+                    pending_x = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, 1);
+                    pending_h = ggml_ext_slice(ctx->ggml_ctx, h, 2, 0, 1);
+                }
+                x = ggml_concat(ctx->ggml_ctx, pending_x, x, 2);
+                h = ggml_concat(ctx->ggml_ctx, pending_h, h, 2);
+            }
+
+            const int64_t grouped_frames = x->ne[2];
+            const int64_t complete_frames = grouped_frames - (phase.pending_after[level] ? 1 : 0);
+            if (grouped_frames != phase.level_output_frames[level] * 2 +
+                                      (phase.pending_after[level] ? 1 : 0)) {
+                state.exact = false;
+            }
+
+            // Keep one fixed-size slot for each branch even when the phase has no
+            // pending frame. The phase bit decides whether the slot is consumed;
+            // fixed slots let the cache replace state in-place without retaining
+            // stale tensors or growing with the number of chunks.
+            state.next_pending_x[level] = ggml_cont(
+                ctx->ggml_ctx,
+                ggml_ext_slice(ctx->ggml_ctx, x, 2, grouped_frames - 1, grouped_frames));
+            state.next_pending_h[level] = ggml_cont(
+                ctx->ggml_ctx,
+                ggml_ext_slice(ctx->ggml_ctx, h, 2, grouped_frames - 1, grouped_frames));
+
+            if (complete_frames == 0) {
+                return nullptr;
+            }
+            if (complete_frames != grouped_frames) {
+                x = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, complete_frames);
+                h = ggml_ext_slice(ctx->ggml_ctx, h, 2, 0, complete_frames);
+            }
+
+            auto residual = skip_downsample->forward(ctx, x);
+            h             = conv_downsample->forward(ctx, h);
+            state.allow_missing_history =
+                level + 1 < LTX_ENCODER_TEMPORAL_LEVELS
+                    ? phase.first_frame[level + 1]
+                    : phase.first_frame[level];
             return ggml_add(ctx->ggml_ctx, h, residual);
         }
     };
@@ -775,6 +946,7 @@ namespace LTXVAE {
         int patch_size;
         int64_t in_channels;
         int64_t latent_channels;
+        size_t causal_conv_count = 2;
 
         Encoder(int version,
                 const String2TensorStorage& tensor_storage_map,
@@ -793,37 +965,47 @@ namespace LTXVAE {
             GGML_ASSERT(channels > 0);
             int64_t in_dim = in_channels * patch_size * patch_size;
 
-            blocks["conv_in"] = std::make_shared<CausalConv3d>(in_dim, channels, 3);
+            // Temporal chunk shapes must not change Vulkan accumulation order.
+            // Keep every encoder projection on the deterministic F32 route so
+            // streamed and monolithic encodes are numerically equivalent.
+            blocks["conv_in"] = std::make_shared<CausalConv3d>(
+                in_dim, channels, 3, std::tuple<int, int, int>{1, 1, 1},
+                1, true, true);
 
             for (int block_idx = 0; block_idx < static_cast<int>(cfg.blocks.size()); ++block_idx) {
                 const auto& block = cfg.blocks[block_idx];
                 if (block.type == "res_x") {
+                    causal_conv_count += 2 * block.num_layers;
                     blocks["down_blocks." + std::to_string(block_idx)] = std::make_shared<UNetMidBlock3D>(channels,
                                                                                                           block.num_layers,
-                                                                                                          false);
+                                                                                                          false,
+                                                                                                          true);
                 } else if (block.type == "compress_space_res") {
+                    causal_conv_count++;
                     int64_t next_channels                              = channels * block.multiplier;
                     blocks["down_blocks." + std::to_string(block_idx)] = std::make_shared<SpaceToDepthDownsample>(channels,
                                                                                                                   next_channels,
                                                                                                                   1,
-                                                                                                                  2);
+                                                                                                                  2,
+                                                                                                                  true);
                     channels                                           = next_channels;
                 } else if (block.type == "compress_time_res") {
+                    causal_conv_count++;
                     int64_t next_channels                              = channels * block.multiplier;
                     blocks["down_blocks." + std::to_string(block_idx)] = std::make_shared<SpaceToDepthDownsample>(channels,
                                                                                                                   next_channels,
                                                                                                                   2,
-                                                                                                                  1);
+                                                                                                                  1,
+                                                                                                                  true);
                     channels                                           = next_channels;
                 } else if (block.type == "compress_all_res") {
+                    causal_conv_count++;
                     int64_t next_channels = channels * block.multiplier;
-                    // LTX 2.3 encoder down_blocks.7.conv overflows with fp16 accumulation.
-                    bool force_conv_prec_f32                           = block_idx == 7;
                     blocks["down_blocks." + std::to_string(block_idx)] = std::make_shared<SpaceToDepthDownsample>(channels,
                                                                                                                   next_channels,
                                                                                                                   2,
                                                                                                                   2,
-                                                                                                                  force_conv_prec_f32);
+                                                                                                                  true);
                     channels                                           = next_channels;
                 } else {
                     GGML_ABORT("Unsupported LTX VAE encoder block");
@@ -831,7 +1013,13 @@ namespace LTXVAE {
             }
 
             blocks["conv_norm_out"] = std::make_shared<PixelNorm3D>();
-            blocks["conv_out"]      = std::make_shared<CausalConv3d>(channels, latent_channels + 1, 3);
+            blocks["conv_out"]      = std::make_shared<CausalConv3d>(
+                channels, latent_channels + 1, 3,
+                std::tuple<int, int, int>{1, 1, 1}, 1, true, true);
+        }
+
+        size_t get_causal_conv_count() const {
+            return causal_conv_count;
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
@@ -861,6 +1049,46 @@ namespace LTXVAE {
             auto last_channel = ggml_ext_slice(ctx->ggml_ctx, x, 3, x->ne[3] - 1, x->ne[3]);
             auto repeat_shape = ggml_new_tensor_4d(ctx->ggml_ctx, last_channel->type, last_channel->ne[0], last_channel->ne[1], last_channel->ne[2], latent_channels - 1);
             auto repeated     = ggml_repeat(ctx->ggml_ctx, last_channel, repeat_shape);
+            return ggml_concat(ctx->ggml_ctx, x, repeated, 3);
+        }
+
+        ggml_tensor* forward_chunk(GGMLRunnerContext* ctx,
+                                   ggml_tensor* x,
+                                   const EncoderTemporalPhase& phase,
+                                   EncoderStreamingGraphState& state) {
+            auto conv_in       = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv_in"]);
+            auto conv_norm_out = std::dynamic_pointer_cast<PixelNorm3D>(blocks["conv_norm_out"]);
+            auto conv_out      = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv_out"]);
+
+            x = conv_in->forward_encoder_chunk(ctx, x, state);
+
+            int block_idx = 0;
+            while (blocks.find("down_blocks." + std::to_string(block_idx)) != blocks.end()) {
+                auto mid_block = std::dynamic_pointer_cast<UNetMidBlock3D>(blocks["down_blocks." + std::to_string(block_idx)]);
+                if (mid_block) {
+                    x = mid_block->forward_encoder_chunk(ctx, x, state);
+                } else {
+                    auto downsample = std::dynamic_pointer_cast<SpaceToDepthDownsample>(blocks["down_blocks." + std::to_string(block_idx)]);
+                    x               = downsample->forward_encoder_chunk(ctx, x, phase, state);
+                    if (x == nullptr) {
+                        return nullptr;
+                    }
+                }
+                block_idx++;
+            }
+
+            x = conv_norm_out->forward(ctx, x);
+            x = ggml_silu_inplace(ctx->ggml_ctx, x);
+            x = conv_out->forward_encoder_chunk(ctx, x, state);
+
+            auto last_channel = ggml_ext_slice(ctx->ggml_ctx, x, 3, x->ne[3] - 1, x->ne[3]);
+            auto repeat_shape = ggml_new_tensor_4d(ctx->ggml_ctx,
+                                                   last_channel->type,
+                                                   last_channel->ne[0],
+                                                   last_channel->ne[1],
+                                                   last_channel->ne[2],
+                                                   latent_channels - 1);
+            auto repeated = ggml_repeat(ctx->ggml_ctx, last_channel, repeat_shape);
             return ggml_concat(ctx->ggml_ctx, x, repeated, 3);
         }
     };
@@ -1083,6 +1311,12 @@ namespace LTXVAE {
             blocks["per_channel_statistics"] = std::make_shared<PerChannelStatistics>();
         }
 
+        size_t get_encoder_causal_conv_count() const {
+            auto encoder = std::dynamic_pointer_cast<Encoder>(blocks.at("encoder"));
+            GGML_ASSERT(encoder != nullptr);
+            return encoder->get_causal_conv_count();
+        }
+
         ggml_tensor* decode(GGMLRunnerContext* ctx,
                             ggml_tensor* z,
                             ggml_tensor* timestep) {
@@ -1193,6 +1427,24 @@ namespace LTXVAE {
             return processor->normalize(ctx, mean);
         }
 
+        ggml_tensor* encode_chunk(GGMLRunnerContext* ctx,
+                                  ggml_tensor* x,
+                                  const EncoderTemporalPhase& phase,
+                                  EncoderStreamingGraphState& state) {
+            GGML_ASSERT(!decode_only);
+            auto encoder   = std::dynamic_pointer_cast<Encoder>(blocks["encoder"]);
+            auto processor = std::dynamic_pointer_cast<PerChannelStatistics>(blocks["per_channel_statistics"]);
+
+            x        = patchify(ctx->ggml_ctx, x, patch_size);
+            auto out = encoder->forward_chunk(ctx, x, phase, state);
+            if (out == nullptr) {
+                return nullptr;
+            }
+            auto mean = ggml_ext_chunk(ctx->ggml_ctx, out, 2, 3, false)[0];
+            mean      = ggml_cont(ctx->ggml_ctx, mean);
+            return processor->normalize(ctx, mean);
+        }
+
         ggml_tensor* normalize_latents(GGMLRunnerContext* ctx,
                                        ggml_tensor* x) {
             auto processor = std::dynamic_pointer_cast<PerChannelStatistics>(blocks["per_channel_statistics"]);
@@ -1211,11 +1463,15 @@ namespace LTXVAE {
 struct LTXVideoVAE : public VAE {
     static constexpr int DEFAULT_TEMPORAL_TILE_FRAMES  = 4;
     static constexpr int DEFAULT_TEMPORAL_TILE_OVERLAP = 1;
+    static constexpr int DEFAULT_ENCODER_CHUNK_FRAMES  = 49;
+    static constexpr int MIN_ENCODER_CHUNK_FRAMES      = 9;
 
     bool decode_only;
     bool temporal_tiling_enabled = false;
     int temporal_tile_frames     = DEFAULT_TEMPORAL_TILE_FRAMES;
     int temporal_tile_overlap    = DEFAULT_TEMPORAL_TILE_OVERLAP;
+    int encoder_chunk_frames     = DEFAULT_ENCODER_CHUNK_FRAMES;
+    bool encoder_chunk_frames_configured = false;
     int ltx_vae_version;
     bool timestep_conditioning;
     int patch_size;
@@ -1256,6 +1512,8 @@ struct LTXVideoVAE : public VAE {
         temporal_tiling_enabled = params.temporal_tiling;
         temporal_tile_frames    = DEFAULT_TEMPORAL_TILE_FRAMES;
         temporal_tile_overlap   = DEFAULT_TEMPORAL_TILE_OVERLAP;
+        encoder_chunk_frames    = DEFAULT_ENCODER_CHUNK_FRAMES;
+        encoder_chunk_frames_configured = false;
 
         for (const auto& [key, value] : parse_key_value_args(params.extra_tiling_args, "LTX VAE extra tiling arg")) {
             int parsed = 0;
@@ -1265,6 +1523,15 @@ struct LTXVideoVAE : public VAE {
                 temporal_tile_frames = std::max(1, parsed);
             } else if (key == "temporal_tile_overlap") {
                 temporal_tile_overlap = std::max(0, parsed);
+            } else if (key == "encoder_chunk_frames") {
+                encoder_chunk_frames = std::max(MIN_ENCODER_CHUNK_FRAMES, parsed);
+                encoder_chunk_frames_configured = true;
+                if (parsed < MIN_ENCODER_CHUNK_FRAMES) {
+                    LOG_WARN("encoder_chunk_frames=%d is below the minimum exact production "
+                             "payload; using %d",
+                             parsed,
+                             MIN_ENCODER_CHUNK_FRAMES);
+                }
             } else {
                 LOG_WARN("ignoring unknown LTX VAE extra tiling arg '%s'", key.c_str());
             }
@@ -1308,6 +1575,306 @@ struct LTXVideoVAE : public VAE {
 
     std::string temporal_feat_cache_name(size_t feat_idx) const {
         return "ltx_vae_temporal_feat:" + std::to_string(feat_idx);
+    }
+
+    std::string encoder_conv_cache_name(size_t index) const {
+        return "ltx_vae_encoder_conv_history:" + std::to_string(index);
+    }
+
+    std::string encoder_pending_cache_name(int level, bool conv_branch) const {
+        return std::string("ltx_vae_encoder_pending_") +
+               (conv_branch ? "h:" : "x:") + std::to_string(level);
+    }
+
+    struct EncoderStreamingPlan {
+        LTXVAE::EncoderChunkPlan temporal;
+        size_t max_compute_bytes = 0;
+        size_t max_cache_bytes   = 0;
+        size_t runtime_param_bytes = 0;
+        size_t capacity_bytes    = std::numeric_limits<size_t>::max();
+    };
+
+    ggml_cgraph* build_encoder_chunk_graph(const sd::Tensor<float>& x_chunk,
+                                           const LTXVAE::EncoderTemporalPhase& phase,
+                                           bool preflight,
+                                           bool* exact_out,
+                                           bool* has_output_out,
+                                           size_t* state_bytes_out) {
+        ggml_cgraph* gf = new_graph_custom(20480);
+        ggml_tensor* x  = make_input(x_chunk);
+
+        LTXVAE::EncoderStreamingGraphState state;
+        const size_t expected_conv_count = vae.get_encoder_causal_conv_count();
+        state.allow_missing_history = phase.first_frame[0];
+        state.preflight             = preflight;
+        if (!preflight) {
+            state.previous_conv_history.resize(
+                expected_conv_count,
+                nullptr);
+            for (size_t i = 0; i < state.previous_conv_history.size(); ++i) {
+                state.previous_conv_history[i] = get_cache_tensor_by_name(encoder_conv_cache_name(i));
+            }
+            for (int level = 0; level < LTXVAE::LTX_ENCODER_TEMPORAL_LEVELS; ++level) {
+                state.previous_pending_x[level] = get_cache_tensor_by_name(
+                    encoder_pending_cache_name(level, false));
+                state.previous_pending_h[level] = get_cache_tensor_by_name(
+                    encoder_pending_cache_name(level, true));
+            }
+        }
+
+        auto runner_ctx  = get_context();
+        ggml_tensor* out = vae.encode_chunk(&runner_ctx, x, phase, state);
+        bool exact       = state.exact;
+        const bool has_output = out != nullptr;
+        if (has_output != (phase.output_frames > 0)) {
+            exact = false;
+        }
+
+        int expected_temporal_levels = 0;
+        for (int level = 0; level < LTXVAE::LTX_ENCODER_TEMPORAL_LEVELS; ++level) {
+            if (phase.level_input_frames[level] > 0) {
+                expected_temporal_levels++;
+            }
+        }
+        if (state.temporal_level != expected_temporal_levels) {
+            exact = false;
+        }
+        if (has_output &&
+            state.conv_index != expected_conv_count) {
+            exact = false;
+        }
+
+        ggml_backend_buffer_type_t cache_buft =
+            ggml_backend_get_default_buffer_type(runtime_backend);
+        const size_t cache_alignment =
+            ggml_backend_buft_get_alignment(cache_buft);
+        auto cache_alloc_size = [&](ggml_tensor* tensor) {
+            const size_t alloc_size =
+                ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+            return cache_alignment > 0
+                       ? ((alloc_size + cache_alignment - 1) / cache_alignment) *
+                             cache_alignment
+                       : alloc_size;
+        };
+
+        size_t state_bytes = 0;
+        for (size_t i = 0; i < state.next_conv_history.size(); ++i) {
+            ggml_tensor* history = state.next_conv_history[i];
+            if (history == nullptr) {
+                exact = false;
+                continue;
+            }
+            state_bytes += cache_alloc_size(history);
+            if (!preflight) {
+                cache(encoder_conv_cache_name(i), history);
+            }
+            ggml_build_forward_expand(gf, history);
+        }
+        for (int level = 0; level < LTXVAE::LTX_ENCODER_TEMPORAL_LEVELS; ++level) {
+            ggml_tensor* pending_x = state.next_pending_x[level];
+            ggml_tensor* pending_h = state.next_pending_h[level];
+            if (pending_x == nullptr || pending_h == nullptr) {
+                continue;
+            }
+            state_bytes += cache_alloc_size(pending_x) +
+                           cache_alloc_size(pending_h);
+            if (!preflight) {
+                cache(encoder_pending_cache_name(level, false), pending_x);
+                cache(encoder_pending_cache_name(level, true), pending_h);
+            }
+            ggml_build_forward_expand(gf, pending_x);
+            ggml_build_forward_expand(gf, pending_h);
+        }
+        if (out != nullptr) {
+            ggml_build_forward_expand(gf, out);
+        }
+
+        if (exact_out != nullptr) {
+            *exact_out = exact;
+        }
+        if (has_output_out != nullptr) {
+            *has_output_out = has_output;
+        }
+        if (state_bytes_out != nullptr) {
+            *state_bytes_out = state_bytes;
+        }
+        if (!exact) {
+            LOG_WARN("unable to build exact LTX VAE encoder chunk graph: "
+                     "input=%lld output=%lld has_output=%d conv=%zu/%d "
+                     "history=%zu temporal_levels=%d/%d state_exact=%d",
+                     (long long)phase.input_frames,
+                     (long long)phase.output_frames,
+                     has_output ? 1 : 0,
+                     state.conv_index,
+                     (int)expected_conv_count,
+                     state.next_conv_history.size(),
+                     state.temporal_level,
+                     expected_temporal_levels,
+                     state.exact ? 1 : 0);
+        }
+        return gf;
+    }
+
+    bool measure_encoder_chunk(const sd::Tensor<float>& x_chunk,
+                               const LTXVAE::EncoderTemporalPhase& phase,
+                               size_t* compute_bytes,
+                               size_t* state_bytes) {
+        bool exact      = false;
+        bool has_output = false;
+        size_t graph_state_bytes = 0;
+        auto get_graph = [&]() -> ggml_cgraph* {
+            return build_encoder_chunk_graph(x_chunk,
+                                             phase,
+                                             true,
+                                             &exact,
+                                             &has_output,
+                                             &graph_state_bytes);
+        };
+
+        ggml_cgraph* gf = nullptr;
+        if (!prepare_compute_graph(get_graph, &gf)) {
+            return false;
+        }
+        const size_t required = measure_compute_buffer_size(gf);
+        free_compute_ctx();
+
+        if (!exact || has_output != (phase.output_frames > 0)) {
+            return false;
+        }
+        if (compute_bytes != nullptr) {
+            *compute_bytes = required;
+        }
+        if (state_bytes != nullptr) {
+            *state_bytes = graph_state_bytes;
+        }
+        return true;
+    }
+
+    bool measure_full_graph(const sd::Tensor<float>& input,
+                            size_t* compute_bytes) {
+        auto get_graph = [&]() -> ggml_cgraph* {
+            return build_graph(input, false);
+        };
+        ggml_cgraph* gf = nullptr;
+        if (!prepare_compute_graph(get_graph, &gf)) {
+            return false;
+        }
+        const size_t required = measure_compute_buffer_size(gf);
+        free_compute_ctx();
+        if (compute_bytes != nullptr) {
+            *compute_bytes = required;
+        }
+        return true;
+    }
+
+    bool resolve_encoder_streaming_plan(const sd::Tensor<float>& input,
+                                        bool force_chunking,
+                                        EncoderStreamingPlan* selected) {
+        GGML_ASSERT(selected != nullptr);
+        const int64_t total_frames = input.shape()[2];
+        const sd::VaeFallbackCapacity capacity = get_vae_fallback_capacity();
+        const size_t budget = sd::vae_fallback_budget(capacity);
+        const size_t runtime_param_bytes =
+            params_backend == runtime_backend ? 0 : get_params_buffer_size();
+
+        size_t full_required = 0;
+        if (!measure_full_graph(input, &full_required)) {
+            return false;
+        }
+
+        const bool capacity_driven = full_required > budget;
+        if (!force_chunking && !capacity_driven) {
+            return false;
+        }
+        if (!force_chunking && !sd_backend_is(runtime_backend, "Vulkan")) {
+            return false;
+        }
+
+        int max_candidate = static_cast<int>(
+            std::min<int64_t>(std::max(MIN_ENCODER_CHUNK_FRAMES,
+                                       encoder_chunk_frames),
+                              total_frames));
+        max_candidate = ((max_candidate - 1) / 8) * 8 + 1;
+        for (int candidate = max_candidate;
+             candidate >= MIN_ENCODER_CHUNK_FRAMES;
+             candidate -= 8) {
+            auto temporal = LTXVAE::make_encoder_chunk_plan(total_frames, candidate);
+            if (!temporal.exact) {
+                continue;
+            }
+
+            size_t max_compute = 0;
+            size_t max_cache   = 0;
+            bool fits          = true;
+            int64_t start      = 0;
+            std::set<std::array<int64_t, 17>> measured_phases;
+            for (const auto& phase : temporal.chunks) {
+                std::array<int64_t, 17> phase_key = {
+                    phase.input_frames,
+                    phase.output_frames,
+                    phase.level_input_frames[0],
+                    phase.level_input_frames[1],
+                    phase.level_input_frames[2],
+                    phase.level_output_frames[0],
+                    phase.level_output_frames[1],
+                    phase.level_output_frames[2],
+                    phase.first_frame[0],
+                    phase.first_frame[1],
+                    phase.first_frame[2],
+                    phase.pending_before[0],
+                    phase.pending_before[1],
+                    phase.pending_before[2],
+                    phase.pending_after[0],
+                    phase.pending_after[1],
+                    phase.pending_after[2],
+                };
+                if (!measured_phases.insert(phase_key).second) {
+                    start += phase.input_frames;
+                    continue;
+                }
+                auto x_chunk = sd::ops::slice(input,
+                                              2,
+                                              start,
+                                              start + phase.input_frames);
+                size_t required = 0;
+                size_t state_bytes = 0;
+                if (!measure_encoder_chunk(x_chunk, phase, &required, &state_bytes)) {
+                    fits = false;
+                    break;
+                }
+                max_compute = std::max(max_compute, required);
+                max_cache   = std::max(max_cache, state_bytes);
+
+                const bool logical_fits =
+                    required <= capacity.max_buffer_bytes &&
+                    state_bytes <= capacity.max_buffer_bytes;
+                const size_t free_budget = capacity.free_memory_bytes > 0
+                                               ? sd::vae_fallback_scaled_budget(
+                                                     capacity.free_memory_bytes,
+                                                     capacity.free_memory_ratio)
+                                               : std::numeric_limits<size_t>::max();
+                const bool memory_fits =
+                    runtime_param_bytes <= free_budget &&
+                    state_bytes <= free_budget - runtime_param_bytes &&
+                    required <= free_budget - runtime_param_bytes - state_bytes;
+                if (!logical_fits || !memory_fits) {
+                    fits = false;
+                    break;
+                }
+                start += phase.input_frames;
+            }
+
+            if (!fits) {
+                continue;
+            }
+            selected->temporal         = std::move(temporal);
+            selected->max_compute_bytes = max_compute;
+            selected->max_cache_bytes   = max_cache;
+            selected->runtime_param_bytes = runtime_param_bytes;
+            selected->capacity_bytes    = budget;
+            return true;
+        }
+        return false;
     }
 
     ggml_cgraph* build_graph(const sd::Tensor<float>& z_tensor, bool decode_graph) {
@@ -1411,6 +1978,126 @@ struct LTXVideoVAE : public VAE {
         return output;
     }
 
+    sd::Tensor<float> encode_temporal_chunked_streaming(
+        const int n_threads,
+        const sd::Tensor<float>& input,
+        size_t expected_dim,
+        const EncoderStreamingPlan& plan) {
+        LOG_INFO("Using exact LTX VAE encoder streaming: first_payload=%d, "
+                 "continuation_payload=%d, total_frames=%lld, chunks=%zu, "
+                 "max_compute=%.2f MiB, state=%.2f MiB, runtime_params=%.2f MiB, "
+                 "budget=%.2f MiB (%zu bytes)",
+                 plan.temporal.first_chunk_frames,
+                 plan.temporal.continuation_frames,
+                 (long long)plan.temporal.total_frames,
+                 plan.temporal.chunks.size(),
+                 plan.max_compute_bytes / (1024.0 * 1024.0),
+                 plan.max_cache_bytes / (1024.0 * 1024.0),
+                 plan.runtime_param_bytes / (1024.0 * 1024.0),
+                 plan.capacity_bytes == std::numeric_limits<size_t>::max()
+                     ? 0.0
+                     : plan.capacity_bytes / (1024.0 * 1024.0),
+                 plan.capacity_bytes);
+
+        free_cache_ctx_and_buffer();
+        cache_tensor_map.clear();
+
+        sd::Tensor<float> output;
+        int64_t start = 0;
+        bool failed   = false;
+        try {
+            for (size_t chunk_index = 0;
+                 chunk_index < plan.temporal.chunks.size();
+                 ++chunk_index) {
+                const auto& phase = plan.temporal.chunks[chunk_index];
+                auto x_chunk      = sd::ops::slice(input,
+                                              2,
+                                              start,
+                                              start + phase.input_frames);
+                bool exact        = false;
+                bool has_output   = false;
+                auto get_graph = [&]() -> ggml_cgraph* {
+                    return build_encoder_chunk_graph(x_chunk,
+                                                     phase,
+                                                     false,
+                                                     &exact,
+                                                     &has_output,
+                                                     nullptr);
+                };
+
+                auto result = GGMLRunner::compute<float>(
+                    get_graph,
+                    n_threads,
+                    true,
+                    phase.output_frames == 0);
+                if (!result.has_value() || !exact ||
+                    has_output != (phase.output_frames > 0)) {
+                    failed = true;
+                    break;
+                }
+
+                if (phase.output_frames > 0) {
+                    auto chunk = restore_trailing_singleton_dims(
+                        std::move(*result),
+                        expected_dim);
+                    if (chunk.empty() || chunk.shape()[2] != phase.output_frames) {
+                        failed = true;
+                        break;
+                    }
+                    output = output.empty()
+                                 ? std::move(chunk)
+                                 : sd::ops::concat(output, chunk, 2);
+                }
+
+                LOG_INFO("LTX VAE encoder chunk %zu/%zu: input=[%lld,%lld), "
+                         "levels=%lld/%lld/%lld -> %lld/%lld/%lld, output=%lld, "
+                         "first=%d/%d/%d, pending=%d/%d/%d -> %d/%d/%d",
+                         chunk_index + 1,
+                         plan.temporal.chunks.size(),
+                         (long long)start,
+                         (long long)(start + phase.input_frames),
+                         (long long)phase.level_input_frames[0],
+                         (long long)phase.level_input_frames[1],
+                         (long long)phase.level_input_frames[2],
+                         (long long)phase.level_output_frames[0],
+                         (long long)phase.level_output_frames[1],
+                         (long long)phase.level_output_frames[2],
+                         (long long)phase.output_frames,
+                         phase.first_frame[0] ? 1 : 0,
+                         phase.first_frame[1] ? 1 : 0,
+                         phase.first_frame[2] ? 1 : 0,
+                         phase.pending_before[0] ? 1 : 0,
+                         phase.pending_before[1] ? 1 : 0,
+                         phase.pending_before[2] ? 1 : 0,
+                         phase.pending_after[0] ? 1 : 0,
+                         phase.pending_after[1] ? 1 : 0,
+                         phase.pending_after[2] ? 1 : 0);
+                start += phase.input_frames;
+            }
+        } catch (const std::exception& error) {
+            LOG_ERROR("exact LTX VAE encoder stream aborted: %s", error.what());
+            free_cache_ctx_and_buffer();
+            cache_tensor_map.clear();
+            return {};
+        } catch (...) {
+            LOG_ERROR("exact LTX VAE encoder stream aborted by an unknown error");
+            free_cache_ctx_and_buffer();
+            cache_tensor_map.clear();
+            return {};
+        }
+
+        free_cache_ctx_and_buffer();
+        cache_tensor_map.clear();
+
+        const int64_t expected_frames =
+            LTXVAE::ltx_encoder_temporal_output_frames(input.shape()[2]);
+        if (failed || start != input.shape()[2] || output.empty() ||
+            output.shape()[2] != expected_frames) {
+            return {};
+        }
+        return output;
+    }
+
     ggml_cgraph* build_latent_statistics_graph(const sd::Tensor<float>& z_tensor, bool normalize) {
         ggml_cgraph* gf = new_graph_custom(1024);
         ggml_tensor* z  = make_input(z_tensor);
@@ -1449,12 +2136,25 @@ struct LTXVideoVAE : public VAE {
         if (decode_graph && temporal_tiling_enabled && input.dim() == 5 && input.shape()[2] > 1) {
             return decode_temporal_tiled_streaming(n_threads, input, expected_dim);
         }
-        // Encoder chunking is intentionally not approximated with overlap and
-        // cropping. Exact streaming must carry every causal convolution's left
-        // state and each SpaceToDepthDownsample block's incomplete factor_t
-        // group through all three temporal phases. Until those explicit state
-        // interfaces exist, oversized encoder graphs use capacity-preflighted
-        // CPU fallback without changing first-frame or downsample semantics.
+        if (!decode_graph && input.shape()[2] > 1) {
+            const bool force_chunking = encoder_chunk_frames_configured;
+            EncoderStreamingPlan plan;
+            if (resolve_encoder_streaming_plan(input, force_chunking, &plan)) {
+                auto chunked = encode_temporal_chunked_streaming(
+                    n_threads,
+                    input,
+                    expected_dim,
+                    plan);
+                if (!chunked.empty()) {
+                    return chunked;
+                }
+                LOG_WARN("exact LTX VAE encoder stream failed after preflight; "
+                         "retrying the complete graph so automatic CPU fallback can preserve semantics");
+            } else if (force_chunking) {
+                LOG_WARN("no exact LTX VAE encoder chunk plan fits the configured backend capacity; "
+                         "retrying the complete graph so automatic CPU fallback can preserve semantics");
+            }
+        }
         auto get_graph = [&]() -> ggml_cgraph* {
             return build_graph(input, decode_graph);
         };

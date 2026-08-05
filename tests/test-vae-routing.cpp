@@ -130,7 +130,14 @@ int main() {
     free_memory_limited.max_buffer_bytes  = std::numeric_limits<size_t>::max();
     free_memory_limited.free_memory_bytes = 4000 * MIB;
     free_memory_limited.free_memory_ratio = 0.8f;
-    assert(sd::vae_fallback_budget(free_memory_limited) == 3200 * MIB);
+    const size_t scaled_budget = sd::vae_fallback_budget(free_memory_limited);
+    const size_t expected_budget = 3200 * MIB;
+    const size_t budget_delta = scaled_budget > expected_budget
+                                    ? scaled_budget - expected_budget
+                                    : expected_budget - scaled_budget;
+    // The API stores the ratio as float. AppleClang represents 0.8f slightly
+    // above 0.8, which changes this multi-GiB product by 50 bytes.
+    assert(budget_delta <= 64);
 
     return 0;
 }

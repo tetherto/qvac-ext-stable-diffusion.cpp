@@ -2295,6 +2295,25 @@ protected:
             return true;
         }
 
+        auto discard_new_and_old_cache = [&]() {
+            if (cache_buffer != nullptr) {
+                ggml_backend_buffer_free(cache_buffer);
+                cache_buffer = nullptr;
+            }
+            if (cache_ctx != nullptr) {
+                ggml_free(cache_ctx);
+                cache_ctx = nullptr;
+            }
+            if (old_cache_buffer != nullptr) {
+                ggml_backend_buffer_free(old_cache_buffer);
+                old_cache_buffer = nullptr;
+            }
+            if (old_cache_ctx != nullptr) {
+                ggml_free(old_cache_ctx);
+                old_cache_ctx = nullptr;
+            }
+        };
+
         alloc_cache_ctx();
         std::vector<std::pair<ggml_tensor*, ggml_tensor*>> source_to_cache_tensors;
         source_to_cache_tensors.reserve(merged_cache_sources.size());
@@ -2306,7 +2325,12 @@ protected:
         }
         size_t num_tensors = ggml_tensor_num(cache_ctx);
         cache_buffer       = ggml_backend_alloc_ctx_tensors(cache_ctx, runtime_backend);
-        GGML_ASSERT(cache_buffer != nullptr);
+        if (cache_buffer == nullptr) {
+            LOG_ERROR("%s failed to allocate persistent cache backend buffer",
+                      get_desc().c_str());
+            discard_new_and_old_cache();
+            return false;
+        }
         for (const auto& kv : source_to_cache_tensors) {
             ggml_tensor* src              = kv.first;
             ggml_tensor* dst              = kv.second;
@@ -2324,6 +2348,7 @@ protected:
                           src ? src->view_src : nullptr,
                           (src && src->view_src) ? src->view_src->buffer : nullptr,
                           dst ? dst->buffer : nullptr);
+                discard_new_and_old_cache();
                 return false;
             }
             const bool use_staging_copy = src->view_src != nullptr || !ggml_is_contiguous(src) || src->buffer == nullptr;

@@ -518,7 +518,7 @@ Shared default fields used by both `img_gen` and `vid_gen`:
 | `output_format` | `string` |
 | `output_compression` | `integer` |
 
-`vae_tiling_params.extra_tiling_args` accepts a key=value list. For LTX video VAE temporal tiling, `temporal_tile_frames` defaults to `4` and `temporal_tile_overlap` defaults to `1`.
+`vae_tiling_params.extra_tiling_args` accepts a key=value list. For LTX video VAE temporal decode tiling, `temporal_tile_frames` defaults to `4` and `temporal_tile_overlap` defaults to `1`. The exact LTX encoder stream carries all causal histories and factor-2 phase state; it does not overlap, blend, or reset first-frame state per chunk. Capacity-driven Vulkan streaming tests a 49-frame first payload with 48-frame continuations, then smaller aligned plans down to a 9/8 minimum. `encoder_chunk_frames` sets the maximum first payload explicitly. If no complete first/continuation plan fits, or a stateful chunk later fails capacity preflight, the stream is discarded and the unchanged full encoder graph uses configured automatic CPU fallback when available.
 
 `img_gen`-specific default fields:
 
