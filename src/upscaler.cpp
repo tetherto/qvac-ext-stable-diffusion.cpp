@@ -47,6 +47,7 @@ bool UpscalerGGML::load_from_file(const std::string& esrgan_path,
     if (!backend_manager.init(backend_spec.c_str(),
                               params_backend_spec.c_str(),
                               /*split_mode_spec=*/nullptr,
+                              false,
                               &error)) {
         LOG_ERROR("upscaler backend config failed: %s", error.c_str());
         return false;

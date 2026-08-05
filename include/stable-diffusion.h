@@ -238,6 +238,11 @@ typedef struct {
     const char* rpc_servers;
     const char* model_args;
     enum sd_backend_preference_t preferred_gpu_backend;  // qvac: honored when `backend` is unset
+    // Preflight VAE encode/decode graphs before allocation. If a non-CPU VAE
+    // graph exceeds the backend's logical-buffer limit or the configured
+    // fraction of reported free memory, execute only that graph on CPU.
+    bool vae_auto_cpu_fallback;
+    float vae_auto_cpu_fallback_memory_ratio;
 } sd_ctx_params_t;
 
 typedef struct {

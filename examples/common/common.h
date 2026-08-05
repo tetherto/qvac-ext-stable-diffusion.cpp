@@ -164,6 +164,8 @@ struct SDContextParams {
     bool control_net_cpu       = false;
     bool clip_on_cpu           = false;
     bool vae_on_cpu            = false;
+    bool vae_auto_cpu_fallback = false;
+    float vae_auto_cpu_fallback_memory_ratio = 0.9f;
     bool flash_attn            = false;
     bool diffusion_flash_attn  = false;
     bool diffusion_conv_direct = false;

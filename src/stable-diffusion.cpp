@@ -263,6 +263,7 @@ public:
     std::string params_backend_spec;
     std::string split_mode_spec;
     bool auto_fit_enabled = false;
+    bool vae_auto_cpu_fallback_enabled = false;
 
     bool diffusion_conv_direct = false;
 
@@ -636,6 +637,7 @@ public:
         if (!backend_manager.init(backend_spec.c_str(),
                                   params_backend_spec.c_str(),
                                   split_mode_spec.c_str(),
+                                  vae_auto_cpu_fallback_enabled,
                                   &error)) {
             LOG_ERROR("backend config failed: %s", error.c_str());
             return false;
@@ -876,6 +878,7 @@ public:
         params_backend_spec = SAFE_STR(sd_ctx_params->params_backend);
         split_mode_spec     = SAFE_STR(sd_ctx_params->split_mode);
         auto_fit_enabled    = sd_ctx_params->auto_fit;
+        vae_auto_cpu_fallback_enabled = sd_ctx_params->vae_auto_cpu_fallback;
         if (backend_spec.empty()) {
             if (getenv("SD_CPU_ONLY")) {
                 LOG_INFO("SD_CPU_ONLY set - forcing CPU backend");
@@ -1545,6 +1548,16 @@ public:
                 }
             }
 
+            auto configure_vae_fallback = [&](const std::shared_ptr<GGMLRunner>& model) {
+                if (model) {
+                    model->set_vae_auto_cpu_fallback(
+                        sd_ctx_params->vae_auto_cpu_fallback,
+                        sd_ctx_params->vae_auto_cpu_fallback_memory_ratio);
+                }
+            };
+            configure_vae_fallback(first_stage_model);
+            configure_vae_fallback(preview_vae);
+
             if (use_audio_vae) {
                 if (sd_version_is_minimax_h3(version)) {
                     audio_vae_model = std::make_shared<MiniMaxH3::AudioVAERunner>(backend_for(SDBackendModule::VAE),
@@ -1563,6 +1576,7 @@ public:
                                             &vae_params_mem_size)) {
                     return false;
                 }
+                configure_vae_fallback(audio_vae_model);
             }
 
             if (sd_ctx_params->vae_conv_direct) {
@@ -3581,6 +3595,8 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->rpc_servers          = nullptr;
     sd_ctx_params->model_args           = nullptr;
     sd_ctx_params->pulid_weights_path   = nullptr;
+    sd_ctx_params->vae_auto_cpu_fallback   = false;
+    sd_ctx_params->vae_auto_cpu_fallback_memory_ratio = 0.9f;
     sd_ctx_params->preferred_gpu_backend   = SD_BACKEND_PREF_GPU;
 }
 
@@ -3622,6 +3638,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "split_mode: %s\n"
              "model_args: %s\n"
              "auto_fit: %s\n"
+             "vae_auto_cpu_fallback: %s\n"
+             "vae_auto_cpu_fallback_memory_ratio: %.3f\n"
              "flash_attn: %s\n"
              "diffusion_flash_attn: %s\n"
              "vae_format: %s\n",
@@ -3656,6 +3674,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              SAFE_STR(sd_ctx_params->split_mode),
              SAFE_STR(sd_ctx_params->model_args),
              BOOL_STR(sd_ctx_params->auto_fit),
+             BOOL_STR(sd_ctx_params->vae_auto_cpu_fallback),
+             sd_ctx_params->vae_auto_cpu_fallback_memory_ratio,
              BOOL_STR(sd_ctx_params->flash_attn),
              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
              sd_vae_format_name(sd_ctx_params->vae_format));

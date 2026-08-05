@@ -1273,6 +1273,9 @@ namespace LTXV {
     };
 
     struct LTXAVModelBlock : public GGMLBlock {
+        static constexpr bool PATCH_PROJECTION_FORCE_F32_WEIGHTS      = true;
+        static constexpr bool PATCH_PROJECTION_FORCE_F32_ACCUMULATION = true;
+
         LTXAVConfig config;
 
         void init_params(ggml_context* ctx,
@@ -1290,8 +1293,16 @@ namespace LTXV {
 
         LTXAVModelBlock(const LTXAVConfig& config)
             : config(config) {
-            blocks["patchify_proj"]       = std::make_shared<Linear>(config.in_channels, config.hidden_size, true, true, true);
-            blocks["audio_patchify_proj"] = std::make_shared<Linear>(config.audio_in_channels, config.audio_hidden_size, true, true, true);
+            blocks["patchify_proj"] = std::make_shared<Linear>(config.in_channels,
+                                                                config.hidden_size,
+                                                                true,
+                                                                PATCH_PROJECTION_FORCE_F32_WEIGHTS,
+                                                                PATCH_PROJECTION_FORCE_F32_ACCUMULATION);
+            blocks["audio_patchify_proj"] = std::make_shared<Linear>(config.audio_in_channels,
+                                                                      config.audio_hidden_size,
+                                                                      true,
+                                                                      PATCH_PROJECTION_FORCE_F32_WEIGHTS,
+                                                                      PATCH_PROJECTION_FORCE_F32_ACCUMULATION);
             blocks["adaln_single"]        = std::make_shared<AdaLayerNormSingle>(config.hidden_size, config.cross_attention_adaln ? 9 : 6);
             blocks["audio_adaln_single"]  = std::make_shared<AdaLayerNormSingle>(config.audio_hidden_size, config.cross_attention_adaln ? 9 : 6);
             if (config.cross_attention_adaln) {

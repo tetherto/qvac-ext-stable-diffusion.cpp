@@ -662,7 +662,7 @@ ADetailerGGML::~ADetailerGGML() {
 
 bool ADetailerGGML::load_from_file(const std::string& detector_path) {
     std::string error;
-    if (!backend_manager.init(backend_spec.c_str(), params_backend_spec.c_str(), nullptr, &error)) {
+    if (!backend_manager.init(backend_spec.c_str(), params_backend_spec.c_str(), nullptr, false, &error)) {
         LOG_ERROR("ADetailer backend config failed: %s", error.c_str());
         return false;
     }

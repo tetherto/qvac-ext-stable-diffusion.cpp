@@ -28,9 +28,14 @@ struct SDBackendAssignment {
     std::unordered_map<SDBackendModule, std::string> module_names;
 
     bool empty() const;
+    bool has_explicit(SDBackendModule module) const;
     std::string get(SDBackendModule module) const;
     void set_default(const std::string& name);
     void set_module(SDBackendModule module, const std::string& name);
+    bool set_module_if_unassigned(SDBackendModule module, const std::string& name);
+    void apply_keep_cpu_overrides(bool keep_clip_on_cpu,
+                                  bool keep_vae_on_cpu,
+                                  bool keep_control_net_on_cpu);
 };
 
 struct SDBackendHandleDeleter {
@@ -61,6 +66,7 @@ public:
     bool init(const char* backend_spec,
               const char* params_backend_spec,
               const char* split_mode_spec,
+              bool vae_auto_cpu_fallback,
               std::string* error);
     void reset();
 

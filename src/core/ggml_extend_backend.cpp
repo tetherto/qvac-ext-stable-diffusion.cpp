@@ -656,6 +656,10 @@ bool SDBackendAssignment::empty() const {
     return default_name.empty() && module_names.empty();
 }
 
+bool SDBackendAssignment::has_explicit(SDBackendModule module) const {
+    return !default_name.empty() || module_names.find(module) != module_names.end();
+}
+
 std::string SDBackendAssignment::get(SDBackendModule module) const {
     return module_assignment_name(*this, module);
 }
@@ -666,6 +670,28 @@ void SDBackendAssignment::set_default(const std::string& name) {
 
 void SDBackendAssignment::set_module(SDBackendModule module, const std::string& name) {
     module_names[module] = trim_copy(name);
+}
+
+bool SDBackendAssignment::set_module_if_unassigned(SDBackendModule module, const std::string& name) {
+    if (has_explicit(module)) {
+        return false;
+    }
+    set_module(module, name);
+    return true;
+}
+
+void SDBackendAssignment::apply_keep_cpu_overrides(bool keep_clip_on_cpu,
+                                                   bool keep_vae_on_cpu,
+                                                   bool keep_control_net_on_cpu) {
+    if (keep_clip_on_cpu) {
+        set_module(SDBackendModule::TE, "cpu");
+    }
+    if (keep_vae_on_cpu) {
+        set_module(SDBackendModule::VAE, "cpu");
+    }
+    if (keep_control_net_on_cpu) {
+        set_module(SDBackendModule::CONTROL_NET, "cpu");
+    }
 }
 
 void SDBackendHandleDeleter::operator()(ggml_backend_t backend) const {
@@ -773,6 +799,7 @@ bool SDBackendManager::runtime_backend_supports_host_buffer(SDBackendModule modu
 bool SDBackendManager::init(const char* backend_spec,
                             const char* params_backend_spec,
                             const char* split_mode_spec,
+                            bool vae_auto_cpu_fallback,
                             std::string* error) {
     reset();
 
@@ -784,6 +811,10 @@ bool SDBackendManager::init(const char* backend_spec,
     }
     if (!sd_parse_backend_assignment(SAFE_STR(split_mode_spec), &split_mode_assignment_, error)) {
         return false;
+    }
+    if (vae_auto_cpu_fallback &&
+        params_assignment_.set_module_if_unassigned(SDBackendModule::VAE, "cpu")) {
+        LOG_INFO("VAE automatic CPU fallback: retaining VAE parameters on CPU");
     }
 
     return validate(error);
