@@ -19,6 +19,8 @@ protected:
                                        const sd::Tensor<float>& z,
                                        bool decode_graph) = 0;
 
+    virtual void set_tiling_params(const sd_tiling_params_t& params) { SD_UNUSED(params); }
+
     virtual bool supports_temporal_tiling(VAETemporalDirection direction) const {
         SD_UNUSED(direction);
         return false;
@@ -263,6 +265,7 @@ public:
         tiling_params           = resolve_tiling_params(tiling_params);
         sd::Tensor<float> input = x;
         sd::Tensor<float> output;
+        set_tiling_params(tiling_params);
         if (scale_input) {
             scale_tensor_to_minus1_1(&input);
         }
