@@ -1448,6 +1448,12 @@ struct LTXVideoVAE : public VAE {
         if (decode_graph && temporal_tiling_enabled && input.dim() == 5 && input.shape()[2] > 1) {
             return decode_temporal_tiled_streaming(n_threads, input, expected_dim);
         }
+        // Encoder chunking is intentionally not approximated with overlap and
+        // cropping. Exact streaming must carry every causal convolution's left
+        // state and each SpaceToDepthDownsample block's incomplete factor_t
+        // group through all three temporal phases. Until those explicit state
+        // interfaces exist, oversized encoder graphs use capacity-preflighted
+        // CPU fallback without changing first-frame or downsample semantics.
         auto get_graph = [&]() -> ggml_cgraph* {
             return build_graph(input, decode_graph);
         };

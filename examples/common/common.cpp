@@ -439,6 +439,10 @@ ArgOptions SDContextParams::get_options() {
          "--max-vram",
          "maximum VRAM budget in GiB for graph-cut segmented execution. 0 disables graph splitting; a negative value auto-detects free VRAM, sparing the specified value (e.g. -0.5 will keep at least 0.5 GiB free)",
          &max_vram},
+        {"",
+         "--vae-auto-cpu-fallback-memory-ratio",
+         "fraction of reported free device memory available to a preflighted VAE graph (default: 0.9)",
+         &vae_auto_cpu_fallback_memory_ratio},
     };
 
     options.bool_options = {
@@ -470,6 +474,10 @@ ArgOptions SDContextParams::get_options() {
          "--vae-on-cpu",
          "keep vae in cpu (for low vram)",
          true, &vae_on_cpu},
+        {"",
+         "--vae-auto-cpu-fallback",
+         "preflight VAE graphs and route only oversized graphs to CPU (default: false)",
+         true, &vae_auto_cpu_fallback},
         {"",
          "--fa",
          "use flash attention",
@@ -672,6 +680,12 @@ bool SDContextParams::validate(SDMode mode) {
         return false;
     }
 
+    if (!(vae_auto_cpu_fallback_memory_ratio > 0.0f &&
+          vae_auto_cpu_fallback_memory_ratio <= 1.0f)) {
+        LOG_ERROR("error: vae_auto_cpu_fallback_memory_ratio must be in (0, 1]");
+        return false;
+    }
+
     return true;
 }
 
@@ -736,6 +750,8 @@ std::string SDContextParams::to_string() const {
         << "  control_net_cpu: " << (control_net_cpu ? "true" : "false") << ",\n"
         << "  clip_on_cpu: " << (clip_on_cpu ? "true" : "false") << ",\n"
         << "  vae_on_cpu: " << (vae_on_cpu ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback: " << (vae_auto_cpu_fallback ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback_memory_ratio: " << vae_auto_cpu_fallback_memory_ratio << ",\n"
         << "  flash_attn: " << (flash_attn ? "true" : "false") << ",\n"
         << "  diffusion_flash_attn: " << (diffusion_flash_attn ? "true" : "false") << ",\n"
         << "  diffusion_conv_direct: " << (diffusion_conv_direct ? "true" : "false") << ",\n"
@@ -815,6 +831,8 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t(bool vae_decode_only, bool f
         backend.c_str(),
         params_backend.c_str(),
         SD_BACKEND_PREF_GPU,  // qvac: default to GPU; honored only when --backend is unset
+        vae_auto_cpu_fallback,
+        vae_auto_cpu_fallback_memory_ratio,
     };
     return sd_ctx_params;
 }

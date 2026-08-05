@@ -283,6 +283,7 @@ public:
                                   sd_ctx_params->keep_clip_on_cpu,
                                   sd_ctx_params->keep_vae_on_cpu,
                                   sd_ctx_params->keep_control_net_on_cpu,
+                                  sd_ctx_params->vae_auto_cpu_fallback,
                                   &error)) {
             LOG_ERROR("backend config failed: %s", error.c_str());
             return false;
@@ -925,10 +926,21 @@ public:
                 }
             }
 
+            auto configure_vae_fallback = [&](const std::shared_ptr<GGMLRunner>& model) {
+                if (model) {
+                    model->set_vae_auto_cpu_fallback(
+                        sd_ctx_params->vae_auto_cpu_fallback,
+                        sd_ctx_params->vae_auto_cpu_fallback_memory_ratio);
+                }
+            };
+            configure_vae_fallback(first_stage_model);
+            configure_vae_fallback(preview_vae);
+
             if (use_audio_vae) {
                 audio_vae_model = std::make_shared<LTXV::LTXAudioVAERunner>(backend_for(SDBackendModule::VAE),
                                                                             params_backend_for(SDBackendModule::VAE),
                                                                             tensor_storage_map);
+                configure_vae_fallback(audio_vae_model);
                 get_param_tensors_p(audio_vae_model, vae_mmap, "");
             }
 
@@ -2821,6 +2833,8 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->keep_clip_on_cpu        = false;
     sd_ctx_params->keep_control_net_on_cpu = false;
     sd_ctx_params->keep_vae_on_cpu         = false;
+    sd_ctx_params->vae_auto_cpu_fallback   = false;
+    sd_ctx_params->vae_auto_cpu_fallback_memory_ratio = 0.9f;
     sd_ctx_params->diffusion_flash_attn    = false;
     sd_ctx_params->circular_x              = false;
     sd_ctx_params->circular_y              = false;
@@ -2872,6 +2886,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "keep_clip_on_cpu: %s\n"
              "keep_control_net_on_cpu: %s\n"
              "keep_vae_on_cpu: %s\n"
+             "vae_auto_cpu_fallback: %s\n"
+             "vae_auto_cpu_fallback_memory_ratio: %.3f\n"
              "flash_attn: %s\n"
              "diffusion_flash_attn: %s\n"
              "circular_x: %s\n"
@@ -2912,6 +2928,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              BOOL_STR(sd_ctx_params->keep_clip_on_cpu),
              BOOL_STR(sd_ctx_params->keep_control_net_on_cpu),
              BOOL_STR(sd_ctx_params->keep_vae_on_cpu),
+             BOOL_STR(sd_ctx_params->vae_auto_cpu_fallback),
+             sd_ctx_params->vae_auto_cpu_fallback_memory_ratio,
              BOOL_STR(sd_ctx_params->flash_attn),
              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
              BOOL_STR(sd_ctx_params->circular_x),
