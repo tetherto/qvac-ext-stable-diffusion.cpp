@@ -895,7 +895,7 @@ ArgOptions SDGenerationParams::get_options() {
          &extra_sample_args},
         {"",
          "--extra-tiling-args",
-         "extra VAE tiling args, key=value list. LTX video VAE supports temporal_tile_frames (default: 4), temporal_tile_overlap (default: 1)",
+         "extra VAE tiling args, key=value list. LTX video VAE supports temporal_tile_frames (default: 4), temporal_tile_overlap (default: 1), encoder_chunk_frames (automatic cap: 49, minimum: 9)",
          &extra_tiling_args},
     };
 

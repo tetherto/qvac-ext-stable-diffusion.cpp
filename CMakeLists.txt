@@ -355,7 +355,9 @@ if(SD_GGML_BACKEND_HEADER)
     file(STRINGS "${SD_GGML_BACKEND_HEADER}" SD_GGML_CAPACITY_API_DECL
          REGEX "ggml_backend_get_max_buffer_capacity")
     if(SD_GGML_CAPACITY_API_DECL)
-        target_compile_definitions(${SD_LIB} PRIVATE SD_GGML_HAS_BUFFER_CAPACITY_API=1)
+        # ggml_extend.hpp uses this feature check in inline methods. Propagate it
+        # to consumers to keep every translation unit on the same API path.
+        target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_BUFFER_CAPACITY_API=1)
     endif()
 endif()
 
