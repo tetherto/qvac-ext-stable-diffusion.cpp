@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/compute_workspace.h"
+#include "vae_fallback.hpp"
 #include "core/ggml_graph_cut.h"
 #include "core/runner_cache.h"
 #include "core/tensor_ggml.hpp"
@@ -154,6 +155,12 @@ protected:
     using GraphCutPlan = sd::ggml_graph_cut::Plan;
 
     ggml_backend_t runtime_backend = nullptr;
+    ggml_backend_t vae_cpu_fallback_backend = nullptr; // borrowed from SDBackendManager
+    bool vae_auto_cpu_fallback_enabled = false;
+    float vae_auto_cpu_fallback_memory_ratio = 0.9f;
+    size_t measure_compute_buffer_size(ggml_cgraph* graph) const;
+    sd::VaeFallbackCapacity get_vae_fallback_capacity() const;
+    void switch_runtime_backend(ggml_backend_t backend);
 
     ggml_context* params_ctx = nullptr;
 
@@ -346,6 +353,9 @@ public:
                                              const std::function<bool()>& read_outputs = {});
 
     ggml_status last_compute_status() const { return last_compute_status_; }
+
+    void set_vae_auto_cpu_fallback(bool enabled, float memory_ratio = 0.9f,
+                                   ggml_backend_t cpu_backend = nullptr);
 
     void set_flash_attention_enabled(bool enabled) {
         flash_attn_enabled = enabled;

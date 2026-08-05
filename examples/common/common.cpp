@@ -595,6 +595,13 @@ ArgOptions SDContextParams::get_options() {
          &conditioning_cache_size},
     };
 
+    options.float_options = {
+        {"",
+         "--vae-auto-cpu-fallback-memory-ratio",
+         "fraction of reported free device memory available to a preflighted VAE graph (default: 0.9)",
+         &vae_auto_cpu_fallback_memory_ratio},
+    };
+
     options.bool_options = {
         {"",
          "--list-devices",
@@ -637,6 +644,10 @@ ArgOptions SDContextParams::get_options() {
          "--vae-on-cpu",
          "deprecated; use --backend vae=cpu",
          true, &vae_on_cpu},
+        {"",
+         "--vae-auto-cpu-fallback",
+         "preflight VAE graphs and route only oversized graphs to CPU (default: false)",
+         true, &vae_auto_cpu_fallback},
         {"",
          "--sage-attn",
          "use native CUDA SageAttention in the diffusion model, with flash/default attention fallback",
@@ -919,6 +930,12 @@ bool SDContextParams::validate(SDMode mode) {
         return false;
     }
 
+    if (!(vae_auto_cpu_fallback_memory_ratio > 0.0f &&
+          vae_auto_cpu_fallback_memory_ratio <= 1.0f)) {
+        LOG_ERROR("error: vae_auto_cpu_fallback_memory_ratio must be in (0, 1]");
+        return false;
+    }
+
     return true;
 }
 
@@ -1011,6 +1028,8 @@ std::string SDContextParams::to_string() const {
         << "  control_net_cpu: " << (control_net_cpu ? "true" : "false") << ",\n"
         << "  clip_on_cpu: " << (clip_on_cpu ? "true" : "false") << ",\n"
         << "  vae_on_cpu: " << (vae_on_cpu ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback: " << (vae_auto_cpu_fallback ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback_memory_ratio: " << vae_auto_cpu_fallback_memory_ratio << ",\n"
         << "  flash_attn_mode: " << flash_attn_mode << ",\n"
         << "  conv_direct_mode: " << (conv_direct_mode.empty() ? "auto (legacy flags honored)" : conv_direct_mode) << ",\n"
         << "  sage_attn: " << (sage_attn ? "true" : "false") << ",\n"
@@ -1093,6 +1112,8 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t() {
     sd_ctx_params.rpc_servers                     = rpc_servers.c_str();
     sd_ctx_params.model_args                      = model_args.empty() ? nullptr : model_args.c_str();
     sd_ctx_params.preferred_gpu_backend           = SD_BACKEND_PREF_GPU;
+    sd_ctx_params.vae_auto_cpu_fallback            = vae_auto_cpu_fallback;
+    sd_ctx_params.vae_auto_cpu_fallback_memory_ratio = vae_auto_cpu_fallback_memory_ratio;
     return sd_ctx_params;
 }
 

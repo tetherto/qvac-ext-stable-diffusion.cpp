@@ -180,6 +180,8 @@ struct SDContextParams {
     std::string flash_attn_mode = "auto";
     std::string conv_direct_mode;  // Empty selects auto while honoring legacy convolution flags.
     bool sage_attn             = false;
+    bool vae_auto_cpu_fallback = false;
+    float vae_auto_cpu_fallback_memory_ratio = 0.9f;
     bool diffusion_conv_direct = false;
     bool vae_conv_direct       = false;
     bool taesd_preview_only    = false;

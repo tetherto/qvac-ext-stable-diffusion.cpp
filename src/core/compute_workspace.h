@@ -34,6 +34,10 @@ namespace sd {
         ComputeWorkspace(const ComputeWorkspace&)            = delete;
         ComputeWorkspace& operator=(const ComputeWorkspace&) = delete;
 
+        void set_backend(ggml_backend_t backend) {
+            GGML_ASSERT(release());
+            backend_ = backend;
+        }
         void set_extra_backends(const std::vector<ggml_backend_t>& backends);
         bool prepare(const Measurement& measurement);
         bool release_excess(const Measurement& measurement);

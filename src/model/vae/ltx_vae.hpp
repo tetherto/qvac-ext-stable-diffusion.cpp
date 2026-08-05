@@ -1403,6 +1403,12 @@ struct LTXVideoVAE : public VAE {
                 input = sd::ops::slice(input, 2, 0, cropped_t);
             }
         }
+        // Encoder chunking is intentionally not approximated with overlap and
+        // cropping. Exact streaming must carry every causal convolution's left
+        // state and each SpaceToDepthDownsample block's incomplete factor_t
+        // group through all three temporal phases. Until those explicit state
+        // interfaces exist, oversized encoder graphs use capacity-preflighted
+        // CPU fallback without changing first-frame or downsample semantics.
         auto get_graph = [&]() -> ggml_cgraph* {
             return build_graph(input, decode_graph);
         };

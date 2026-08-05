@@ -357,6 +357,8 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->model_args                = nullptr;
     sd_ctx_params->pulid_weights_path        = nullptr;
     sd_ctx_params->preferred_gpu_backend = SD_BACKEND_PREF_GPU;
+    sd_ctx_params->vae_auto_cpu_fallback = false;
+    sd_ctx_params->vae_auto_cpu_fallback_memory_ratio = 0.9f;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
@@ -401,6 +403,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "split_mode: %s\n"
              "model_args: %s\n"
              "auto_fit: %s\n"
+             "vae_auto_cpu_fallback: %s\n"
+             "vae_auto_cpu_fallback_memory_ratio: %.3f\n"
              "flash_attn: %s\n"
              "flash_attn_mode: %s\n"
              "conv_direct_mode: %s\n"
@@ -444,6 +448,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              SAFE_STR(sd_ctx_params->split_mode),
              SAFE_STR(sd_ctx_params->model_args),
              BOOL_STR(sd_ctx_params->auto_fit),
+             BOOL_STR(sd_ctx_params->vae_auto_cpu_fallback),
+             sd_ctx_params->vae_auto_cpu_fallback_memory_ratio,
              BOOL_STR(sd_ctx_params->flash_attn),
              sd_ctx_params->flash_attn_mode && sd_ctx_params->flash_attn_mode[0] ? sd_ctx_params->flash_attn_mode : "auto (legacy flags honored)",
              sd_ctx_params->conv_direct_mode && sd_ctx_params->conv_direct_mode[0] ? sd_ctx_params->conv_direct_mode : "auto (legacy flags honored)",

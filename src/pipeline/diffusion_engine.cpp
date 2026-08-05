@@ -589,6 +589,7 @@ bool StableDiffusionGGML::init_backend() {
     if (!backend_manager.init(backend_spec.c_str(),
                               params_backend_spec.c_str(),
                               split_mode_spec.c_str(),
+                              vae_auto_cpu_fallback_enabled,
                               &error)) {
         LOG_ERROR("backend config failed: %s", error.c_str());
         return false;
@@ -935,6 +936,7 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     params_backend_spec       = SAFE_STR(sd_ctx_params->params_backend);
     split_mode_spec           = SAFE_STR(sd_ctx_params->split_mode);
     auto_fit_enabled          = sd_ctx_params->auto_fit && params_backend_spec.empty();
+    vae_auto_cpu_fallback_enabled = sd_ctx_params->vae_auto_cpu_fallback;
     if (backend_spec.empty()) {
         if (getenv("SD_CPU_ONLY")) {
             LOG_INFO("SD_CPU_ONLY set - forcing CPU backend");
@@ -1137,6 +1139,15 @@ bool StableDiffusionGGML::build_vae_runners() {
     first_stage_model = std::move(runners.vae);
     preview_vae       = std::move(runners.preview);
     audio_vae_model   = std::move(runners.audio);
+    for (GGMLRunner* model : {static_cast<GGMLRunner*>(first_stage_model.get()),
+                              static_cast<GGMLRunner*>(preview_vae.get()),
+                              static_cast<GGMLRunner*>(audio_vae_model.get())}) {
+        if (model) {
+            model->set_vae_auto_cpu_fallback(config_->params.vae_auto_cpu_fallback,
+                                             config_->params.vae_auto_cpu_fallback_memory_ratio,
+                                             params_backend_for(SDBackendModule::VAE));
+        }
+    }
 
     first_stage_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::VAE));
     if (preview_vae) {

@@ -44,6 +44,10 @@ namespace sd {
         size_t pending_bytes(ggml_cgraph* graph) const;
         size_t resident_bytes(ggml_backend_dev_t device) const;
         bool empty() const { return committed_.empty(); }
+        void set_backend(ggml_backend_t backend) {
+            GGML_ASSERT(committed_.empty() && pending_.empty() && outputs_.empty());
+            backend_ = backend;
+        }
         ggml_status capture(ggml_cgraph* graph);
         void graph_end(bool success);
         void clear();
@@ -65,6 +69,10 @@ namespace sd {
         ggml_status capture(ggml_cgraph* graph, const ggml_graph_cut::Segment& segment, const char* log_desc);
         void prune(const std::unordered_set<std::string>& keep_names);
         void clear() { tensors_.clear(); }
+        void set_backend(ggml_backend_t backend) {
+            clear();
+            backend_ = backend;
+        }
     };
 }
 

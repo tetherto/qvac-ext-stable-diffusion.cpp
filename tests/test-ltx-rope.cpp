@@ -6,6 +6,11 @@
 #include <cstring>
 #include <vector>
 
+static_assert(LTXV::LTXAVModelBlock::PATCH_PROJECTION_FORCE_F32_WEIGHTS,
+              "LTX video/audio patch projection weights must stay F32");
+static_assert(LTXV::LTXAVModelBlock::PATCH_PROJECTION_FORCE_F32_ACCUMULATION,
+              "LTX video/audio patch projection accumulation must stay F32");
+
 static uint64_t hash_float_bits(const std::vector<float>& values) {
     uint64_t hash = 1469598103934665603ULL;
     for (float value : values) {
