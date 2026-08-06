@@ -9,3 +9,10 @@ add_test(NAME test-vae-routing COMMAND test-vae-routing)
 add_executable(test-ltx-vae-temporal test-ltx-vae-temporal.cpp)
 target_link_libraries(test-ltx-vae-temporal PRIVATE stable-diffusion)
 add_test(NAME test-ltx-vae-temporal COMMAND test-ltx-vae-temporal)
+
+add_executable(test-ltx-vae-decoder-streaming
+    test-ltx-vae-decoder-streaming.cpp)
+target_link_libraries(test-ltx-vae-decoder-streaming
+    PRIVATE stable-diffusion)
+add_test(NAME test-ltx-vae-decoder-streaming
+    COMMAND test-ltx-vae-decoder-streaming)

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -32,6 +33,20 @@ namespace LTXVAE {
         bool allow_missing_history = false;
         bool preflight             = false;
         bool exact                 = true;
+    };
+
+    struct DecoderStreamingGraphState {
+        std::vector<ggml_tensor*> previous_conv_history;
+        std::vector<ggml_tensor*> next_conv_history;
+        std::vector<ggml_tensor*> previous_residual_pending;
+        std::vector<ggml_tensor*> next_residual_pending;
+        DecoderTemporalState* temporal_state = nullptr;
+        size_t conv_index                    = 0;
+        size_t residual_index                = 0;
+        size_t upsample_index                = 0;
+        bool final                           = false;
+        bool preflight                       = false;
+        bool exact                           = true;
     };
 
     static inline ggml_tensor* apply_scale_shift(ggml_context* ctx,
@@ -186,6 +201,91 @@ namespace LTXVAE {
             state.next_conv_history.push_back(next_history);
             state.conv_index++;
             return conv->forward(ctx, padded);
+        }
+
+        ggml_tensor* forward_decoder_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            DecoderStreamingGraphState& state) {
+            GGML_ASSERT(state.temporal_state != nullptr);
+            const size_t index = state.conv_index++;
+            const int64_t input_frames = x == nullptr ? 0 : x->ne[2];
+            const auto phase = state.temporal_state->advance_convolution(
+                index,
+                input_frames,
+                state.final);
+
+            ggml_tensor* previous =
+                index < state.previous_conv_history.size()
+                    ? state.previous_conv_history[index]
+                    : nullptr;
+            if (phase.started_before && previous == nullptr) {
+                if (!state.preflight || x == nullptr) {
+                    state.exact = false;
+                    return nullptr;
+                }
+                previous = ggml_new_tensor_4d(ctx->ggml_ctx,
+                                              x->type,
+                                              x->ne[0],
+                                              x->ne[1],
+                                              2,
+                                              x->ne[3]);
+            }
+
+            ggml_tensor* padded = nullptr;
+            if (phase.started_before) {
+                if (previous == nullptr || previous->ne[2] != 2) {
+                    state.exact = false;
+                    return nullptr;
+                }
+                padded = x == nullptr
+                             ? previous
+                             : ggml_concat(ctx->ggml_ctx, previous, x, 2);
+            } else if (x != nullptr) {
+                auto first = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, 1);
+                padded     = ggml_concat(ctx->ggml_ctx, first, x, 2);
+            }
+
+            if (padded == nullptr) {
+                if (phase.output_frames != 0) {
+                    state.exact = false;
+                }
+                return nullptr;
+            }
+
+            if (state.final) {
+                auto last = ggml_ext_slice(ctx->ggml_ctx,
+                                           padded,
+                                           2,
+                                           padded->ne[2] - 1,
+                                           padded->ne[2]);
+                padded = ggml_concat(ctx->ggml_ctx, padded, last, 2);
+            } else {
+                if (padded->ne[2] < 2) {
+                    state.exact = false;
+                    return nullptr;
+                }
+                if (index >= state.next_conv_history.size()) {
+                    state.next_conv_history.resize(index + 1, nullptr);
+                }
+                state.next_conv_history[index] = ggml_cont(
+                    ctx->ggml_ctx,
+                    ggml_ext_slice(ctx->ggml_ctx,
+                                   padded,
+                                   2,
+                                   padded->ne[2] - 2,
+                                   padded->ne[2]));
+            }
+
+            if (phase.output_frames == 0) {
+                return nullptr;
+            }
+            auto conv = std::dynamic_pointer_cast<Conv3d>(blocks["conv"]);
+            auto out  = conv->forward(ctx, padded);
+            if (out == nullptr || out->ne[2] != phase.output_frames) {
+                state.exact = false;
+            }
+            return out;
         }
 
         // Chunked forward: uses feat_map to carry temporal context across frames.
@@ -409,6 +509,149 @@ namespace LTXVAE {
             h      = conv2->forward_encoder_chunk(ctx, h, state);
             return ggml_add(ctx->ggml_ctx, h, x);
         }
+
+        ggml_tensor* forward_decoder_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* timestep,
+            DecoderStreamingGraphState& state) {
+            GGML_ASSERT(state.temporal_state != nullptr);
+            auto norm1 = std::dynamic_pointer_cast<PixelNorm3D>(blocks["norm1"]);
+            auto conv1 = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv1"]);
+            auto norm2 = std::dynamic_pointer_cast<PixelNorm3D>(blocks["norm2"]);
+            auto conv2 = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv2"]);
+
+            ggml_tensor* shift1 = nullptr;
+            ggml_tensor* scale1 = nullptr;
+            ggml_tensor* shift2 = nullptr;
+            ggml_tensor* scale2 = nullptr;
+            if (timestep_conditioning) {
+                GGML_ASSERT(timestep != nullptr);
+                auto values = ggml_add(
+                    ctx->ggml_ctx,
+                    params["scale_shift_table"],
+                    ggml_reshape_2d(ctx->ggml_ctx, timestep, channels, 4));
+                auto chunks = ggml_ext_chunk(ctx->ggml_ctx,
+                                             values,
+                                             4,
+                                             1,
+                                             false);
+                shift1 = reshape_channel_broadcast(
+                    ctx->ggml_ctx,
+                    ggml_cont(ctx->ggml_ctx, chunks[0]));
+                scale1 = reshape_channel_broadcast(
+                    ctx->ggml_ctx,
+                    ggml_cont(ctx->ggml_ctx, chunks[1]));
+                shift2 = reshape_channel_broadcast(
+                    ctx->ggml_ctx,
+                    ggml_cont(ctx->ggml_ctx, chunks[2]));
+                scale2 = reshape_channel_broadcast(
+                    ctx->ggml_ctx,
+                    ggml_cont(ctx->ggml_ctx, chunks[3]));
+            }
+
+            ggml_tensor* h = nullptr;
+            if (x != nullptr) {
+                h = norm1->forward(ctx, x);
+                if (timestep_conditioning) {
+                    h = apply_scale_shift(ctx->ggml_ctx,
+                                          h,
+                                          scale1,
+                                          shift1);
+                }
+                h = ggml_silu_inplace(ctx->ggml_ctx, h);
+            }
+            h = conv1->forward_decoder_chunk(ctx, h, state);
+            if (h != nullptr) {
+                h = norm2->forward(ctx, h);
+                if (timestep_conditioning) {
+                    h = apply_scale_shift(ctx->ggml_ctx, h, scale2, shift2);
+                }
+                h = ggml_silu_inplace(ctx->ggml_ctx, h);
+                h = conv2->forward_decoder_chunk(ctx, h, state);
+            }
+
+            const size_t residual_index = state.residual_index++;
+            const int64_t pending_before =
+                residual_index < state.temporal_state->residuals.size()
+                    ? state.temporal_state->residuals[residual_index]
+                          .pending_frames
+                    : 0;
+            ggml_tensor* previous =
+                residual_index < state.previous_residual_pending.size()
+                    ? state.previous_residual_pending[residual_index]
+                    : nullptr;
+            if (pending_before > 0 && previous == nullptr) {
+                ggml_tensor* shape_source =
+                    x != nullptr ? x : h;
+                if (!state.preflight || shape_source == nullptr) {
+                    state.exact = false;
+                    return nullptr;
+                }
+                previous = ggml_new_tensor_4d(ctx->ggml_ctx,
+                                              shape_source->type,
+                                              shape_source->ne[0],
+                                              shape_source->ne[1],
+                                              pending_before,
+                                              shape_source->ne[3]);
+            }
+
+            ggml_tensor* residual = previous;
+            if (x != nullptr) {
+                residual =
+                    residual == nullptr
+                        ? x
+                        : ggml_concat(ctx->ggml_ctx, residual, x, 2);
+            }
+            if (residual == nullptr) {
+                state.exact = false;
+                return nullptr;
+            }
+            const int64_t output_frames = h == nullptr ? 0 : h->ne[2];
+            if (!state.temporal_state->advance_residual(
+                    residual_index,
+                    x == nullptr ? 0 : x->ne[2],
+                    output_frames,
+                    state.final)) {
+                state.exact = false;
+                return nullptr;
+            }
+
+            const int64_t pending_after =
+                state.temporal_state->residuals[residual_index]
+                    .pending_frames;
+            if (!state.final && pending_after > 0) {
+                if (residual_index >=
+                    state.next_residual_pending.size()) {
+                    state.next_residual_pending.resize(
+                        residual_index + 1,
+                        nullptr);
+                }
+                state.next_residual_pending[residual_index] = ggml_cont(
+                    ctx->ggml_ctx,
+                    ggml_ext_slice(ctx->ggml_ctx,
+                                   residual,
+                                   2,
+                                   residual->ne[2] - pending_after,
+                                   residual->ne[2]));
+            }
+            if (h == nullptr) {
+                return nullptr;
+            }
+            if (output_frames !=
+                residual->ne[2] - pending_after) {
+                state.exact = false;
+                return nullptr;
+            }
+            if (residual->ne[2] != output_frames) {
+                residual = ggml_ext_slice(ctx->ggml_ctx,
+                                          residual,
+                                          2,
+                                          0,
+                                          output_frames);
+            }
+            return ggml_add(ctx->ggml_ctx, h, residual);
+        }
     };
 
     struct UNetMidBlock3D : public GGMLBlock {
@@ -484,6 +727,59 @@ namespace LTXVAE {
                 x           = resnet->forward_encoder_chunk(ctx, x, state);
             }
             return x;
+        }
+
+        ggml_tensor* forward_decoder_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* timestep,
+            DecoderStreamingGraphState& state) {
+            GGML_ASSERT(x != nullptr);
+            ggml_tensor* timestep_embed = nullptr;
+            if (timestep_conditioning) {
+                GGML_ASSERT(timestep != nullptr);
+                auto time_embedder = std::dynamic_pointer_cast<
+                    PixArtAlphaCombinedTimestepSizeEmbeddings>(
+                    blocks["time_embedder"]);
+                timestep_embed = time_embedder->forward(ctx, timestep);
+            }
+            for (int i = 0; i < num_layers; ++i) {
+                auto resnet = std::dynamic_pointer_cast<ResnetBlock3D>(
+                    blocks["res_blocks." + std::to_string(i)]);
+                x = resnet->forward_decoder_chunk(ctx,
+                                                   x,
+                                                   timestep_embed,
+                                                   state);
+                if (x == nullptr) {
+                    return nullptr;
+                }
+            }
+            return x;
+        }
+
+        ggml_tensor* forward_decoder_residual_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* timestep,
+            int residual_index,
+            DecoderStreamingGraphState& state) {
+            GGML_ASSERT(residual_index >= 0 &&
+                        residual_index < num_layers);
+            ggml_tensor* timestep_embed = nullptr;
+            if (timestep_conditioning) {
+                GGML_ASSERT(timestep != nullptr);
+                auto time_embedder = std::dynamic_pointer_cast<
+                    PixArtAlphaCombinedTimestepSizeEmbeddings>(
+                    blocks["time_embedder"]);
+                timestep_embed = time_embedder->forward(ctx, timestep);
+            }
+            auto resnet = std::dynamic_pointer_cast<ResnetBlock3D>(
+                blocks["res_blocks." +
+                       std::to_string(residual_index)]);
+            return resnet->forward_decoder_chunk(ctx,
+                                                  x,
+                                                  timestep_embed,
+                                                  state);
         }
     };
 
@@ -563,6 +859,45 @@ namespace LTXVAE {
             x = depth_to_space_3d(ctx->ggml_ctx, x, get_output_channels(), factor_t, factor_s, drop_first);
             if (residual) {
                 x = ggml_add(ctx->ggml_ctx, x, x_in);
+            }
+            return x;
+        }
+
+        ggml_tensor* forward_decoder_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            DecoderStreamingGraphState& state) {
+            if (residual || (factor_t != 1 && factor_t != 2)) {
+                state.exact = false;
+                return nullptr;
+            }
+            auto conv = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv"]);
+            x = conv->forward_decoder_chunk(ctx, x, state);
+            if (x == nullptr) {
+                return nullptr;
+            }
+            LTXVAE::DecoderUpsamplePhase phase;
+            if (factor_t > 1) {
+                const size_t upsample_index = state.upsample_index++;
+                phase = state.temporal_state->advance_upsampler(
+                    upsample_index,
+                    x->ne[2]);
+                if (upsample_index >= LTX_DECODER_TEMPORAL_LEVELS) {
+                    state.exact = false;
+                    return nullptr;
+                }
+            } else {
+                phase.input_frames  = x->ne[2];
+                phase.output_frames = x->ne[2];
+            }
+            x = depth_to_space_3d(ctx->ggml_ctx,
+                                  x,
+                                  get_output_channels(),
+                                  factor_t,
+                                  factor_s,
+                                  phase.drop_first);
+            if (x == nullptr || x->ne[2] != phase.output_frames) {
+                state.exact = false;
             }
             return x;
         }
@@ -1099,6 +1434,27 @@ namespace LTXVAE {
         bool timestep_conditioning;
         int64_t in_channels;
         int64_t hidden_channels;
+        size_t convolution_count       = 2;
+        size_t residual_count          = 0;
+        size_t temporal_upsample_count = 0;
+
+        enum class StreamingStageType {
+            CONV_IN,
+            RESIDUAL,
+            UPSAMPLE,
+            CONV_OUT,
+        };
+
+        struct StreamingStage {
+            StreamingStageType type = StreamingStageType::CONV_IN;
+            int block_index         = -1;
+            int residual_index_in_block = -1;
+            size_t conv_index       = 0;
+            size_t residual_index   = 0;
+            size_t upsample_index   = 0;
+        };
+
+        std::vector<StreamingStage> streaming_stages;
 
     protected:
         void init_params(ggml_context* ctx,
@@ -1134,33 +1490,86 @@ namespace LTXVAE {
             int64_t channels                   = conv_in_out_channels;
 
             blocks["conv_in"] = std::make_shared<CausalConv3d>(in_channels, channels, 3);
+            size_t next_conv_index     = 0;
+            size_t next_residual_index = 0;
+            size_t next_upsample_index = 0;
+            streaming_stages.push_back(
+                {StreamingStageType::CONV_IN,
+                 -1,
+                 -1,
+                 next_conv_index++,
+                 next_residual_index,
+                 next_upsample_index});
 
             for (int block_idx = 0; block_idx < static_cast<int>(cfg.blocks.size()); ++block_idx) {
                 const auto& block = cfg.blocks[block_idx];
                 if (block.type == "res_x") {
+                    convolution_count +=
+                        static_cast<size_t>(2 * block.num_layers);
+                    residual_count +=
+                        static_cast<size_t>(block.num_layers);
                     blocks["up_blocks." + std::to_string(block_idx)] = std::make_shared<UNetMidBlock3D>(channels,
                                                                                                         block.num_layers,
                                                                                                         timestep_conditioning);
+                    for (int residual_idx = 0;
+                         residual_idx < block.num_layers;
+                         ++residual_idx) {
+                        streaming_stages.push_back(
+                            {StreamingStageType::RESIDUAL,
+                             block_idx,
+                             residual_idx,
+                             next_conv_index,
+                             next_residual_index,
+                             next_upsample_index});
+                        next_conv_index += 2;
+                        next_residual_index++;
+                    }
                 } else if (block.type == "compress_all") {
+                    convolution_count++;
+                    temporal_upsample_count++;
                     blocks["up_blocks." + std::to_string(block_idx)] = std::make_shared<DepthToSpaceUpsample>(channels,
                                                                                                               2,
                                                                                                               2,
                                                                                                               block.multiplier,
                                                                                                               false);
+                    streaming_stages.push_back(
+                        {StreamingStageType::UPSAMPLE,
+                         block_idx,
+                         -1,
+                         next_conv_index++,
+                         next_residual_index,
+                         next_upsample_index++});
                     channels /= block.multiplier;
                 } else if (block.type == "compress_time") {
+                    convolution_count++;
+                    temporal_upsample_count++;
                     blocks["up_blocks." + std::to_string(block_idx)] = std::make_shared<DepthToSpaceUpsample>(channels,
                                                                                                               2,
                                                                                                               1,
                                                                                                               block.multiplier,
                                                                                                               false);
+                    streaming_stages.push_back(
+                        {StreamingStageType::UPSAMPLE,
+                         block_idx,
+                         -1,
+                         next_conv_index++,
+                         next_residual_index,
+                         next_upsample_index++});
                     channels /= block.multiplier;
                 } else if (block.type == "compress_space") {
+                    convolution_count++;
                     blocks["up_blocks." + std::to_string(block_idx)] = std::make_shared<DepthToSpaceUpsample>(channels,
                                                                                                               1,
                                                                                                               2,
                                                                                                               block.multiplier,
                                                                                                               false);
+                    streaming_stages.push_back(
+                        {StreamingStageType::UPSAMPLE,
+                         block_idx,
+                         -1,
+                         next_conv_index++,
+                         next_residual_index,
+                         next_upsample_index});
                     channels /= block.multiplier;
                 } else {
                     GGML_ABORT("Unsupported LTX VAE decoder block");
@@ -1170,9 +1579,36 @@ namespace LTXVAE {
             hidden_channels         = channels;
             blocks["conv_norm_out"] = std::make_shared<PixelNorm3D>();
             blocks["conv_out"]      = std::make_shared<CausalConv3d>(hidden_channels, 3 * patch_size * patch_size, 3);
+            streaming_stages.push_back(
+                {StreamingStageType::CONV_OUT,
+                 -1,
+                 -1,
+                 next_conv_index++,
+                 next_residual_index,
+                 next_upsample_index});
+            GGML_ASSERT(next_conv_index == convolution_count);
+            GGML_ASSERT(next_residual_index == residual_count);
+            GGML_ASSERT(next_upsample_index ==
+                        temporal_upsample_count);
             if (timestep_conditioning) {
                 blocks["last_time_embedder"] = std::make_shared<PixArtAlphaCombinedTimestepSizeEmbeddings>(hidden_channels * 2);
             }
+        }
+
+        size_t get_convolution_count() const {
+            return convolution_count;
+        }
+
+        size_t get_residual_count() const {
+            return residual_count;
+        }
+
+        size_t get_temporal_upsample_count() const {
+            return temporal_upsample_count;
+        }
+
+        size_t get_streaming_stage_count() const {
+            return streaming_stages.size();
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
@@ -1274,6 +1710,241 @@ namespace LTXVAE {
             x = conv_out->forward(ctx, x, feat_map, feat_idx, chunk_idx, causal_decoder, temporal_pad);
             return x;
         }
+
+        ggml_tensor* decoder_scaled_timestep(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* timestep) {
+            ggml_tensor* scaled_timestep = timestep;
+            if (timestep_conditioning) {
+                GGML_ASSERT(timestep != nullptr);
+                auto multiplier = ggml_ext_backend_tensor_get_f32(
+                    params["timestep_scale_multiplier"]);
+                scaled_timestep = ggml_ext_scale(ctx->ggml_ctx,
+                                                 timestep,
+                                                 multiplier);
+            }
+            return scaled_timestep;
+        }
+
+        ggml_tensor* execute_streaming_stage(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* scaled_timestep,
+            const StreamingStage& stage,
+            DecoderStreamingGraphState& state) {
+            if (stage.type == StreamingStageType::CONV_IN) {
+                auto conv_in = std::dynamic_pointer_cast<CausalConv3d>(
+                    blocks["conv_in"]);
+                return conv_in->forward_decoder_chunk(ctx, x, state);
+            }
+            if (stage.type == StreamingStageType::RESIDUAL) {
+                auto mid_block = std::dynamic_pointer_cast<UNetMidBlock3D>(
+                    blocks["up_blocks." +
+                           std::to_string(stage.block_index)]);
+                GGML_ASSERT(mid_block != nullptr);
+                return mid_block->forward_decoder_residual_chunk(
+                    ctx,
+                    x,
+                    scaled_timestep,
+                    stage.residual_index_in_block,
+                    state);
+            }
+            if (stage.type == StreamingStageType::UPSAMPLE) {
+                auto upsample =
+                    std::dynamic_pointer_cast<DepthToSpaceUpsample>(
+                        blocks["up_blocks." +
+                               std::to_string(stage.block_index)]);
+                GGML_ASSERT(upsample != nullptr);
+                return upsample->forward_decoder_chunk(ctx, x, state);
+            }
+
+            GGML_ASSERT(stage.type ==
+                        StreamingStageType::CONV_OUT);
+            auto conv_out = std::dynamic_pointer_cast<CausalConv3d>(
+                blocks["conv_out"]);
+            if (x != nullptr) {
+                auto conv_norm_out =
+                    std::dynamic_pointer_cast<PixelNorm3D>(
+                        blocks["conv_norm_out"]);
+                x = conv_norm_out->forward(ctx, x);
+                if (timestep_conditioning) {
+                    auto last_time_embedder = std::dynamic_pointer_cast<
+                        PixArtAlphaCombinedTimestepSizeEmbeddings>(
+                        blocks["last_time_embedder"]);
+                    auto timestep_embed =
+                        last_time_embedder->forward(ctx,
+                                                    scaled_timestep);
+                    auto shift_scale = get_shift_scale(
+                        ctx->ggml_ctx,
+                        params["last_scale_shift_table"],
+                        timestep_embed,
+                        hidden_channels,
+                        2);
+                    x = apply_scale_shift(ctx->ggml_ctx,
+                                          x,
+                                          shift_scale.second,
+                                          shift_scale.first);
+                }
+                x = ggml_silu_inplace(ctx->ggml_ctx, x);
+            }
+            return conv_out->forward_decoder_chunk(ctx, x, state);
+        }
+
+        ggml_tensor* execute_streaming_frames(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* scaled_timestep,
+            size_t stage_begin,
+            DecoderStreamingGraphState& state) {
+            if (stage_begin >= streaming_stages.size()) {
+                return x;
+            }
+            ggml_tensor* output = nullptr;
+            const int64_t input_frames = x->ne[2];
+            for (int64_t frame = 0; frame < input_frames; ++frame) {
+                if (frame > 0) {
+                    for (size_t i = 0;
+                         i < state.next_conv_history.size();
+                         ++i) {
+                        if (state.next_conv_history[i] != nullptr) {
+                            state.previous_conv_history[i] =
+                                state.next_conv_history[i];
+                        }
+                    }
+                    for (size_t i = 0;
+                         i < state.next_residual_pending.size();
+                         ++i) {
+                        if (state.next_residual_pending[i] != nullptr) {
+                            state.previous_residual_pending[i] =
+                                state.next_residual_pending[i];
+                        }
+                    }
+                }
+
+                const auto& first_stage =
+                    streaming_stages[stage_begin];
+                state.conv_index = first_stage.conv_index;
+                state.residual_index =
+                    first_stage.residual_index;
+                state.upsample_index =
+                    first_stage.upsample_index;
+
+                ggml_tensor* y =
+                    input_frames == 1
+                        ? x
+                        : ggml_ext_slice(ctx->ggml_ctx,
+                                         x,
+                                         2,
+                                         frame,
+                                         frame + 1);
+                for (size_t stage_index = stage_begin;
+                     stage_index < streaming_stages.size() &&
+                     y != nullptr;
+                     ++stage_index) {
+                    y = execute_streaming_stage(
+                        ctx,
+                        y,
+                        scaled_timestep,
+                        streaming_stages[stage_index],
+                        state);
+                    if (y != nullptr &&
+                        y->ne[2] > 1 &&
+                        stage_index + 1 <
+                            streaming_stages.size()) {
+                        y = execute_streaming_frames(
+                            ctx,
+                            y,
+                            scaled_timestep,
+                            stage_index + 1,
+                            state);
+                        break;
+                    }
+                }
+                if (y != nullptr) {
+                    output = output == nullptr
+                                 ? y
+                                 : ggml_concat(ctx->ggml_ctx,
+                                               output,
+                                               y,
+                                               2);
+                }
+            }
+            return output;
+        }
+
+        ggml_tensor* forward_decoder_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* x,
+            ggml_tensor* timestep,
+            DecoderStreamingGraphState& state) {
+            auto scaled_timestep =
+                decoder_scaled_timestep(ctx, timestep);
+            for (size_t stage_index = 0;
+                 stage_index < streaming_stages.size();
+                 ++stage_index) {
+                x = execute_streaming_stage(ctx,
+                                            x,
+                                            scaled_timestep,
+                                            streaming_stages[stage_index],
+                                            state);
+                if (x == nullptr) {
+                    return nullptr;
+                }
+                if (x->ne[2] > 1 &&
+                    stage_index + 1 < streaming_stages.size()) {
+                    return execute_streaming_frames(
+                        ctx,
+                        x,
+                        scaled_timestep,
+                        stage_index + 1,
+                        state);
+                }
+            }
+            return x;
+        }
+
+        ggml_tensor* flush_decoder_stage(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* timestep,
+            size_t flush_stage_index,
+            DecoderStreamingGraphState& state) {
+            if (flush_stage_index >= streaming_stages.size()) {
+                state.exact = false;
+                return nullptr;
+            }
+            auto scaled_timestep =
+                decoder_scaled_timestep(ctx, timestep);
+            const auto& flush_stage =
+                streaming_stages[flush_stage_index];
+            state.conv_index     = flush_stage.conv_index;
+            state.residual_index = flush_stage.residual_index;
+            state.upsample_index = flush_stage.upsample_index;
+            state.final          = true;
+            ggml_tensor* x = execute_streaming_stage(
+                ctx,
+                nullptr,
+                scaled_timestep,
+                flush_stage,
+                state);
+            state.final = false;
+            if (x == nullptr) {
+                state.exact = false;
+                return nullptr;
+            }
+            const size_t downstream_begin = flush_stage_index + 1;
+            if (downstream_begin >= streaming_stages.size()) {
+                return x;
+            }
+
+            // Residual flushes can release two latent-time frames at once.
+            // Keep downstream temporal expansion framewise and thread each
+            // newly-produced cache into the next slice.
+            return execute_streaming_frames(ctx,
+                                            x,
+                                            scaled_timestep,
+                                            downstream_begin,
+                                            state);
+        }
     };
 
     struct VideoVAE : public GGMLBlock {
@@ -1314,6 +1985,34 @@ namespace LTXVAE {
             auto encoder = std::dynamic_pointer_cast<Encoder>(blocks.at("encoder"));
             GGML_ASSERT(encoder != nullptr);
             return encoder->get_causal_conv_count();
+        }
+
+        size_t get_decoder_convolution_count() const {
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks.at("decoder"));
+            GGML_ASSERT(decoder != nullptr);
+            return decoder->get_convolution_count();
+        }
+
+        size_t get_decoder_residual_count() const {
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks.at("decoder"));
+            GGML_ASSERT(decoder != nullptr);
+            return decoder->get_residual_count();
+        }
+
+        size_t get_decoder_temporal_upsample_count() const {
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks.at("decoder"));
+            GGML_ASSERT(decoder != nullptr);
+            return decoder->get_temporal_upsample_count();
+        }
+
+        size_t get_decoder_streaming_stage_count() const {
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks.at("decoder"));
+            GGML_ASSERT(decoder != nullptr);
+            return decoder->get_streaming_stage_count();
         }
 
         ggml_tensor* decode(GGMLRunnerContext* ctx,
@@ -1411,6 +2110,49 @@ namespace LTXVAE {
                 out_chunk = ggml_ext_slice(ctx->ggml_ctx, out_chunk, 2, 0, out_chunk->ne[2] - chunk_overlap);
             }
             return WAN::WanVAE::unpatchify(ctx->ggml_ctx, out_chunk, patch_size, 1);
+        }
+
+        ggml_tensor* decode_stream_chunk(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* z,
+            ggml_tensor* timestep,
+            DecoderStreamingGraphState& state) {
+            GGML_ASSERT(z != nullptr);
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks["decoder"]);
+            auto processor =
+                std::dynamic_pointer_cast<PerChannelStatistics>(
+                    blocks["per_channel_statistics"]);
+            auto latents = processor->un_normalize(ctx, z);
+            auto out = decoder->forward_decoder_chunk(ctx,
+                                                       latents,
+                                                       timestep,
+                                                       state);
+            return out == nullptr
+                       ? nullptr
+                       : WAN::WanVAE::unpatchify(ctx->ggml_ctx,
+                                                out,
+                                                patch_size,
+                                                1);
+        }
+
+        ggml_tensor* decode_stream_flush_stage(
+            GGMLRunnerContext* ctx,
+            ggml_tensor* timestep,
+            size_t flush_stage_index,
+            DecoderStreamingGraphState& state) {
+            auto decoder =
+                std::dynamic_pointer_cast<Decoder>(blocks["decoder"]);
+            auto out = decoder->flush_decoder_stage(ctx,
+                                                    timestep,
+                                                    flush_stage_index,
+                                                    state);
+            return out == nullptr
+                       ? nullptr
+                       : WAN::WanVAE::unpatchify(ctx->ggml_ctx,
+                                                out,
+                                                patch_size,
+                                                1);
         }
 
         ggml_tensor* encode(GGMLRunnerContext* ctx,
@@ -1537,6 +2279,35 @@ struct LTXVideoVAE : public VAE {
         }
     }
 
+    const char* effective_decoder_backend_registry_name() const {
+        ggml_backend_dev_t device =
+            ggml_backend_get_device(runtime_backend);
+        if (device == nullptr) {
+            return "unknown";
+        }
+        ggml_backend_reg_t registry =
+            ggml_backend_dev_backend_reg(device);
+        if (registry == nullptr) {
+            return "unknown";
+        }
+        const char* name = ggml_backend_reg_name(registry);
+        return name == nullptr ? "unknown" : name;
+    }
+
+    LTXVAE::DecoderBackendKind effective_decoder_backend_kind() const {
+        const char* name = effective_decoder_backend_registry_name();
+        if (std::strcmp(name, "Vulkan") == 0) {
+            return LTXVAE::DecoderBackendKind::VULKAN;
+        }
+        if (std::strcmp(name, "Metal") == 0) {
+            return LTXVAE::DecoderBackendKind::METAL;
+        }
+        if (std::strcmp(name, "CUDA") == 0) {
+            return LTXVAE::DecoderBackendKind::CUDA;
+        }
+        return LTXVAE::DecoderBackendKind::OTHER;
+    }
+
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string prefix) override {
         vae.get_param_tensors(tensors, prefix);
     }
@@ -1576,6 +2347,16 @@ struct LTXVideoVAE : public VAE {
         return "ltx_vae_temporal_feat:" + std::to_string(feat_idx);
     }
 
+    std::string decoder_conv_cache_name(size_t index) const {
+        return "ltx_vae_decoder_conv_history:" +
+               std::to_string(index);
+    }
+
+    std::string decoder_residual_cache_name(size_t index) const {
+        return "ltx_vae_decoder_residual_pending:" +
+               std::to_string(index);
+    }
+
     std::string encoder_conv_cache_name(size_t index) const {
         return "ltx_vae_encoder_conv_history:" + std::to_string(index);
     }
@@ -1591,6 +2372,26 @@ struct LTXVideoVAE : public VAE {
         size_t max_cache_bytes   = 0;
         size_t runtime_param_bytes = 0;
         size_t capacity_bytes    = std::numeric_limits<size_t>::max();
+    };
+
+    struct DecoderStreamingPlan {
+        LTXVAE::DecoderCapacityPlan capacity;
+        int64_t total_latent_frames = 0;
+        int64_t total_output_frames = 0;
+        size_t convolution_count    = 0;
+        size_t residual_count       = 0;
+        size_t flush_stage_count    = 0;
+        std::vector<int64_t> chunk_output_frames;
+    };
+
+    struct DecoderCacheSpec {
+        ggml_type type = GGML_TYPE_F32;
+        std::array<int64_t, 4> ne = {};
+
+        bool valid() const {
+            return ne[0] > 0 && ne[1] > 0 &&
+                   ne[2] > 0 && ne[3] > 0;
+        }
     };
 
     ggml_cgraph* build_encoder_chunk_graph(const sd::Tensor<float>& x_chunk,
@@ -1929,6 +2730,692 @@ struct LTXVideoVAE : public VAE {
         return gf;
     }
 
+    ggml_cgraph* build_decoder_stream_graph(
+        const sd::Tensor<float>* z_chunk_tensor,
+        int flush_stage_index,
+        bool preflight,
+        LTXVAE::DecoderTemporalState& temporal_state,
+        std::vector<size_t>& conv_cache_bytes,
+        std::vector<size_t>& residual_cache_bytes,
+        std::vector<DecoderCacheSpec>& conv_cache_specs,
+        std::vector<DecoderCacheSpec>& residual_cache_specs,
+        bool* exact_out,
+        bool* has_output_out,
+        int64_t* output_frames_out,
+        size_t* state_bytes_out) {
+        ggml_cgraph* gf = new_graph_custom(20480);
+        ggml_tensor* z = z_chunk_tensor == nullptr
+                             ? nullptr
+                             : make_input(*z_chunk_tensor);
+        ggml_tensor* timestep = nullptr;
+        if (timestep_conditioning) {
+            timestep = make_input(decode_timestep_tensor);
+        }
+
+        const size_t convolution_count =
+            vae.get_decoder_convolution_count();
+        const size_t residual_count =
+            vae.get_decoder_residual_count();
+        LTXVAE::DecoderStreamingGraphState state;
+        state.temporal_state = &temporal_state;
+        state.preflight      = preflight;
+        state.previous_conv_history.resize(convolution_count, nullptr);
+        state.next_conv_history.resize(convolution_count, nullptr);
+        state.previous_residual_pending.resize(residual_count, nullptr);
+        state.next_residual_pending.resize(residual_count, nullptr);
+        conv_cache_specs.resize(convolution_count);
+        residual_cache_specs.resize(residual_count);
+        if (preflight) {
+            for (size_t i = 0;
+                 i < temporal_state.convolutions.size() &&
+                 i < convolution_count;
+                 ++i) {
+                if (!temporal_state.convolutions[i].started ||
+                    !conv_cache_specs[i].valid()) {
+                    continue;
+                }
+                const auto& spec = conv_cache_specs[i];
+                state.previous_conv_history[i] =
+                    ggml_new_tensor_4d(compute_ctx,
+                                       spec.type,
+                                       spec.ne[0],
+                                       spec.ne[1],
+                                       spec.ne[2],
+                                       spec.ne[3]);
+            }
+            for (size_t i = 0;
+                 i < temporal_state.residuals.size() &&
+                 i < residual_count;
+                 ++i) {
+                if (temporal_state.residuals[i].pending_frames <= 0 ||
+                    !residual_cache_specs[i].valid()) {
+                    continue;
+                }
+                const auto& spec = residual_cache_specs[i];
+                state.previous_residual_pending[i] =
+                    ggml_new_tensor_4d(compute_ctx,
+                                       spec.type,
+                                       spec.ne[0],
+                                       spec.ne[1],
+                                       temporal_state.residuals[i]
+                                           .pending_frames,
+                                       spec.ne[3]);
+            }
+        } else {
+            for (size_t i = 0; i < convolution_count; ++i) {
+                state.previous_conv_history[i] =
+                    get_cache_tensor_by_name(
+                        decoder_conv_cache_name(i));
+            }
+            for (size_t i = 0; i < residual_count; ++i) {
+                state.previous_residual_pending[i] =
+                    get_cache_tensor_by_name(
+                        decoder_residual_cache_name(i));
+            }
+        }
+
+        auto runner_ctx = get_context();
+        ggml_tensor* out =
+            flush_stage_index >= 0
+                ? vae.decode_stream_flush_stage(
+                      &runner_ctx,
+                      timestep,
+                      static_cast<size_t>(flush_stage_index),
+                      state)
+                : vae.decode_stream_chunk(&runner_ctx,
+                                          z,
+                                          timestep,
+                                          state);
+        if (z_chunk_tensor != nullptr) {
+            temporal_state.consumed_latent_frames +=
+                z_chunk_tensor->shape()[2];
+        }
+        const int64_t output_frames = out == nullptr ? 0 : out->ne[2];
+        temporal_state.emitted_frames += output_frames;
+
+        bool exact = state.exact &&
+                     state.conv_index <= convolution_count &&
+                     state.residual_index <= residual_count &&
+                     state.upsample_index <=
+                         vae.get_decoder_temporal_upsample_count();
+
+        ggml_backend_buffer_type_t cache_buft =
+            ggml_backend_get_default_buffer_type(runtime_backend);
+        const size_t cache_alignment =
+            ggml_backend_buft_get_alignment(cache_buft);
+        auto cache_alloc_size = [&](ggml_tensor* tensor) {
+            const size_t alloc_size =
+                ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+            return cache_alignment > 0
+                       ? ((alloc_size + cache_alignment - 1) /
+                          cache_alignment) *
+                             cache_alignment
+                       : alloc_size;
+        };
+
+        conv_cache_bytes.resize(convolution_count, 0);
+        residual_cache_bytes.resize(residual_count, 0);
+        for (size_t i = 0; i < state.next_conv_history.size(); ++i) {
+            ggml_tensor* history = state.next_conv_history[i];
+            if (history == nullptr) {
+                continue;
+            }
+            conv_cache_bytes[i] = cache_alloc_size(history);
+            conv_cache_specs[i] = {
+                history->type,
+                {history->ne[0],
+                 history->ne[1],
+                 history->ne[2],
+                 history->ne[3]}};
+            if (!preflight) {
+                cache(decoder_conv_cache_name(i), history);
+            }
+            ggml_build_forward_expand(gf, history);
+        }
+        for (size_t i = 0;
+             i < state.next_residual_pending.size();
+             ++i) {
+            ggml_tensor* pending =
+                state.next_residual_pending[i];
+            if (pending == nullptr) {
+                continue;
+            }
+            residual_cache_bytes[i] = cache_alloc_size(pending);
+            residual_cache_specs[i] = {
+                pending->type,
+                {pending->ne[0],
+                 pending->ne[1],
+                 pending->ne[2],
+                 pending->ne[3]}};
+            if (!preflight) {
+                cache(decoder_residual_cache_name(i), pending);
+            }
+            ggml_build_forward_expand(gf, pending);
+        }
+        if (out != nullptr) {
+            ggml_build_forward_expand(gf, out);
+        }
+
+        size_t state_bytes = 0;
+        for (size_t bytes : conv_cache_bytes) {
+            if (!LTXVAE::decoder_size_add_fits(
+                    state_bytes,
+                    bytes,
+                    std::numeric_limits<size_t>::max(),
+                    &state_bytes)) {
+                exact = false;
+                break;
+            }
+        }
+        for (size_t bytes : residual_cache_bytes) {
+            if (!LTXVAE::decoder_size_add_fits(
+                    state_bytes,
+                    bytes,
+                    std::numeric_limits<size_t>::max(),
+                    &state_bytes)) {
+                exact = false;
+                break;
+            }
+        }
+        if (exact_out != nullptr) {
+            *exact_out = exact;
+        }
+        if (has_output_out != nullptr) {
+            *has_output_out = out != nullptr;
+        }
+        if (output_frames_out != nullptr) {
+            *output_frames_out = output_frames;
+        }
+        if (state_bytes_out != nullptr) {
+            *state_bytes_out = state_bytes;
+        }
+        return gf;
+    }
+
+    bool measure_decoder_stream_graph(
+        const sd::Tensor<float>* z_chunk_tensor,
+        int flush_stage_index,
+        LTXVAE::DecoderTemporalState& temporal_state,
+        std::vector<size_t>& conv_cache_bytes,
+        std::vector<size_t>& residual_cache_bytes,
+        std::vector<DecoderCacheSpec>& conv_cache_specs,
+        std::vector<DecoderCacheSpec>& residual_cache_specs,
+        size_t* compute_bytes,
+        size_t* state_bytes,
+        int64_t* output_frames) {
+        bool exact      = false;
+        bool has_output = false;
+        size_t measured_state_bytes = 0;
+        int64_t measured_output_frames = 0;
+        auto get_graph = [&]() -> ggml_cgraph* {
+            return build_decoder_stream_graph(
+                z_chunk_tensor,
+                flush_stage_index,
+                true,
+                temporal_state,
+                conv_cache_bytes,
+                residual_cache_bytes,
+                conv_cache_specs,
+                residual_cache_specs,
+                &exact,
+                &has_output,
+                &measured_output_frames,
+                &measured_state_bytes);
+        };
+        ggml_cgraph* gf = nullptr;
+        if (!prepare_compute_graph(get_graph, &gf)) {
+            return false;
+        }
+        const size_t required = measure_compute_buffer_size(gf);
+        free_compute_ctx();
+        if (!exact || has_output != (measured_output_frames > 0)) {
+            return false;
+        }
+        if (compute_bytes != nullptr) {
+            // Keep graph-context cache placeholders in this estimate. That is
+            // conservative versus runtime-owned cache inputs and guarantees
+            // preflight never understates a logical compute buffer.
+            *compute_bytes = required;
+        }
+        if (state_bytes != nullptr) {
+            *state_bytes = measured_state_bytes;
+        }
+        if (output_frames != nullptr) {
+            *output_frames = measured_output_frames;
+        }
+        return true;
+    }
+
+    bool resolve_decoder_streaming_plan(
+        const sd::Tensor<float>& input,
+        DecoderStreamingPlan* selected) {
+        GGML_ASSERT(selected != nullptr);
+        if (input.dim() < 4 || input.shape()[2] <= 0 ||
+            vae.get_decoder_temporal_upsample_count() !=
+                LTXVAE::LTX_DECODER_TEMPORAL_LEVELS) {
+            return false;
+        }
+
+        free_cache_ctx_and_buffer();
+        cache_tensor_map.clear();
+
+        LTXVAE::DecoderTemporalState temporal_state;
+        std::vector<size_t> conv_cache_bytes;
+        std::vector<size_t> residual_cache_bytes;
+        std::vector<DecoderCacheSpec> conv_cache_specs;
+        std::vector<DecoderCacheSpec> residual_cache_specs;
+        std::vector<LTXVAE::DecoderCapacitySample> samples;
+        std::vector<int64_t> chunk_output_frames;
+        const int64_t total_frames = input.shape()[2];
+        for (int64_t frame = 0; frame < total_frames; ++frame) {
+            auto z_chunk = sd::ops::slice(input,
+                                          2,
+                                          frame,
+                                          frame + 1);
+            size_t compute_bytes = 0;
+            size_t state_bytes   = 0;
+            int64_t output_frames = 0;
+            if (!measure_decoder_stream_graph(
+                    &z_chunk,
+                    -1,
+                    temporal_state,
+                    conv_cache_bytes,
+                    residual_cache_bytes,
+                    conv_cache_specs,
+                    residual_cache_specs,
+                    &compute_bytes,
+                    &state_bytes,
+                    &output_frames)) {
+                LOG_WARN(
+                    "exact LTX VAE decoder preflight graph failed at "
+                    "latent=%lld final=%d conv_states=%zu residual_states=%zu "
+                    "emitted=%lld",
+                    (long long)frame,
+                    0,
+                    temporal_state.convolutions.size(),
+                    temporal_state.residuals.size(),
+                    (long long)temporal_state.emitted_frames);
+                free_compute_ctx();
+                return false;
+            }
+            LOG_DEBUG(
+                "exact LTX VAE decoder preflight frame=%lld "
+                "compute=%zu state=%zu output=%lld",
+                (long long)frame,
+                compute_bytes,
+                state_bytes,
+                (long long)output_frames);
+
+            LTXVAE::DecoderGraphPhase phase =
+                LTXVAE::DecoderGraphPhase::STEADY;
+            if (frame == 0) {
+                phase = LTXVAE::DecoderGraphPhase::INITIAL;
+            } else if (frame + 1 == total_frames) {
+                phase = LTXVAE::DecoderGraphPhase::TAIL;
+            }
+            samples.push_back({phase, compute_bytes, state_bytes});
+            chunk_output_frames.push_back(output_frames);
+        }
+
+        const size_t flush_stage_count =
+            vae.get_decoder_streaming_stage_count();
+        for (size_t flush_stage = 0;
+             flush_stage < flush_stage_count;
+             ++flush_stage) {
+            size_t compute_bytes = 0;
+            size_t state_bytes   = 0;
+            int64_t output_frames = 0;
+            if (!measure_decoder_stream_graph(
+                    nullptr,
+                    static_cast<int>(flush_stage),
+                    temporal_state,
+                    conv_cache_bytes,
+                    residual_cache_bytes,
+                    conv_cache_specs,
+                    residual_cache_specs,
+                    &compute_bytes,
+                    &state_bytes,
+                    &output_frames)) {
+                LOG_WARN(
+                    "exact LTX VAE decoder flush preflight failed at "
+                    "stage=%zu/%zu emitted=%lld",
+                    flush_stage,
+                    flush_stage_count,
+                    (long long)temporal_state.emitted_frames);
+                free_compute_ctx();
+                return false;
+            }
+            LOG_DEBUG(
+                "exact LTX VAE decoder preflight flush_stage=%zu "
+                "compute=%zu state=%zu output=%lld",
+                flush_stage,
+                compute_bytes,
+                state_bytes,
+                (long long)output_frames);
+            samples.push_back(
+                {LTXVAE::DecoderGraphPhase::FINAL_FLUSH,
+                 compute_bytes,
+                 state_bytes});
+            chunk_output_frames.push_back(output_frames);
+        }
+
+        const size_t convolution_count =
+            vae.get_decoder_convolution_count();
+        const size_t residual_count =
+            vae.get_decoder_residual_count();
+        if (!temporal_state.exact_at_end(convolution_count,
+                                         residual_count,
+                                         total_frames)) {
+            LOG_WARN(
+                "exact LTX VAE decoder preflight lifecycle mismatch: "
+                "convolutions=%zu/%zu residuals=%zu/%zu consumed=%lld/%lld "
+                "emitted=%lld/%lld",
+                temporal_state.convolutions.size(),
+                convolution_count,
+                temporal_state.residuals.size(),
+                residual_count,
+                (long long)temporal_state.consumed_latent_frames,
+                (long long)total_frames,
+                (long long)temporal_state.emitted_frames,
+                (long long)LTXVAE::ltx_decoder_temporal_output_frames(
+                    total_frames));
+            return false;
+        }
+
+        std::vector<int64_t> output_shape = input.shape();
+        output_shape[0] *= get_scale_factor();
+        output_shape[1] *= get_scale_factor();
+        output_shape[2] =
+            LTXVAE::ltx_decoder_temporal_output_frames(total_frames);
+        output_shape[3] = 3;
+        size_t output_elements = 1;
+        for (int64_t dimension : output_shape) {
+            if (dimension <= 0 ||
+                static_cast<uint64_t>(dimension) >
+                    std::numeric_limits<size_t>::max()) {
+                return false;
+            }
+            if (!LTXVAE::decoder_size_add_fits(
+                    0,
+                    output_elements,
+                    std::numeric_limits<size_t>::max() /
+                        static_cast<size_t>(dimension))) {
+                return false;
+            }
+            output_elements *= static_cast<size_t>(dimension);
+        }
+        if (output_elements >
+            std::numeric_limits<size_t>::max() / sizeof(float)) {
+            return false;
+        }
+        const size_t output_writer_bytes =
+            output_elements * sizeof(float);
+
+        const sd::VaeFallbackCapacity capacity =
+            get_vae_fallback_capacity();
+        const size_t max_buffer_bytes = capacity.max_buffer_bytes;
+        const size_t free_budget_bytes =
+            capacity.free_memory_bytes > 0
+                ? sd::vae_fallback_scaled_budget(
+                      capacity.free_memory_bytes,
+                      capacity.free_memory_ratio)
+                : max_buffer_bytes;
+        const size_t runtime_param_bytes =
+            params_backend == runtime_backend
+                ? 0
+                : get_params_buffer_size();
+        auto capacity_plan = LTXVAE::make_decoder_capacity_plan(
+            samples,
+            runtime_param_bytes,
+            output_writer_bytes,
+            max_buffer_bytes,
+            free_budget_bytes);
+        if (!capacity_plan.fits) {
+            LOG_WARN(
+                "exact LTX VAE decoder preflight does not fit: "
+                "compute=%zu cache=%zu writer=%zu params=%zu "
+                "max_buffer=%zu free_budget=%zu",
+                capacity_plan.max_compute_bytes,
+                capacity_plan.max_cache_bytes,
+                capacity_plan.output_writer_bytes,
+                capacity_plan.runtime_param_bytes,
+                capacity_plan.max_buffer_bytes,
+                capacity_plan.free_budget_bytes);
+            return false;
+        }
+
+        selected->capacity            = capacity_plan;
+        selected->total_latent_frames = total_frames;
+        selected->total_output_frames =
+            LTXVAE::ltx_decoder_temporal_output_frames(total_frames);
+        selected->convolution_count = convolution_count;
+        selected->residual_count    = residual_count;
+        selected->flush_stage_count = flush_stage_count;
+        selected->chunk_output_frames =
+            std::move(chunk_output_frames);
+        return true;
+    }
+
+    sd::Tensor<float> decode_stateful_exact_streaming(
+        const int n_threads,
+        const sd::Tensor<float>& input,
+        size_t expected_dim,
+        const DecoderStreamingPlan& plan) {
+        std::vector<int64_t> output_shape = input.shape();
+        output_shape[0] *= get_scale_factor();
+        output_shape[1] *= get_scale_factor();
+        output_shape[2] = plan.total_output_frames;
+        output_shape[3] = 3;
+        sd::Tensor<float> output(output_shape);
+
+        LOG_INFO(
+            "Using exact stateful noncausal LTX VAE decoder: "
+            "latents=%lld outputs=%lld convolutions=%zu residuals=%zu "
+            "initial=%zu steady=%zu tail=%zu final=%zu cache=%zu "
+            "writer=%zu max_buffer=%zu",
+            (long long)plan.total_latent_frames,
+            (long long)plan.total_output_frames,
+            plan.convolution_count,
+            plan.residual_count,
+            plan.capacity.phase_compute_bytes[static_cast<size_t>(
+                LTXVAE::DecoderGraphPhase::INITIAL)],
+            plan.capacity.phase_compute_bytes[static_cast<size_t>(
+                LTXVAE::DecoderGraphPhase::STEADY)],
+            plan.capacity.phase_compute_bytes[static_cast<size_t>(
+                LTXVAE::DecoderGraphPhase::TAIL)],
+            plan.capacity.phase_compute_bytes[static_cast<size_t>(
+                LTXVAE::DecoderGraphPhase::FINAL_FLUSH)],
+            plan.capacity.max_cache_bytes,
+            plan.capacity.output_writer_bytes,
+            plan.capacity.max_buffer_bytes);
+
+        free_cache_ctx_and_buffer();
+        cache_tensor_map.clear();
+        LTXVAE::DecoderTemporalState temporal_state;
+        std::vector<size_t> conv_cache_bytes;
+        std::vector<size_t> residual_cache_bytes;
+        std::vector<DecoderCacheSpec> conv_cache_specs;
+        std::vector<DecoderCacheSpec> residual_cache_specs;
+        int64_t output_offset = 0;
+        bool failed = false;
+
+        try {
+            for (int64_t frame = 0;
+                 frame < plan.total_latent_frames;
+                 ++frame) {
+                auto z_chunk = sd::ops::slice(input,
+                                              2,
+                                              frame,
+                                              frame + 1);
+                bool exact       = false;
+                bool has_output  = false;
+                int64_t emitted  = 0;
+                size_t state_bytes = 0;
+                const int64_t expected_emitted =
+                    plan.chunk_output_frames[static_cast<size_t>(frame)];
+                auto get_graph = [&]() -> ggml_cgraph* {
+                    return build_decoder_stream_graph(
+                        &z_chunk,
+                        -1,
+                        false,
+                        temporal_state,
+                        conv_cache_bytes,
+                        residual_cache_bytes,
+                        conv_cache_specs,
+                        residual_cache_specs,
+                        &exact,
+                        &has_output,
+                        &emitted,
+                        &state_bytes);
+                };
+                auto result = GGMLRunner::compute<float>(
+                    get_graph,
+                    n_threads,
+                    true,
+                    expected_emitted == 0);
+                if (!result.has_value() || !exact ||
+                    has_output != (emitted > 0) ||
+                    emitted != expected_emitted ||
+                    state_bytes > plan.capacity.max_cache_bytes) {
+                    failed = true;
+                    break;
+                }
+
+                if (has_output) {
+                    auto chunk = restore_trailing_singleton_dims(
+                        std::move(*result),
+                        expected_dim);
+                    if (chunk.empty() || chunk.shape()[2] != emitted) {
+                        failed = true;
+                        break;
+                    }
+                    const int64_t inner_size =
+                        output_shape[0] * output_shape[1];
+                    const int64_t outer_size =
+                        output.numel() /
+                        (inner_size * plan.total_output_frames);
+                    if (!LTXVAE::write_decoder_output_chunk_f32(
+                            output.data(),
+                            chunk.data(),
+                            inner_size,
+                            outer_size,
+                            plan.total_output_frames,
+                            output_offset,
+                            emitted)) {
+                        failed = true;
+                        break;
+                    }
+                    output_offset += emitted;
+                }
+                LOG_INFO(
+                    "LTX VAE exact decoder chunk %lld/%lld: "
+                    "emitted=%lld output_offset=%lld state=%zu final=%d",
+                    (long long)(frame + 1),
+                    (long long)plan.total_latent_frames,
+                    (long long)emitted,
+                    (long long)output_offset,
+                    state_bytes,
+                    0);
+            }
+
+            for (size_t flush_stage = 0;
+                 !failed && flush_stage < plan.flush_stage_count;
+                 ++flush_stage) {
+                bool exact        = false;
+                bool has_output   = false;
+                int64_t emitted   = 0;
+                size_t state_bytes = 0;
+                const size_t plan_index =
+                    static_cast<size_t>(plan.total_latent_frames) +
+                    flush_stage;
+                const int64_t expected_emitted =
+                    plan.chunk_output_frames[plan_index];
+                auto get_graph = [&]() -> ggml_cgraph* {
+                    return build_decoder_stream_graph(
+                        nullptr,
+                        static_cast<int>(flush_stage),
+                        false,
+                        temporal_state,
+                        conv_cache_bytes,
+                        residual_cache_bytes,
+                        conv_cache_specs,
+                        residual_cache_specs,
+                        &exact,
+                        &has_output,
+                        &emitted,
+                        &state_bytes);
+                };
+                auto result = GGMLRunner::compute<float>(
+                    get_graph,
+                    n_threads,
+                    true,
+                    expected_emitted == 0);
+                if (!result.has_value() || !exact ||
+                    has_output != (emitted > 0) ||
+                    emitted != expected_emitted ||
+                    state_bytes > plan.capacity.max_cache_bytes) {
+                    failed = true;
+                    break;
+                }
+                if (has_output) {
+                    auto chunk = restore_trailing_singleton_dims(
+                        std::move(*result),
+                        expected_dim);
+                    if (chunk.empty() ||
+                        chunk.shape()[2] != emitted) {
+                        failed = true;
+                        break;
+                    }
+                    const int64_t inner_size =
+                        output_shape[0] * output_shape[1];
+                    const int64_t outer_size =
+                        output.numel() /
+                        (inner_size * plan.total_output_frames);
+                    if (!LTXVAE::write_decoder_output_chunk_f32(
+                            output.data(),
+                            chunk.data(),
+                            inner_size,
+                            outer_size,
+                            plan.total_output_frames,
+                            output_offset,
+                            emitted)) {
+                        failed = true;
+                        break;
+                    }
+                    output_offset += emitted;
+                }
+                LOG_INFO(
+                    "LTX VAE exact decoder flush %zu/%zu: "
+                    "emitted=%lld output_offset=%lld state=%zu",
+                    flush_stage + 1,
+                    plan.flush_stage_count,
+                    (long long)emitted,
+                    (long long)output_offset,
+                    state_bytes);
+            }
+        } catch (const std::exception& error) {
+            LOG_ERROR("exact LTX VAE decoder stream aborted: %s",
+                      error.what());
+            failed = true;
+        } catch (...) {
+            LOG_ERROR(
+                "exact LTX VAE decoder stream aborted by an unknown error");
+            failed = true;
+        }
+
+        const bool exact_end = temporal_state.exact_at_end(
+            plan.convolution_count,
+            plan.residual_count,
+            plan.total_latent_frames);
+        free_cache_ctx_and_buffer();
+        cache_tensor_map.clear();
+        if (failed || !exact_end ||
+            output_offset != plan.total_output_frames) {
+            return {};
+        }
+        return output;
+    }
+
     sd::Tensor<float> decode_temporal_tiled_streaming(const int n_threads,
                                                       const sd::Tensor<float>& input,
                                                       size_t expected_dim) {
@@ -2132,7 +3619,44 @@ struct LTXVideoVAE : public VAE {
                 input = sd::ops::slice(input, 2, 0, cropped_t);
             }
         }
-        if (decode_graph && temporal_tiling_enabled && input.dim() == 5 && input.shape()[2] > 1) {
+        const auto decoder_execution_mode =
+            LTXVAE::decoder_execution_mode(
+                effective_decoder_backend_kind());
+        if (decode_graph) {
+            LOG_INFO(
+                "LTX VAE decoder automatic selection: runtime=%s "
+                "registry=%s mode=%s",
+                ggml_backend_name(runtime_backend),
+                effective_decoder_backend_registry_name(),
+                decoder_execution_mode ==
+                        LTXVAE::DecoderExecutionMode::EXACT_STATEFUL
+                    ? "exact-stateful"
+                    : "default");
+        }
+        if (decode_graph &&
+            decoder_execution_mode ==
+                LTXVAE::DecoderExecutionMode::EXACT_STATEFUL &&
+            input.dim() >= 4 && input.shape()[2] > 0) {
+            DecoderStreamingPlan plan;
+            if (resolve_decoder_streaming_plan(input, &plan)) {
+                // A runtime failure after this point must not migrate an
+                // already-created state stream to another backend.
+                return decode_stateful_exact_streaming(n_threads,
+                                                       input,
+                                                       expected_dim,
+                                                       plan);
+            }
+            LOG_WARN(
+                "automatic Vulkan exact-stateful LTX VAE decoder preflight "
+                "failed before state creation; effective mode is "
+                "complete-graph fallback so normal preflight can route it to "
+                "CPU without changing decoder semantics");
+        }
+        if (decode_graph &&
+            decoder_execution_mode ==
+                LTXVAE::DecoderExecutionMode::DEFAULT &&
+            temporal_tiling_enabled && input.dim() == 5 &&
+            input.shape()[2] > 1) {
             return decode_temporal_tiled_streaming(n_threads, input, expected_dim);
         }
         if (!decode_graph && input.shape()[2] > 1) {
