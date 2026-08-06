@@ -1,0 +1,28 @@
+{
+  "name": "bare-ltx2",
+  "version": "0.1.0",
+  "description": "Bare native addon for LTX-2 video generation (T2V/I2V) via qvac-ext-stable-diffusion.cpp",
+  "exports": {
+    ".": "./index.js",
+    "./package": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "binding.js",
+    "binding.c",
+    "CMakeLists.txt",
+    "prebuilds"
+  ],
+  "addon": true,
+  "scripts": {
+    "generate": "bare-make generate",
+    "build": "bare-make build",
+    "test": "bare test.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "bare-env": "^3.0.0",
+    "bare-make": "^1.0.0",
+    "cmake-bare": "^1.0.0"
+  }
+}
