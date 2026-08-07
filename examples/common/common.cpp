@@ -1714,6 +1714,10 @@ bool SDGenerationParams::from_json_str(
     load_if_exists("control_strength", control_strength);
     load_if_exists("moe_boundary", moe_boundary);
     load_if_exists("vace_strength", vace_strength);
+    load_if_exists("reference_attention_strength",
+                   reference_attention_strength);
+    load_if_exists("reference_downscale_factor",
+                   reference_downscale_factor);
 
     load_if_exists("auto_resize_ref_image", auto_resize_ref_image);
     load_if_exists("increase_ref_index", increase_ref_index);
@@ -2168,12 +2172,15 @@ bool SDGenerationParams::validate(SDMode mode) {
     }
 
     if (mode == VID_GEN && !ref_image_paths.empty()) {
-        if (reference_attention_strength < 0.f || reference_attention_strength > 1.f) {
-            LOG_ERROR("error: reference attention strength must be in [0, 1]");
+        if (!std::isfinite(reference_attention_strength) ||
+            reference_attention_strength < 0.f ||
+            reference_attention_strength > 1.f) {
+            LOG_ERROR("error: reference attention strength must be finite and in [0, 1]");
             return false;
         }
-        if (reference_downscale_factor != 1.f) {
-            LOG_ERROR("error: LTX IC-LoRA currently requires reference downscale factor to be 1");
+        if (!std::isfinite(reference_downscale_factor) ||
+            reference_downscale_factor != 1.f) {
+            LOG_ERROR("error: LTX IC-LoRA currently requires a finite reference downscale factor exactly equal to 1");
             return false;
         }
     }
@@ -2357,42 +2364,42 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
     vae_tiling_params.extra_tiling_args               = extra_tiling_args.empty() ? nullptr : extra_tiling_args.c_str();
     cache_params.scm_mask                             = scm_mask.empty() ? nullptr : scm_mask.c_str();
 
-    params.loras                     = lora_vec.empty() ? nullptr : lora_vec.data();
-    params.lora_count                = static_cast<uint32_t>(lora_vec.size());
-    params.prompt                    = prompt.c_str();
-    params.negative_prompt           = negative_prompt.c_str();
-    params.clip_skip                 = clip_skip;
-    params.init_image                = init_image.get();
-    params.end_image                 = end_image.get();
-    params.control_frames            = control_frame_views.empty() ? nullptr : control_frame_views.data();
-    params.control_frames_size       = static_cast<int>(control_frame_views.size());
-    params.reference_images          = ref_image_views.empty() ? nullptr : ref_image_views.data();
-    params.reference_images_count    = static_cast<int>(ref_image_views.size());
+    params.loras                        = lora_vec.empty() ? nullptr : lora_vec.data();
+    params.lora_count                   = static_cast<uint32_t>(lora_vec.size());
+    params.prompt                       = prompt.c_str();
+    params.negative_prompt              = negative_prompt.c_str();
+    params.clip_skip                    = clip_skip;
+    params.init_image                   = init_image.get();
+    params.end_image                    = end_image.get();
+    params.control_frames               = control_frame_views.empty() ? nullptr : control_frame_views.data();
+    params.control_frames_size          = static_cast<int>(control_frame_views.size());
+    params.reference_images             = ref_image_views.empty() ? nullptr : ref_image_views.data();
+    params.reference_images_count       = static_cast<int>(ref_image_views.size());
     params.reference_attention_strength = reference_attention_strength;
     params.reference_downscale_factor   = reference_downscale_factor;
-    params.width                     = get_resolved_width();
-    params.height                    = get_resolved_height();
-    params.sample_params             = sample_params;
-    params.high_noise_sample_params  = high_noise_sample_params;
-    params.moe_boundary              = moe_boundary;
-    params.strength                  = strength;
-    params.seed                      = seed;
-    params.video_frames              = video_frames;
-    params.fps                       = fps;
-    params.vace_strength             = vace_strength;
-    params.vae_tiling_params         = vae_tiling_params;
-    params.cache                     = cache_params;
-    params.hires.enabled             = hires_enabled;
-    params.hires.upscaler            = resolved_hires_upscaler;
-    params.hires.model_path          = hires_upscaler_model_path.empty() ? nullptr : hires_upscaler_model_path.c_str();
-    params.hires.scale               = hires_scale;
-    params.hires.target_width        = hires_width;
-    params.hires.target_height       = hires_height;
-    params.hires.steps               = hires_steps;
-    params.hires.denoising_strength  = hires_denoising_strength;
-    params.hires.upscale_tile_size   = hires_upscale_tile_size;
-    params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
-    params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
+    params.width                        = get_resolved_width();
+    params.height                       = get_resolved_height();
+    params.sample_params                = sample_params;
+    params.high_noise_sample_params     = high_noise_sample_params;
+    params.moe_boundary                 = moe_boundary;
+    params.strength                     = strength;
+    params.seed                         = seed;
+    params.video_frames                 = video_frames;
+    params.fps                          = fps;
+    params.vace_strength                = vace_strength;
+    params.vae_tiling_params            = vae_tiling_params;
+    params.cache                        = cache_params;
+    params.hires.enabled                = hires_enabled;
+    params.hires.upscaler               = resolved_hires_upscaler;
+    params.hires.model_path             = hires_upscaler_model_path.empty() ? nullptr : hires_upscaler_model_path.c_str();
+    params.hires.scale                  = hires_scale;
+    params.hires.target_width           = hires_width;
+    params.hires.target_height          = hires_height;
+    params.hires.steps                  = hires_steps;
+    params.hires.denoising_strength     = hires_denoising_strength;
+    params.hires.upscale_tile_size      = hires_upscale_tile_size;
+    params.hires.custom_sigmas          = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
+    params.hires.custom_sigmas_count    = static_cast<int>(hires_custom_sigmas.size());
     return params;
 }
 

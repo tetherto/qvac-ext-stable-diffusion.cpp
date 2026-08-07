@@ -228,7 +228,7 @@ typedef struct {
     int chroma_t5_mask_pad;
     bool qwen_image_zero_cond_t;
     enum sd_vae_format_t vae_format;
-    float max_vram;  // GiB budget for graph-cut segmented param offload (0 = disabled, -1 = auto free VRAM minus 1 GiB)
+    float max_vram;      // GiB budget for graph-cut segmented param offload (0 = disabled, -1 = auto free VRAM minus 1 GiB)
     bool stream_layers;  // Enable residency+prefetch streaming on top of --max-vram (no effect without --max-vram)
     const char* backend;
     const char* params_backend;
@@ -409,16 +409,17 @@ typedef struct {
     sd_tiling_params_t vae_tiling_params;
     sd_cache_params_t cache;
     sd_hires_params_t hires;
-    // LTX IC-LoRA reference conditioning. These fields are ignored for
-    // non-LTX video models. Each input is a reference sheet/image that is
-    // expanded into a static reference video before VAE encoding.
+    // LTX IC-LoRA reference conditioning. Non-empty reference inputs are
+    // rejected for non-LTX video models. Each input is a reference sheet/image
+    // that is expanded into a static reference video before VAE encoding.
     sd_image_t* reference_images;
     int reference_images_count;
-    // [0, 1]. Zero disables the reference tokens; one preserves their full
-    // conditioning weight. Defaults are set by sd_vid_gen_params_init().
+    // Finite [0, 1]. Zero prevents target/audio attention from using reference
+    // tokens; one enables full reference attention. Reference latents remain
+    // fixed by a separate preservation mask.
     float reference_attention_strength;
-    // The current LTX Ingredients workflow requires 1.0. Values other than
-    // one are rejected until a spatial downscale implementation is added.
+    // The current LTX Ingredients workflow requires finite, exactly 1.0.
+    // Other values are rejected until spatial downscaling is implemented.
     float reference_downscale_factor;
 } sd_vid_gen_params_t;
 
