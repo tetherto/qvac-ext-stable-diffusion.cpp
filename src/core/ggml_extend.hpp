@@ -2210,6 +2210,21 @@ protected:
         return capacity;
     }
 
+    size_t get_pending_runtime_params_size() const {
+        if (params_ctx == nullptr || params_backend == runtime_backend) {
+            return 0;
+        }
+        size_t bytes = 0;
+        for (ggml_tensor* tensor = ggml_get_first_tensor(params_ctx);
+             tensor != nullptr;
+             tensor = ggml_get_next_tensor(params_ctx, tensor)) {
+            if (tensor->view_src == nullptr) {
+                bytes += ggml_nbytes(tensor);
+            }
+        }
+        return bytes;
+    }
+
     void switch_runtime_backend(ggml_backend_t backend) {
         GGML_ASSERT(backend != nullptr);
         free_compute_buffer();
@@ -3214,55 +3229,95 @@ public:
             free_compute_ctx();
             return std::nullopt;
         }
+        const bool has_stateful_cache =
+            !cache_tensor_map.empty() || cache_ctx != nullptr;
+        auto retry_stateless_on_cpu =
+            [&](const char* failure) -> std::optional<sd::Tensor<T>> {
+            if (!vae_auto_cpu_fallback_enabled ||
+                sd_backend_is_cpu(runtime_backend) ||
+                !sd_backend_is_cpu(params_backend) ||
+                has_stateful_cache) {
+                return std::nullopt;
+            }
+            ggml_backend_t previous_backend = runtime_backend;
+            const std::string previous_backend_name =
+                ggml_backend_name(previous_backend);
+            LOG_WARN("%s VAE %s on %s; retrying stateless graph on CPU",
+                     get_desc().c_str(),
+                     failure,
+                     previous_backend_name.c_str());
+            switch_runtime_backend(params_backend);
+            try {
+                auto output = compute<T>(get_graph,
+                                         n_threads,
+                                         false,
+                                         free_compute_buffer,
+                                         free_compute_params,
+                                         no_return);
+                switch_runtime_backend(previous_backend);
+                return output;
+            } catch (...) {
+                switch_runtime_backend(previous_backend);
+                throw;
+            }
+        };
 
         if (vae_auto_cpu_fallback_enabled &&
             !sd_backend_is_cpu(runtime_backend) &&
             sd_backend_is_cpu(params_backend)) {
             const size_t required_bytes = measure_compute_buffer_size(gf);
-            const sd::VaeFallbackCapacity capacity = get_vae_fallback_capacity();
-            const bool has_stateful_cache = !cache_tensor_map.empty() || cache_ctx != nullptr;
+            const size_t pending_runtime_param_bytes =
+                get_pending_runtime_params_size();
+            const sd::VaeFallbackCapacity capacity   = get_vae_fallback_capacity();
             const sd::VaeGraphRouteDecision decision = sd::select_vae_graph_route(
                 required_bytes,
                 capacity,
                 /*fallback_enabled=*/true,
                 /*runtime_is_cpu=*/false,
                 /*cpu_params_available=*/true,
-                has_stateful_cache);
+                has_stateful_cache,
+                pending_runtime_param_bytes);
 
-            LOG_DEBUG("%s VAE graph preflight: required=%zu bytes, budget=%zu bytes, "
-                      "max_logical_buffer=%zu bytes, free_memory=%zu bytes, ratio=%.3f",
-                      get_desc().c_str(),
-                      decision.required_bytes,
-                      decision.budget_bytes,
-                      capacity.max_buffer_bytes == std::numeric_limits<size_t>::max() ? 0 : capacity.max_buffer_bytes,
-                      capacity.free_memory_bytes,
-                      capacity.free_memory_ratio);
+            LOG_DEBUG(
+                "%s VAE graph preflight: compute=%zu bytes, pending_params=%zu bytes, total=%zu bytes, budget=%zu bytes, "
+                "max_logical_buffer=%zu bytes, free_memory=%zu bytes, ratio=%.3f",
+                get_desc().c_str(),
+                decision.compute_buffer_bytes,
+                decision.pending_runtime_param_bytes,
+                decision.required_bytes,
+                decision.budget_bytes,
+                capacity.max_buffer_bytes == std::numeric_limits<size_t>::max() ? 0 : capacity.max_buffer_bytes,
+                capacity.free_memory_bytes,
+                capacity.free_memory_ratio);
 
             if (decision.use_cpu_fallback()) {
-                ggml_backend_t previous_backend = runtime_backend;
+                ggml_backend_t previous_backend         = runtime_backend;
                 const std::string previous_backend_name = ggml_backend_name(previous_backend);
-                const std::string cpu_backend_name = ggml_backend_name(params_backend);
+                const std::string cpu_backend_name      = ggml_backend_name(params_backend);
 
-                LOG_WARN("%s VAE graph exceeds preflight capacity; routing only this graph to CPU: "
-                         "required=%zu bytes (%.2f MiB), budget=%zu bytes (%.2f MiB), "
-                         "max_logical_buffer=%zu bytes, free_memory=%zu bytes, ratio=%.3f, "
-                         "runtime=%s, fallback=%s",
-                         get_desc().c_str(),
-                         decision.required_bytes,
-                         decision.required_bytes / (1024.0 * 1024.0),
-                         decision.budget_bytes,
-                         decision.budget_bytes / (1024.0 * 1024.0),
-                         capacity.max_buffer_bytes == std::numeric_limits<size_t>::max() ? 0 : capacity.max_buffer_bytes,
-                         capacity.free_memory_bytes,
-                         capacity.free_memory_ratio,
-                         previous_backend_name.c_str(),
-                         cpu_backend_name.c_str());
+                LOG_WARN(
+                    "%s VAE graph exceeds preflight capacity; routing only this graph to CPU: "
+                    "required=%zu bytes (%.2f MiB), budget=%zu bytes (%.2f MiB), "
+                    "max_logical_buffer=%zu bytes, free_memory=%zu bytes, ratio=%.3f, "
+                    "runtime=%s, fallback=%s",
+                    get_desc().c_str(),
+                    decision.required_bytes,
+                    decision.required_bytes / (1024.0 * 1024.0),
+                    decision.budget_bytes,
+                    decision.budget_bytes / (1024.0 * 1024.0),
+                    capacity.max_buffer_bytes == std::numeric_limits<size_t>::max() ? 0 : capacity.max_buffer_bytes,
+                    capacity.free_memory_bytes,
+                    capacity.free_memory_ratio,
+                    previous_backend_name.c_str(),
+                    cpu_backend_name.c_str());
 
                 switch_runtime_backend(params_backend);
                 try {
                     auto output = compute<T>(get_graph,
                                              n_threads,
-                                             free_compute_buffer_immediately,
+                                             false,
+                                             free_compute_buffer,
+                                             free_compute_params,
                                              no_return);
                     switch_runtime_backend(previous_backend);
                     LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
@@ -3276,11 +3331,12 @@ public:
             }
 
             if (decision.reason == sd::VaeGraphRouteReason::STATEFUL_GRAPH) {
-                LOG_ERROR("%s VAE stateful graph exceeds preflight capacity and cannot change "
-                          "backends without migrating temporal state: required=%zu bytes, budget=%zu bytes",
-                          get_desc().c_str(),
-                          decision.required_bytes,
-                          decision.budget_bytes);
+                LOG_ERROR(
+                    "%s VAE stateful graph exceeds preflight capacity and cannot change "
+                    "backends without migrating temporal state: required=%zu bytes, budget=%zu bytes",
+                    get_desc().c_str(),
+                    decision.required_bytes,
+                    decision.budget_bytes);
                 free_compute_ctx();
                 return std::nullopt;
             }
@@ -3300,13 +3356,21 @@ public:
                                                      no_return);
             }
         }
-        return execute_graph<T>(gf,
-                                n_threads,
-                                free_compute_buffer,
-                                free_compute_params,
-                                false,
-                                no_return,
-                                nullptr);
+        auto output = execute_graph<T>(gf,
+                                       n_threads,
+                                       free_compute_buffer,
+                                       free_compute_params,
+                                       false,
+                                       no_return,
+                                       nullptr);
+        if (!output.has_value()) {
+            auto fallback =
+                retry_stateless_on_cpu("runtime allocation or execution failed");
+            if (fallback.has_value()) {
+                return fallback;
+            }
+        }
+        return output;
     }
 
     void set_flash_attention_enabled(bool enabled) {
@@ -3370,10 +3434,11 @@ public:
                      get_desc().c_str());
         } else if (!sd_backend_is_cpu(params_backend)) {
             vae_auto_cpu_fallback_enabled = false;
-            LOG_WARN("%s VAE automatic CPU fallback requires CPU-resident VAE parameters; "
-                     "explicit params backend %s is preserved and fallback is disabled",
-                     get_desc().c_str(),
-                     ggml_backend_name(params_backend));
+            LOG_WARN(
+                "%s VAE automatic CPU fallback requires CPU-resident VAE parameters; "
+                "explicit params backend %s is preserved and fallback is disabled",
+                get_desc().c_str(),
+                ggml_backend_name(params_backend));
         } else {
             LOG_INFO("%s VAE automatic CPU fallback enabled: preflight ratio=%.3f, runtime=%s",
                      get_desc().c_str(),

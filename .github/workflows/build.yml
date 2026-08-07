@@ -83,8 +83,11 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -DSD_BUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'
+          cmake .. -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_TESTS=ON -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'
           cmake --build . --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
       - name: Get commit hash
         id: commit

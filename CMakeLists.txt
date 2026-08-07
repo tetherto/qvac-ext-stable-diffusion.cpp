@@ -382,6 +382,11 @@ if(SD_GGML_BACKEND_HEADER)
         # ggml_extend.hpp uses this feature check in inline methods. Propagate it
         # to consumers to keep every translation unit on the same API path.
         target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_BUFFER_CAPACITY_API=1)
+    else()
+        message(WARNING
+            "Selected GGML does not expose ggml_backend_get_max_buffer_capacity; "
+            "the fixed single-buffer VAE preflight bound is unavailable. "
+            "Update the GGML pin before relying on Vulkan capacity routing.")
     endif()
 endif()
 
