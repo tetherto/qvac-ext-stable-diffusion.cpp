@@ -640,6 +640,20 @@ sd::VaeFallbackCapacity GGMLRunner::get_vae_fallback_capacity() const {
     return capacity;
 }
 
+size_t GGMLRunner::get_pending_runtime_params_size() const {
+    if (params_ctx == nullptr || sd_backend_is_cpu(runtime_backend)) return 0;
+    size_t bytes = 0;
+    for (auto* tensor = ggml_get_first_tensor(params_ctx); tensor != nullptr;
+         tensor = ggml_get_next_tensor(params_ctx, tensor)) {
+        if (tensor->view_src == nullptr &&
+            (tensor->buffer == nullptr || ggml_backend_buffer_is_host(tensor->buffer))) {
+            const size_t size = ggml_nbytes(tensor);
+            bytes = size > SIZE_MAX - bytes ? SIZE_MAX : bytes + size;
+        }
+    }
+    return bytes;
+}
+
 void GGMLRunner::switch_runtime_backend(ggml_backend_t backend) {
     GGML_ASSERT(backend != nullptr && !workspace_.active());
     GGML_ASSERT(cache_.empty() && cache_.outputs().empty());
@@ -753,7 +767,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
         const size_t required_bytes = measure_compute_buffer_size(graph);
         const auto capacity = get_vae_fallback_capacity();
         const bool stateful = !cache_.empty() || !cache_.outputs().empty();
-        const auto decision = sd::select_vae_graph_route(required_bytes, capacity, true, false, true, stateful);
+        const auto decision = sd::select_vae_graph_route(required_bytes, capacity, true, false, true, stateful, get_pending_runtime_params_size());
         LOG_DEBUG("%s VAE graph preflight: required=%zu bytes, budget=%zu bytes",
                   get_desc().c_str(), decision.required_bytes, decision.budget_bytes);
         if (decision.use_cpu_fallback()) {
@@ -782,17 +796,31 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
         }
     }
     std::optional<sd::Tensor<float>> output;
-    try {
-        output = execute_graph(graph, n_threads, no_return, read_outputs);
-    } catch (const std::bad_alloc&) {
-        last_compute_status_ = GGML_STATUS_ALLOC_FAILED;
-        LOG_ERROR("%s graph allocation failed", get_desc().c_str());
-        return std::nullopt;
-    } catch (const std::exception& error) {
-        last_compute_status_ = GGML_STATUS_FAILED;
-        LOG_ERROR("%s graph execution failed on %s: %s", get_desc().c_str(),
-                  ggml_backend_name(runtime_backend), error.what());
-        return std::nullopt;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        try {
+            output = execute_graph(graph, n_threads, no_return, read_outputs);
+        } catch (const std::bad_alloc&) {
+            last_compute_status_ = GGML_STATUS_ALLOC_FAILED;
+            LOG_ERROR("%s graph allocation failed", get_desc().c_str());
+        } catch (const std::exception& error) {
+            last_compute_status_ = GGML_STATUS_FAILED;
+            LOG_ERROR("%s graph execution failed on %s: %s", get_desc().c_str(),
+                      ggml_backend_name(runtime_backend), error.what());
+        }
+        if (output.has_value() || attempt != 0 || !vae_auto_cpu_fallback_enabled ||
+            sd_backend_is_cpu(runtime_backend) || vae_cpu_fallback_backend == nullptr ||
+            !sd_backend_is_cpu(vae_cpu_fallback_backend) || is_multi_device() ||
+            !cache_.empty() || !cache_.outputs().empty()) break;
+        if (!workspace_.segment_end()) break;
+        cache_.graph_end(false);
+        cut_cache_.clear();
+        LOG_WARN("%s VAE runtime allocation or execution failed; retrying stateless graph on CPU",
+                 get_desc().c_str());
+        backend_restore.previous = runtime_backend;
+        switch_runtime_backend(vae_cpu_fallback_backend);
+        if (!prepare_compute_graph(get_graph, &graph)) break;
+        params_tensor_set_dirty_ = true;
+        rebuild_params_tensor_set();
     }
     success = output.has_value();
     if (success) {

@@ -159,6 +159,7 @@ protected:
     bool vae_auto_cpu_fallback_enabled = false;
     float vae_auto_cpu_fallback_memory_ratio = 0.9f;
     size_t measure_compute_buffer_size(ggml_cgraph* graph) const;
+    size_t get_pending_runtime_params_size() const;
     sd::VaeFallbackCapacity get_vae_fallback_capacity() const;
     void switch_runtime_backend(ggml_backend_t backend);
 

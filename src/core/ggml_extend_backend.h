@@ -69,6 +69,22 @@ public:
               const char* split_mode_spec,
               bool vae_auto_cpu_fallback,
               std::string* error);
+    // Source compatibility: preserve routing when automatic fallback is not requested.
+    bool init(const char* backend_spec, const char* params_backend_spec,
+              const char* split_mode_spec, std::string* error) {
+        return init(backend_spec, params_backend_spec, split_mode_spec, false, error);
+    }
+    bool init(const char* backend_spec, const char* params_backend_spec,
+              bool offload_params_to_cpu, bool keep_clip_on_cpu,
+              bool keep_vae_on_cpu, bool keep_control_net_on_cpu, std::string* error) {
+        const char* params = offload_params_to_cpu &&
+                             (params_backend_spec == nullptr || params_backend_spec[0] == '\0')
+                                 ? "cpu" : params_backend_spec;
+        if (!init(backend_spec, params, nullptr, false, error)) return false;
+        runtime_assignment_.apply_keep_cpu_overrides(keep_clip_on_cpu, keep_vae_on_cpu,
+                                                     keep_control_net_on_cpu);
+        return validate(error);
+    }
     void reset();
 
     ggml_backend_t runtime_backend(SDBackendModule module);
