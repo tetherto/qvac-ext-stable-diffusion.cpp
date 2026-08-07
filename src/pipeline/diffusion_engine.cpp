@@ -1738,7 +1738,9 @@ bool StableDiffusionGGML::apply_loras_immediately(const std::vector<ModelManager
     if (!loras.empty()) {
         LOG_INFO("apply lora immediately");
     }
-    return model_manager->set_loras(loras, version);
+    const bool applied = model_manager->set_loras(loras, version);
+    last_lora_apply_result = {applied, applied && !loras.empty()};
+    return applied;
 }
 
 bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager::LoraSpec>& loras) {
@@ -1793,6 +1795,7 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
                                           SDBackendModule::DIFFUSION,
                                           lora_tensor_filter, success, next_models);
         if (!diffusion_lora_models.empty()) {
+            last_lora_apply_result.diffusion_lora_applied = true;
             auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(diffusion_lora_models);
             diffusion_model->set_weight_adapter(multi_lora_adapter);
             if (high_noise_diffusion_model) {
@@ -1818,6 +1821,13 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
             first_stage_model->set_weight_adapter(multi_lora_adapter);
         }
     }
+    std::set<std::string> loaded_lora_ids;
+    for (const auto& entry : next_models) loaded_lora_ids.insert(entry.model->lora_id);
+    for (const auto& lora : loras) {
+        if (loaded_lora_ids.count(lora_log_id(lora)) == 0) {
+            last_lora_apply_result.all_requested_applied = false;
+        }
+    }
     runtime_lora_models = std::move(next_models);
     return success;
 }
@@ -1832,6 +1842,7 @@ void StableDiffusionGGML::lora_stat() {
 }
 
 bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    last_lora_apply_result = {};
     std::vector<ModelManager::LoraSpec> all_loras;
     all_loras.reserve(lora_count);
     for (uint32_t i = 0; i < lora_count; i++) {
@@ -2345,7 +2356,9 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
                                               float frame_rate,
                                               const sd_cache_params_t* cache_params,
                                               bool preview_final_step,
-                                              const sd::Tensor<float>& video_positions) {
+                                              const sd::Tensor<float>& video_positions,
+                                               int64_t video_reference_token_count,
+                                               float reference_attention_strength) {
     struct RunnerEndOnExit {
         GGMLRunner* runner = nullptr;
         ~RunnerEndOnExit() {
@@ -2629,6 +2642,8 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
                     audio_length,
                     frame_rate,
                     video_positions.empty() ? nullptr : &video_positions,
+                    video_reference_token_count,
+                    reference_attention_strength,
                     local_skip_layers};
             } else if (sd_version_is_minit2i(version)) {
                 diffusion_params.extra = MiniT2IDiffusionExtra{

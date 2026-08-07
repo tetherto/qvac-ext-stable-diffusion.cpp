@@ -382,6 +382,11 @@ public:
 
     void lora_stat();
 
+    struct LoraApplyResult {
+        bool all_requested_applied = true;
+        bool diffusion_lora_applied = false;
+    };
+    LoraApplyResult last_lora_apply_result;
     bool apply_loras(const sd_lora_t* loras, uint32_t lora_count);
 
     SDCondition get_learned_condition(const ConditionerParams& params);
@@ -472,7 +477,9 @@ public:
                              float frame_rate,
                              const sd_cache_params_t* cache_params,
                              bool preview_final_step,
-                             const sd::Tensor<float>& video_positions = {});
+                             const sd::Tensor<float>& video_positions = {},
+                             int64_t video_reference_token_count = 0,
+                             float reference_attention_strength = 1.f);
 
     int get_vae_scale_factor();
 

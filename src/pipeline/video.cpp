@@ -1,4 +1,5 @@
 #include "generation.h"
+#include "ltx_conditioning.hpp"
 #include "generation_info.h"
 
 #include <algorithm>
@@ -233,14 +234,14 @@ namespace sd::pipeline {
         if (image.empty() || image.dim() != 4 || frames <= 0) {
             return {};
         }
-    
+
         const int64_t width    = image.shape()[0];
         const int64_t height   = image.shape()[1];
         const int64_t channels = image.shape()[2];
         const int64_t batches  = image.shape()[3];
         const int64_t plane    = width * height;
         sd::Tensor<float> video({width, height, frames, channels, batches});
-    
+
         for (int64_t batch = 0; batch < batches; ++batch) {
             for (int64_t channel = 0; channel < channels; ++channel) {
                 const float* source = image.data() + (batch * channels + channel) * plane;
@@ -252,7 +253,7 @@ namespace sd::pipeline {
         }
         return video;
     }
-    
+
     static sd::Tensor<float> encode_ltxav_condition_image(StableDiffusionGGML* sd,
                                                           const sd::Tensor<float>& image,
                                                           const char* name) {
@@ -847,17 +848,15 @@ namespace sd::pipeline {
                     LOG_ERROR("LTX Ingredients requires exactly one composite reference sheet");
                     return std::nullopt;
                 }
-                if (sd_vid_gen_params->reference_downscale_factor != 1.f) {
-                    LOG_ERROR("LTX IC-LoRA currently requires reference_downscale_factor=1");
-                    return std::nullopt;
-                }
-                if (sd_vid_gen_params->reference_attention_strength < 0.f ||
-                    sd_vid_gen_params->reference_attention_strength > 1.f) {
-                    LOG_ERROR("LTX IC-LoRA reference_attention_strength must be in [0, 1]");
+                const auto validation = sd::validate_ltx_reference_parameters(
+                    sd_vid_gen_params->reference_attention_strength,
+                    sd_vid_gen_params->reference_downscale_factor);
+                if (validation != sd::LtxReferenceValidation::VALID) {
+                    LOG_ERROR("invalid LTX IC-LoRA reference parameters");
                     return std::nullopt;
                 }
             }
-    
+
             if (!start_image.empty() || !end_image.empty() || !reference_images.empty()) {
                 if (!start_image.empty() && !end_image.empty()) {
                     LOG_INFO("FLF2V");
@@ -970,19 +969,21 @@ namespace sd::pipeline {
                                                                  true)) {
                         return std::nullopt;
                     }
-                    const float reference_strength =
-                        std::clamp(sd_vid_gen_params->reference_attention_strength, 0.f, 1.f);
                     const int64_t reference_frames = reference_latents.shape()[2];
+                    latents.video_reference_token_count =
+                        reference_latents.shape()[0] *
+                        reference_latents.shape()[1] *
+                        reference_frames;
                     sd::ops::fill_slice(&latents.denoise_mask,
                                         2,
                                         0,
                                         reference_frames,
-                                        1.f - reference_strength);
+                                        0.f);
                     LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
                              reference_images.size(),
-                             reference_strength);
+                             sd_vid_gen_params->reference_attention_strength);
                 }
-    
+
                 int64_t t2 = ggml_time_ms();
                 LOG_INFO("encode_first_stage completed, taking %" PRId64 " ms", t2 - t1);
             }
@@ -1714,6 +1715,28 @@ namespace sd::pipeline {
                         nlohmann::json* info_out) {
         if (info_out)
             *info_out = nlohmann::json();
+        const auto reference_inputs = sd::validate_ltx_reference_inputs(
+            sd_vid_gen_params->reference_images,
+            sd_vid_gen_params->reference_images_count);
+        if (reference_inputs != sd::LtxReferenceValidation::VALID) {
+            LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+            return false;
+        }
+        const bool has_ltx_reference = sd_vid_gen_params->reference_images_count > 0;
+        if (has_ltx_reference) {
+            if (!sd_version_is_ltxav(sd->version)) {
+                LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+                return false;
+            }
+            const auto reference_parameters = sd::validate_ltx_reference_parameters(
+                sd_vid_gen_params->reference_attention_strength,
+                sd_vid_gen_params->reference_downscale_factor);
+            if (reference_parameters != sd::LtxReferenceValidation::VALID) {
+                LOG_ERROR("invalid LTX IC-LoRA reference parameters");
+                return false;
+            }
+        }
+
         GenerationRequest request(sd, sd_vid_gen_params);
         if (!request.valid) {
             return false;
@@ -1770,6 +1793,11 @@ namespace sd::pipeline {
         sd->set_flow_shift(sd_vid_gen_params->sample_params.flow_shift);
         if (!sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count))
             return false;
+        if (has_ltx_reference && (!sd->last_lora_apply_result.all_requested_applied ||
+                                  !sd->last_lora_apply_result.diffusion_lora_applied)) {
+            LOG_ERROR("LTX IC-LoRA reference conditioning requires a successfully applied diffusion LoRA");
+            return false;
+        }
         sd->reset_generation_extensions();
 
         SamplePlan plan(sd, sd_vid_gen_params, request);
@@ -1844,7 +1872,9 @@ namespace sd::pipeline {
                                                        static_cast<float>(request.fps),
                                                        request.cache_params,
                                                        true,
-                                                       latents.video_positions);
+                                                       latents.video_positions,
+                                                    latents.video_reference_token_count,
+                                                    sd_vid_gen_params->reference_attention_strength);
             int64_t sampling_end          = ggml_time_ms();
             if (x_t_sampled.empty()) {
                 LOG_ERROR("sampling(high noise) failed after %.2fs", (sampling_end - sampling_start) * 1.0f / 1000);
@@ -1887,7 +1917,9 @@ namespace sd::pipeline {
                                                     static_cast<float>(request.fps),
                                                     request.cache_params,
                                                     plan.high_noise_sample_steps <= 0,
-                                                    latents.video_positions);
+                                                    latents.video_positions,
+                                                    latents.video_reference_token_count,
+                                                    sd_vid_gen_params->reference_attention_strength);
 
         int64_t sampling_end = ggml_time_ms();
         if (final_latent.empty()) {

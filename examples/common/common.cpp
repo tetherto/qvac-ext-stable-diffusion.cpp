@@ -2280,6 +2280,10 @@ bool SDGenerationParams::from_json_str(
     load_if_exists("ip_adapter_strength", ip_adapter_strength);
     load_if_exists("moe_boundary", moe_boundary);
     load_if_exists("vace_strength", vace_strength);
+    load_if_exists("reference_attention_strength",
+                   reference_attention_strength);
+    load_if_exists("reference_downscale_factor",
+                   reference_downscale_factor);
 
     load_if_exists("increase_ref_index", increase_ref_index);
     load_if_exists("embed_image_metadata", embed_image_metadata);
@@ -2762,12 +2766,15 @@ bool SDGenerationParams::validate(SDMode mode) {
     }
 
     if (mode == VID_GEN && !ref_image_paths.empty()) {
-        if (reference_attention_strength < 0.f || reference_attention_strength > 1.f) {
-            LOG_ERROR("error: reference attention strength must be in [0, 1]");
+        if (!std::isfinite(reference_attention_strength) ||
+            reference_attention_strength < 0.f ||
+            reference_attention_strength > 1.f) {
+            LOG_ERROR("error: reference attention strength must be finite and in [0, 1]");
             return false;
         }
-        if (reference_downscale_factor != 1.f) {
-            LOG_ERROR("error: LTX IC-LoRA currently requires reference downscale factor to be 1");
+        if (!std::isfinite(reference_downscale_factor) ||
+            reference_downscale_factor != 1.f) {
+            LOG_ERROR("error: LTX IC-LoRA currently requires a finite reference downscale factor exactly equal to 1");
             return false;
         }
     }
