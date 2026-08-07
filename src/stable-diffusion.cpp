@@ -62,6 +62,7 @@
 #include "runtime/denoiser.hpp"
 #include "runtime/guidance.h"
 #include "runtime/sample-cache.h"
+#include "ltx_conditioning.hpp"
 #include "upscaler.h"
 
 #include "name_conversion.h"
@@ -2009,10 +2010,17 @@ public:
         }
     }
 
-    std::vector<std::shared_ptr<LoraModel>> load_runtime_loras_for_module(const std::vector<ModelManager::LoraSpec>& loras,
-                                                                          const std::set<std::string>& model_tensor_names,
-                                                                          SDBackendModule module,
-                                                                          LoraModel::filter_t module_filter = nullptr) {
+    struct LoraApplyResult {
+        bool all_requested_applied    = true;
+        bool diffusion_lora_applied   = false;
+    };
+
+    std::vector<std::shared_ptr<LoraModel>> load_runtime_loras_for_module(
+        const std::vector<ModelManager::LoraSpec>& loras,
+        const std::set<std::string>& model_tensor_names,
+        SDBackendModule module,
+        LoraModel::filter_t module_filter          = nullptr,
+        std::set<std::string>* loaded_lora_ids     = nullptr) {
         std::vector<std::shared_ptr<LoraModel>> module_lora_models;
         for (const auto& lora_spec : loras) {
             auto lora = load_lora_model(lora_spec, module, module_filter);
@@ -2027,36 +2035,42 @@ public:
             }
 
             lora->preprocess_lora_tensors(model_tensor_names);
+            if (loaded_lora_ids != nullptr) {
+                loaded_lora_ids->insert(lora->lora_id);
+            }
             runtime_lora_models.push_back(lora);
             module_lora_models.push_back(std::move(lora));
         }
         return module_lora_models;
     }
 
-    void apply_loras_immediately(const std::vector<ModelManager::LoraSpec>& loras) {
+    LoraApplyResult apply_loras_immediately(const std::vector<ModelManager::LoraSpec>& loras) {
         if (model_manager == nullptr) {
             if (!loras.empty()) {
                 LOG_WARN("model manager is not available for immediate lora");
             }
-            return;
+            return {loras.empty(), false};
         }
 
         clear_lora_adapters();
         runtime_lora_models.clear();
 
         model_manager->set_loras(loras, version);
+        return {true, !loras.empty()};
     }
 
-    void apply_loras_at_runtime(const std::vector<ModelManager::LoraSpec>& loras) {
+    LoraApplyResult apply_loras_at_runtime(const std::vector<ModelManager::LoraSpec>& loras) {
         if (model_manager != nullptr) {
             model_manager->set_loras({}, version);
         }
         runtime_lora_models.clear();
         clear_lora_adapters();
         if (loras.empty()) {
-            return;
+            return {};
         }
 
+        std::set<std::string> loaded_lora_ids;
+        bool diffusion_lora_applied = false;
         std::set<std::string> model_tensor_names;
         if (model_manager != nullptr) {
             model_tensor_names = model_manager->tensor_names();
@@ -2074,7 +2088,8 @@ public:
                 load_runtime_loras_for_module(loras,
                                               model_tensor_names,
                                               SDBackendModule::TE,
-                                              lora_tensor_filter);
+                                              lora_tensor_filter,
+                                              &loaded_lora_ids);
             // Only attach the adapter when there are LoRAs targeting the cond_stage model.
             // An empty MultiLoraAdapter still routes every linear/conv through
             // forward_with_lora() instead of the direct kernel path — slower for no benefit.
@@ -2094,8 +2109,10 @@ public:
                 load_runtime_loras_for_module(loras,
                                               model_tensor_names,
                                               SDBackendModule::DIFFUSION,
-                                              lora_tensor_filter);
+                                              lora_tensor_filter,
+                                              &loaded_lora_ids);
             if (!diffusion_lora_models.empty()) {
+                diffusion_lora_applied = true;
                 auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(diffusion_lora_models);
                 diffusion_model->set_weight_adapter(multi_lora_adapter);
                 if (high_noise_diffusion_model) {
@@ -2115,12 +2132,22 @@ public:
                 load_runtime_loras_for_module(loras,
                                               model_tensor_names,
                                               SDBackendModule::VAE,
-                                              lora_tensor_filter);
+                                              lora_tensor_filter,
+                                              &loaded_lora_ids);
             if (!first_stage_lora_models.empty()) {
                 auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(first_stage_lora_models);
                 first_stage_model->set_weight_adapter(multi_lora_adapter);
             }
         }
+        std::set<std::string> requested_lora_ids;
+        for (const auto& lora : loras) {
+            requested_lora_ids.insert(lora_log_id(lora));
+        }
+        return {std::includes(loaded_lora_ids.begin(),
+                              loaded_lora_ids.end(),
+                              requested_lora_ids.begin(),
+                              requested_lora_ids.end()),
+                diffusion_lora_applied};
     }
 
     void lora_stat() {
@@ -2132,7 +2159,7 @@ public:
         }
     }
 
-    void apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    LoraApplyResult apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
         std::vector<ModelManager::LoraSpec> all_loras;
         all_loras.reserve(lora_count);
         for (uint32_t i = 0; i < lora_count; i++) {
@@ -2153,15 +2180,14 @@ public:
         }
 
         int64_t t0 = ggml_time_ms();
-        if (apply_lora_immediately) {
-            apply_loras_immediately(all_loras);
-        } else {
-            apply_loras_at_runtime(all_loras);
-        }
+        LoraApplyResult result = apply_lora_immediately
+                                     ? apply_loras_immediately(all_loras)
+                                     : apply_loras_at_runtime(all_loras);
         int64_t t1 = ggml_time_ms();
         if (!all_loras.empty()) {
             LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         }
+        return result;
     }
 
     void reset_generation_extensions() {
@@ -2558,7 +2584,9 @@ public:
                              int audio_length,
                              float frame_rate,
                              const sd_cache_params_t* cache_params,
-                             const sd::Tensor<float>& video_positions = {}) {
+                             const sd::Tensor<float>& video_positions = {},
+                             int64_t video_reference_token_count      = 0,
+                             float reference_attention_strength       = 1.f) {
         struct RunnerDoneOnExit {
             GGMLRunner* runner = nullptr;
             ~RunnerDoneOnExit() {
@@ -2803,6 +2831,8 @@ public:
                         audio_length,
                         frame_rate,
                         video_positions.empty() ? nullptr : &video_positions,
+                        video_reference_token_count,
+                        reference_attention_strength,
                         local_skip_layers};
                 } else if (sd_version_is_minit2i(version)) {
                     diffusion_params.extra = MiniT2IDiffusionExtra{
@@ -4472,6 +4502,7 @@ struct ImageGenerationLatents {
     int64_t ref_image_num                  = 0;
     int64_t video_conditioning_frame_count = 0;
     int64_t video_target_frame_count       = 0;
+    int64_t video_reference_token_count    = 0;
     bool video_conditioning_first          = false;
     int audio_length                       = 0;
 };
@@ -6261,13 +6292,11 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                 LOG_ERROR("LTX Ingredients requires exactly one composite reference sheet");
                 return std::nullopt;
             }
-            if (sd_vid_gen_params->reference_downscale_factor != 1.f) {
-                LOG_ERROR("LTX IC-LoRA currently requires reference_downscale_factor=1");
-                return std::nullopt;
-            }
-            if (sd_vid_gen_params->reference_attention_strength < 0.f ||
-                sd_vid_gen_params->reference_attention_strength > 1.f) {
-                LOG_ERROR("LTX IC-LoRA reference_attention_strength must be in [0, 1]");
+            const auto validation = sd::validate_ltx_reference_parameters(
+                sd_vid_gen_params->reference_attention_strength,
+                sd_vid_gen_params->reference_downscale_factor);
+            if (validation != sd::LtxReferenceValidation::VALID) {
+                LOG_ERROR("invalid LTX IC-LoRA reference parameters");
                 return std::nullopt;
             }
         }
@@ -6384,17 +6413,19 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                                                              true)) {
                     return std::nullopt;
                 }
-                const float reference_strength =
-                    std::clamp(sd_vid_gen_params->reference_attention_strength, 0.f, 1.f);
                 const int64_t reference_frames = reference_latents.shape()[2];
+                latents.video_reference_token_count =
+                    reference_latents.shape()[0] *
+                    reference_latents.shape()[1] *
+                    reference_frames;
                 sd::ops::fill_slice(&latents.denoise_mask,
                                     2,
                                     0,
                                     reference_frames,
-                                    1.f - reference_strength);
+                                    0.f);
                 LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
                          reference_images.size(),
-                         reference_strength);
+                         sd_vid_gen_params->reference_attention_strength);
             }
 
             int64_t t2 = ggml_time_ms();
@@ -7032,6 +7063,28 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         *num_frames_out = 0;
     }
 
+    const auto reference_inputs = sd::validate_ltx_reference_inputs(
+        sd_vid_gen_params->reference_images,
+        sd_vid_gen_params->reference_images_count);
+    if (reference_inputs != sd::LtxReferenceValidation::VALID) {
+        LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+        return false;
+    }
+    const bool has_ltx_reference = sd_vid_gen_params->reference_images_count > 0;
+    if (has_ltx_reference) {
+        if (!sd_version_is_ltxav(sd_ctx->sd->version)) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return false;
+        }
+        const auto reference_parameters = sd::validate_ltx_reference_parameters(
+            sd_vid_gen_params->reference_attention_strength,
+            sd_vid_gen_params->reference_downscale_factor);
+        if (reference_parameters != sd::LtxReferenceValidation::VALID) {
+            LOG_ERROR("invalid LTX IC-LoRA reference parameters");
+            return false;
+        }
+    }
+
     if (sd_ctx->sd->animatediff_loaded && sd_version_supports_animatediff(sd_ctx->sd->version)) {
         LOG_INFO("AnimateDiff dispatch: %d frames, %dx%d",
                  sd_vid_gen_params->video_frames, sd_vid_gen_params->width, sd_vid_gen_params->height);
@@ -7069,7 +7122,13 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     sd_ctx->sd->rng->manual_seed(request.seed);
     sd_ctx->sd->sampler_rng->manual_seed(request.seed);
     sd_ctx->sd->set_flow_shift(sd_vid_gen_params->sample_params.flow_shift);
-    sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count);
+    const auto lora_result = sd_ctx->sd->apply_loras(sd_vid_gen_params->loras,
+                                                     sd_vid_gen_params->lora_count);
+    if (has_ltx_reference &&
+        (!lora_result.all_requested_applied || !lora_result.diffusion_lora_applied)) {
+        LOG_ERROR("LTX IC-LoRA reference conditioning requires a successfully applied diffusion LoRA");
+        return false;
+    }
     sd_ctx->sd->reset_generation_extensions();
 
     SamplePlan plan(sd_ctx, sd_vid_gen_params, request);
@@ -7138,7 +7197,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                            latents.audio_length,
                                                            static_cast<float>(request.fps),
                                                            request.cache_params,
-                                                           latents.video_positions);
+                                                           latents.video_positions,
+                                                           latents.video_reference_token_count,
+                                                           sd_vid_gen_params->reference_attention_strength);
         int64_t sampling_end          = ggml_time_ms();
         if (x_t_sampled.empty()) {
             LOG_ERROR("sampling(high noise) failed after %.2fs", (sampling_end - sampling_start) * 1.0f / 1000);
@@ -7180,7 +7241,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                         latents.audio_length,
                                                         static_cast<float>(request.fps),
                                                         request.cache_params,
-                                                        latents.video_positions);
+                                                        latents.video_positions,
+                                                        latents.video_reference_token_count,
+                                                        sd_vid_gen_params->reference_attention_strength);
 
     int64_t sampling_end = ggml_time_ms();
     if (final_latent.empty()) {

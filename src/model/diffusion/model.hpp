@@ -85,6 +85,8 @@ struct LTXAVDiffusionExtra {
     int audio_length                         = 0;
     float frame_rate                         = 24.f;
     const sd::Tensor<float>* video_positions = nullptr;
+    int64_t video_reference_token_count      = 0;
+    float reference_attention_strength       = 1.f;
     const std::vector<int>* skip_video_self_attention_blocks = nullptr;
 };
 

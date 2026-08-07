@@ -184,6 +184,106 @@ struct LoraModel : public GGMLRunner {
         }
     }
 
+    static bool tensor_elements_match_or_pad(const ggml_tensor* adapter,
+                                             const ggml_tensor* model) {
+        if (adapter == nullptr || model == nullptr) {
+            return false;
+        }
+        if (ggml_nelements(adapter) == ggml_nelements(model)) {
+            return true;
+        }
+        return ggml_n_dims(adapter) == 2 &&
+               ggml_n_dims(model) == 2 &&
+               adapter->ne[0] == model->ne[0] &&
+               adapter->ne[1] > 0 &&
+               adapter->ne[1] < model->ne[1];
+    }
+
+    static std::optional<size_t> merged_lora_elements(
+        const ggml_tensor* down,
+        const ggml_tensor* up,
+        const ggml_tensor* mid = nullptr) {
+        if (down == nullptr || up == nullptr) {
+            return std::nullopt;
+        }
+        int down_dims = ggml_n_dims(down);
+        down_dims += down_dims % 2;
+        const int64_t down_rows = down->ne[down_dims - 1];
+        const int64_t down_columns =
+            down_rows > 0 ? ggml_nelements(down) / down_rows : 0;
+        const int up_dims     = ggml_n_dims(up);
+        const int64_t up_rows = up->ne[up_dims - 1];
+        const int64_t up_columns =
+            up_rows > 0 ? ggml_nelements(up) / up_rows : 0;
+        if (down_rows <= 0 || down_columns <= 0 || up_rows <= 0 ||
+            up_columns != down_rows) {
+            return std::nullopt;
+        }
+        size_t elements = static_cast<size_t>(down_columns) *
+                          static_cast<size_t>(up_rows);
+        if (mid != nullptr) {
+            const size_t rank_squared =
+                static_cast<size_t>(down_rows) *
+                static_cast<size_t>(down_rows);
+            if (rank_squared == 0 ||
+                ggml_nelements(mid) % rank_squared != 0) {
+                return std::nullopt;
+            }
+            elements *= ggml_nelements(mid) / rank_squared;
+        }
+        return elements;
+    }
+
+    size_t count_compatible_model_tensors(
+        const std::map<std::string, ggml_tensor*>& model_tensors) {
+        preprocess_lora_tensors(model_tensors);
+        size_t compatible = 0;
+        for (const auto& [model_name, model_tensor] : model_tensors) {
+            const std::string prefix = "lora." + model_name;
+            auto raw                 = lora_tensors.find(prefix + ".diff");
+            if (raw != lora_tensors.end() &&
+                tensor_elements_match_or_pad(raw->second, model_tensor)) {
+                ++compatible;
+                continue;
+            }
+
+            for (int index = 0;; ++index) {
+                const std::string indexed =
+                    index == 0 ? prefix : prefix + "." + std::to_string(index);
+                auto down = lora_tensors.find(indexed + ".lora_down");
+                auto up   = lora_tensors.find(indexed + ".lora_up");
+                if (down == lora_tensors.end() &&
+                    up == lora_tensors.end()) {
+                    break;
+                }
+                if (down == lora_tensors.end() ||
+                    up == lora_tensors.end()) {
+                    continue;
+                }
+
+                auto mid                   = lora_tensors.find(indexed + ".lora_mid");
+                const auto merged_elements = merged_lora_elements(
+                    down->second,
+                    up->second,
+                    mid == lora_tensors.end() ? nullptr : mid->second);
+                const bool shape_compatible =
+                    merged_elements.has_value() &&
+                    (*merged_elements ==
+                         static_cast<size_t>(ggml_nelements(model_tensor)) ||
+                     (ggml_n_dims(model_tensor) == 2 &&
+                      down->second->ne[0] == model_tensor->ne[0] &&
+                      *merged_elements <
+                          static_cast<size_t>(
+                              ggml_nelements(model_tensor))));
+                if (shape_compatible) {
+                    ++compatible;
+                    break;
+                }
+            }
+        }
+        return compatible;
+    }
+
     ggml_tensor* get_lora_weight_diff(const std::string& model_tensor_name, ggml_context* ctx, ggml_backend_t backend) {
         ggml_tensor* updown = nullptr;
         int index           = 0;
@@ -944,7 +1044,7 @@ struct LoraModel : public GGMLRunner {
         return gf;
     }
 
-    void apply(std::map<std::string, ggml_tensor*> model_tensors,
+    bool apply(std::map<std::string, ggml_tensor*> model_tensors,
                const std::set<std::string>& model_tensor_names,
                SDVersion version,
                int n_threads,
@@ -962,10 +1062,11 @@ struct LoraModel : public GGMLRunner {
         }
         original_tensor_to_final_tensor.clear();
         GGMLRunner::free_compute_buffer();
+        return !applied_lora_tensors.empty();
     }
 
-    void apply(std::map<std::string, ggml_tensor*> model_tensors, SDVersion version, int n_threads, bool warn_unused = true) {
-        apply(model_tensors, tensor_names(model_tensors), version, n_threads, warn_unused);
+    bool apply(std::map<std::string, ggml_tensor*> model_tensors, SDVersion version, int n_threads, bool warn_unused = true) {
+        return apply(model_tensors, tensor_names(model_tensors), version, n_threads, warn_unused);
     }
 
     void stat(bool at_runntime = false) {
