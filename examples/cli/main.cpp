@@ -787,6 +787,12 @@ int main(int argc, const char* argv[]) {
             }
             gen_params.ref_images.push_back(std::move(ref_image));
         }
+        // Reference validation is keyed to the owned payload forwarded to the
+        // C API. Re-run it after CLI paths have been materialized into that
+        // payload, matching the server request path.
+        if (!gen_params.validate(cli_params.mode)) {
+            return 1;
+        }
     }
 
     if (!gen_params.ref_video_paths.empty()) {
