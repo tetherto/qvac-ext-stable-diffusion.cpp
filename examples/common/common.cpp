@@ -2171,7 +2171,7 @@ bool SDGenerationParams::validate(SDMode mode) {
         return false;
     }
 
-    if (mode == VID_GEN && !ref_image_paths.empty()) {
+    if (mode == VID_GEN && !ref_images.empty()) {
         if (!std::isfinite(reference_attention_strength) ||
             reference_attention_strength < 0.f ||
             reference_attention_strength > 1.f) {
