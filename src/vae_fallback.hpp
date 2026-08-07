@@ -30,10 +30,12 @@ namespace sd {
     };
 
     struct VaeGraphRouteDecision {
-        VaeGraphRoute route        = VaeGraphRoute::CONFIGURED_BACKEND;
-        VaeGraphRouteReason reason = VaeGraphRouteReason::FALLBACK_DISABLED;
-        size_t required_bytes      = 0;
-        size_t budget_bytes        = std::numeric_limits<size_t>::max();
+        VaeGraphRoute route                = VaeGraphRoute::CONFIGURED_BACKEND;
+        VaeGraphRouteReason reason         = VaeGraphRouteReason::FALLBACK_DISABLED;
+        size_t required_bytes              = 0;
+        size_t compute_buffer_bytes        = 0;
+        size_t pending_runtime_param_bytes = 0;
+        size_t budget_bytes                = std::numeric_limits<size_t>::max();
 
         bool use_cpu_fallback() const {
             return route == VaeGraphRoute::CPU_FALLBACK;
@@ -60,10 +62,25 @@ namespace sd {
                                                         bool fallback_enabled,
                                                         bool runtime_is_cpu,
                                                         bool cpu_params_available,
-                                                        bool has_stateful_cache) {
+                                                        bool has_stateful_cache,
+                                                        size_t pending_runtime_param_bytes = 0) {
         VaeGraphRouteDecision decision;
-        decision.required_bytes = required_bytes;
-        decision.budget_bytes   = vae_fallback_budget(capacity);
+        decision.compute_buffer_bytes = required_bytes;
+        decision.pending_runtime_param_bytes =
+            pending_runtime_param_bytes;
+        decision.required_bytes =
+            pending_runtime_param_bytes >
+                    std::numeric_limits<size_t>::max() - required_bytes
+                ? std::numeric_limits<size_t>::max()
+                : required_bytes + pending_runtime_param_bytes;
+        decision.budget_bytes =
+            capacity.free_memory_bytes > 0
+                ? vae_fallback_scaled_budget(capacity.free_memory_bytes,
+                                             capacity.free_memory_ratio)
+                : std::numeric_limits<size_t>::max();
+        const bool within_capacity =
+            required_bytes <= capacity.max_buffer_bytes &&
+            decision.required_bytes <= decision.budget_bytes;
 
         if (!fallback_enabled) {
             decision.reason = VaeGraphRouteReason::FALLBACK_DISABLED;
@@ -71,7 +88,7 @@ namespace sd {
             decision.reason = VaeGraphRouteReason::RUNTIME_ALREADY_CPU;
         } else if (!cpu_params_available) {
             decision.reason = VaeGraphRouteReason::CPU_PARAMS_UNAVAILABLE;
-        } else if (required_bytes <= decision.budget_bytes) {
+        } else if (within_capacity) {
             decision.reason = VaeGraphRouteReason::WITHIN_CAPACITY;
         } else if (has_stateful_cache) {
             decision.reason = VaeGraphRouteReason::STATEFUL_GRAPH;

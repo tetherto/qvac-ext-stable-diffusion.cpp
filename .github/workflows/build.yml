@@ -83,8 +83,11 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON
+          cmake .. -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_TESTS=ON
           cmake --build . --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
       - name: Get commit hash
         id: commit

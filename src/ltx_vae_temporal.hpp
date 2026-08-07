@@ -11,6 +11,9 @@ namespace LTXVAE {
 
     constexpr int LTX_ENCODER_TEMPORAL_LEVELS = 3;
     constexpr int LTX_DECODER_TEMPORAL_LEVELS = 3;
+    constexpr int LTX_MIN_VIDEO_TENSOR_RANK   = 4;
+    constexpr int LTX_VIDEO_TENSOR_RANK       = 5;
+    constexpr int LTX_TEMPORAL_AXIS           = 2;
 
     enum class DecoderBackendKind {
         VULKAN,
@@ -31,6 +34,16 @@ namespace LTXVAE {
                    : DecoderExecutionMode::DEFAULT;
     }
 
+    inline bool should_use_decoder_temporal_tiling(bool decode_graph,
+                                                   bool temporal_tiling_enabled,
+                                                   int tensor_rank,
+                                                   int64_t latent_frames) {
+        return decode_graph &&
+               temporal_tiling_enabled &&
+               tensor_rank == LTX_VIDEO_TENSOR_RANK &&
+               latent_frames > 1;
+    }
+
     inline int64_t ltx_decoder_temporal_output_frames(int64_t latent_frames) {
         return latent_frames > 0 ? 1 + (latent_frames - 1) * 8 : 0;
     }
@@ -48,7 +61,7 @@ namespace LTXVAE {
 
         DecoderConvPhase advance(int64_t input_frames, bool final) {
             DecoderConvPhase phase;
-            phase.input_frames  = std::max<int64_t>(0, input_frames);
+            phase.input_frames   = std::max<int64_t>(0, input_frames);
             phase.started_before = started;
             phase.final          = final;
 
@@ -120,7 +133,7 @@ namespace LTXVAE {
         std::vector<DecoderResidualTemporalState> residuals;
         std::array<DecoderUpsampleTemporalState,
                    LTX_DECODER_TEMPORAL_LEVELS>
-            upsamplers = {};
+            upsamplers                 = {};
         int64_t consumed_latent_frames = 0;
         int64_t emitted_frames         = 0;
 
@@ -141,8 +154,8 @@ namespace LTXVAE {
                 residuals.resize(index + 1);
             }
             return residuals[index].advance(input_frames,
-                                             output_frames,
-                                             final);
+                                            output_frames,
+                                            final);
         }
 
         DecoderUpsamplePhase advance_upsampler(size_t index,
@@ -195,14 +208,32 @@ namespace LTXVAE {
         size_t cache_bytes      = 0;
     };
 
+    inline bool encoder_phase_fits_capacity(size_t compute_bytes,
+                                            size_t state_bytes,
+                                            size_t runtime_param_bytes,
+                                            size_t max_buffer_bytes,
+                                            size_t free_budget_bytes) {
+        if (compute_bytes > max_buffer_bytes ||
+            state_bytes > max_buffer_bytes ||
+            runtime_param_bytes > free_budget_bytes) {
+            return false;
+        }
+        size_t available = free_budget_bytes - runtime_param_bytes;
+        if (state_bytes > available) {
+            return false;
+        }
+        available -= state_bytes;
+        return compute_bytes <= available;
+    }
+
     struct DecoderCapacityPlan {
-        bool fits = false;
-        size_t max_buffer_bytes  = std::numeric_limits<size_t>::max();
-        size_t free_budget_bytes = std::numeric_limits<size_t>::max();
-        size_t runtime_param_bytes = 0;
-        size_t output_writer_bytes = 0;
-        size_t max_compute_bytes   = 0;
-        size_t max_cache_bytes     = 0;
+        bool fits                                 = false;
+        size_t max_buffer_bytes                   = std::numeric_limits<size_t>::max();
+        size_t free_budget_bytes                  = std::numeric_limits<size_t>::max();
+        size_t runtime_param_bytes                = 0;
+        size_t output_writer_bytes                = 0;
+        size_t max_compute_bytes                  = 0;
+        size_t max_cache_bytes                    = 0;
         std::array<size_t, 4> phase_compute_bytes = {};
     };
 
@@ -254,7 +285,7 @@ namespace LTXVAE {
         // Cache replacement temporarily owns both old and new contiguous
         // buffers. Include that peak together with graph and resident params.
         size_t live_bytes = runtime_param_bytes;
-        plan.fits = plan.fits &&
+        plan.fits         = plan.fits &&
                     decoder_size_add_fits(live_bytes,
                                           plan.max_compute_bytes,
                                           free_budget_bytes,
@@ -298,8 +329,8 @@ namespace LTXVAE {
     }
 
     struct EncoderTemporalPhase {
-        int64_t input_frames  = 0;
-        int64_t output_frames = 0;
+        int64_t input_frames                                                 = 0;
+        int64_t output_frames                                                = 0;
         std::array<int64_t, LTX_ENCODER_TEMPORAL_LEVELS> level_input_frames  = {};
         std::array<int64_t, LTX_ENCODER_TEMPORAL_LEVELS> level_output_frames = {};
         std::array<bool, LTX_ENCODER_TEMPORAL_LEVELS> first_frame            = {};
@@ -310,8 +341,8 @@ namespace LTXVAE {
     struct EncoderTemporalState {
         std::array<bool, LTX_ENCODER_TEMPORAL_LEVELS> started = {};
         std::array<bool, LTX_ENCODER_TEMPORAL_LEVELS> pending = {};
-        int64_t consumed_frames = 0;
-        int64_t emitted_frames  = 0;
+        int64_t consumed_frames                               = 0;
+        int64_t emitted_frames                                = 0;
 
         EncoderTemporalPhase advance(int64_t frames) {
             EncoderTemporalPhase phase;
@@ -355,9 +386,9 @@ namespace LTXVAE {
     };
 
     struct EncoderChunkPlan {
-        bool exact = false;
-        int64_t total_frames = 0;
-        int first_chunk_frames = 0;
+        bool exact              = false;
+        int64_t total_frames    = 0;
+        int first_chunk_frames  = 0;
         int continuation_frames = 0;
         std::vector<EncoderTemporalPhase> chunks;
 

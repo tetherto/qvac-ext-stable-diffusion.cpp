@@ -1,8 +1,8 @@
+#include "ggml.h"
 #include "ltx_vae_temporal.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -27,9 +27,9 @@ namespace {
     void assert_close(const Values& expected,
                       const Values& actual,
                       float tolerance = 1e-6f) {
-        assert(expected.size() == actual.size());
+        GGML_ASSERT(expected.size() == actual.size());
         for (size_t i = 0; i < expected.size(); ++i) {
-            assert(std::fabs(expected[i] - actual[i]) <= tolerance);
+            GGML_ASSERT(std::fabs(expected[i] - actual[i]) <= tolerance);
         }
     }
 
@@ -44,7 +44,7 @@ namespace {
                 final);
             Values padded;
             if (phase.started_before) {
-                assert(cache.size() == 2);
+                GGML_ASSERT(cache.size() == 2);
                 padded = cache;
                 padded.insert(padded.end(), input.begin(), input.end());
             } else if (!input.empty()) {
@@ -55,7 +55,7 @@ namespace {
                 padded.push_back(padded.back());
                 right_pads++;
             } else if (!final && !padded.empty()) {
-                assert(padded.size() >= 2);
+                GGML_ASSERT(padded.size() >= 2);
                 cache.assign(padded.end() - 2, padded.end());
             }
 
@@ -65,8 +65,8 @@ namespace {
                                  0.5f * padded[i + 1] +
                                  0.75f * padded[i + 2]);
             }
-            assert(static_cast<int64_t>(output.size()) ==
-                   phase.output_frames);
+            GGML_ASSERT(static_cast<int64_t>(output.size()) ==
+                        phase.output_frames);
             if (final) {
                 cache.clear();
             }
@@ -89,20 +89,20 @@ namespace {
                 }
                 branch = conv2.run(branch, final);
             }
-            assert(temporal.advance(
+            GGML_ASSERT(temporal.advance(
                 static_cast<int64_t>(input.size()),
                 static_cast<int64_t>(branch.size()),
                 final));
-            assert(static_cast<int64_t>(pending.size()) >=
-                   static_cast<int64_t>(branch.size()));
+            GGML_ASSERT(static_cast<int64_t>(pending.size()) >=
+                        static_cast<int64_t>(branch.size()));
             for (size_t i = 0; i < branch.size(); ++i) {
                 branch[i] += pending[i];
             }
             pending.erase(pending.begin(),
                           pending.begin() +
                               static_cast<std::ptrdiff_t>(branch.size()));
-            assert(static_cast<int64_t>(pending.size()) ==
-                   temporal.pending_frames);
+            GGML_ASSERT(static_cast<int64_t>(pending.size()) ==
+                        temporal.pending_frames);
             return branch;
         }
     };
@@ -121,11 +121,11 @@ namespace {
                 output.push_back(value + 0.125f);
             }
             if (phase.drop_first) {
-                assert(!output.empty());
+                GGML_ASSERT(!output.empty());
                 output.erase(output.begin());
             }
-            assert(static_cast<int64_t>(output.size()) ==
-                   phase.output_frames);
+            GGML_ASSERT(static_cast<int64_t>(output.size()) ==
+                        phase.output_frames);
             return output;
         }
     };
@@ -197,15 +197,15 @@ namespace {
         int64_t begin = 0;
         for (size_t i = 0; i < parts.size(); ++i) {
             const int64_t end = begin + parts[i];
-            assert(end <= static_cast<int64_t>(input.size()));
+            GGML_ASSERT(end <= static_cast<int64_t>(input.size()));
             Values chunk(input.begin() + begin, input.begin() + end);
             Values emitted = decoder.run(std::move(chunk),
                                          i + 1 == parts.size());
             output.insert(output.end(), emitted.begin(), emitted.end());
             begin = end;
         }
-        assert(begin == static_cast<int64_t>(input.size()));
-        assert(decoder.clean());
+        GGML_ASSERT(begin == static_cast<int64_t>(input.size()));
+        GGML_ASSERT(decoder.clean());
         if (decoder_out != nullptr) {
             *decoder_out = std::move(decoder);
         }
@@ -234,18 +234,18 @@ int main() {
     // Decoder routing is backend-derived and has no caller-controlled mode.
     // Vulkan always selects exact stateful decoding; existing Metal, CUDA,
     // and other backend schedules remain on their default path.
-    assert(LTXVAE::decoder_execution_mode(
-               LTXVAE::DecoderBackendKind::VULKAN) ==
-           LTXVAE::DecoderExecutionMode::EXACT_STATEFUL);
-    assert(LTXVAE::decoder_execution_mode(
-               LTXVAE::DecoderBackendKind::METAL) ==
-           LTXVAE::DecoderExecutionMode::DEFAULT);
-    assert(LTXVAE::decoder_execution_mode(
-               LTXVAE::DecoderBackendKind::CUDA) ==
-           LTXVAE::DecoderExecutionMode::DEFAULT);
-    assert(LTXVAE::decoder_execution_mode(
-               LTXVAE::DecoderBackendKind::OTHER) ==
-           LTXVAE::DecoderExecutionMode::DEFAULT);
+    GGML_ASSERT(LTXVAE::decoder_execution_mode(
+                    LTXVAE::DecoderBackendKind::VULKAN) ==
+                LTXVAE::DecoderExecutionMode::EXACT_STATEFUL);
+    GGML_ASSERT(LTXVAE::decoder_execution_mode(
+                    LTXVAE::DecoderBackendKind::METAL) ==
+                LTXVAE::DecoderExecutionMode::DEFAULT);
+    GGML_ASSERT(LTXVAE::decoder_execution_mode(
+                    LTXVAE::DecoderBackendKind::CUDA) ==
+                LTXVAE::DecoderExecutionMode::DEFAULT);
+    GGML_ASSERT(LTXVAE::decoder_execution_mode(
+                    LTXVAE::DecoderBackendKind::OTHER) ==
+                LTXVAE::DecoderExecutionMode::DEFAULT);
 
     // A kernel-3 noncausal convolution is identical for every partition,
     // including single-frame chunks and a final pending-only flush.
@@ -258,7 +258,7 @@ int main() {
         for (uint64_t mask = 0; mask < partition_count; ++mask) {
             StreamingConv streamed;
             Values actual;
-            int64_t begin = 0;
+            int64_t begin    = 0;
             const auto parts = partition_from_mask(frames, mask);
             for (size_t i = 0; i < parts.size(); ++i) {
                 Values chunk(input.begin() + begin,
@@ -272,8 +272,8 @@ int main() {
                 begin += parts[i];
             }
             assert_close(expected, actual);
-            assert(streamed.right_pads == 1);
-            assert(streamed.cache.empty());
+            GGML_ASSERT(streamed.right_pads == 1);
+            GGML_ASSERT(streamed.cache.empty());
         }
     }
 
@@ -282,9 +282,9 @@ int main() {
         const Values input = make_input(frames);
         ToyDecoder monolithic_decoder;
         const Values expected = monolithic_decoder.run(input, true);
-        assert(static_cast<int64_t>(expected.size()) ==
-               LTXVAE::ltx_decoder_temporal_output_frames(frames));
-        assert(monolithic_decoder.clean());
+        GGML_ASSERT(static_cast<int64_t>(expected.size()) ==
+                    LTXVAE::ltx_decoder_temporal_output_frames(frames));
+        GGML_ASSERT(monolithic_decoder.clean());
 
         if (frames <= 9) {
             const uint64_t partition_count =
@@ -311,32 +311,32 @@ int main() {
             assert_close(expected, run_partitioned(input, parts));
         }
     }
-    assert(LTXVAE::ltx_decoder_temporal_output_frames(28) == 217);
+    GGML_ASSERT(LTXVAE::ltx_decoder_temporal_output_frames(28) == 217);
 
     // Empty and partial emissions preserve residual queues and each upsampler
     // drops its special first output only once globally.
     ToyDecoder partial;
     Values first = partial.run({1.0f}, false);
-    assert(first.empty());
+    GGML_ASSERT(first.empty());
     Values second = partial.run({2.0f}, false);
-    assert(second.empty());
+    GGML_ASSERT(second.empty());
     Values final = partial.run({3.0f}, true);
-    assert(final.size() == 17);
-    assert(partial.clean());
-    assert(partial.right_pad_count() == 13);
+    GGML_ASSERT(final.size() == 17);
+    GGML_ASSERT(partial.clean());
+    GGML_ASSERT(partial.right_pad_count() == 13);
     for (const auto& upsampler : partial.upsamplers) {
-        assert(upsampler.temporal.dropped_first);
+        GGML_ASSERT(upsampler.temporal.dropped_first);
     }
 
     // Reset/repeated runs own their caches and do not retain stale state.
     const Values repeated_input = make_input(9);
-    const Values first_run = run_partitioned(repeated_input, {1, 3, 5});
-    const Values second_run = run_partitioned(repeated_input, {2, 2, 2, 3});
+    const Values first_run      = run_partitioned(repeated_input, {1, 3, 5});
+    const Values second_run     = run_partitioned(repeated_input, {2, 2, 2, 3});
     assert_close(first_run, second_run);
 
     // Capacity preflight checks every graph class and rejects before state if
     // compute, cache, writer, or replacement peak exceeds the limit.
-    constexpr size_t MIB = 1024ull * 1024ull;
+    constexpr size_t MIB                               = 1024ull * 1024ull;
     std::vector<LTXVAE::DecoderCapacitySample> samples = {
         {LTXVAE::DecoderGraphPhase::INITIAL, 500 * MIB, 100 * MIB},
         {LTXVAE::DecoderGraphPhase::STEADY, 2100 * MIB, 280 * MIB},
@@ -349,49 +349,49 @@ int main() {
         900 * MIB,
         4096 * MIB,
         4096 * MIB);
-    assert(fits.fits);
-    assert(fits.max_compute_bytes == 2300 * MIB);
-    assert(fits.max_cache_bytes == 280 * MIB);
+    GGML_ASSERT(fits.fits);
+    GGML_ASSERT(fits.max_compute_bytes == 2300 * MIB);
+    GGML_ASSERT(fits.max_cache_bytes == 280 * MIB);
 
     samples.back().compute_bytes = 4096 * MIB + 1;
-    assert(!LTXVAE::make_decoder_capacity_plan(
-                samples,
-                0,
-                900 * MIB,
-                4096 * MIB,
-                std::numeric_limits<size_t>::max())
-                .fits);
+    GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
+                     samples,
+                     0,
+                     900 * MIB,
+                     4096 * MIB,
+                     std::numeric_limits<size_t>::max())
+                     .fits);
     samples.back().compute_bytes = 2300 * MIB;
-    assert(!LTXVAE::make_decoder_capacity_plan(
-                samples,
-                0,
-                4096 * MIB + 1,
-                4096 * MIB,
-                std::numeric_limits<size_t>::max())
-                .fits);
+    GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
+                     samples,
+                     0,
+                     4096 * MIB + 1,
+                     4096 * MIB,
+                     std::numeric_limits<size_t>::max())
+                     .fits);
     samples[1].cache_bytes = 4096 * MIB + 1;
-    assert(!LTXVAE::make_decoder_capacity_plan(
-                samples,
-                0,
-                900 * MIB,
-                4096 * MIB,
-                std::numeric_limits<size_t>::max())
-                .fits);
+    GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
+                     samples,
+                     0,
+                     900 * MIB,
+                     4096 * MIB,
+                     std::numeric_limits<size_t>::max())
+                     .fits);
     samples[1].cache_bytes = 280 * MIB;
-    assert(!LTXVAE::make_decoder_capacity_plan(
-                samples,
-                100 * MIB,
-                900 * MIB,
-                4096 * MIB,
-                2859 * MIB)
-                .fits);
+    GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
+                     samples,
+                     100 * MIB,
+                     900 * MIB,
+                     4096 * MIB,
+                     2859 * MIB)
+                     .fits);
 
     // A synthetic reset-at-chunk decoder has a boundary seam; exact stateful
     // output remains partition invariant and therefore has zero seam error.
     const Values seam_input = make_input(9);
     ToyDecoder oracle_decoder;
     const Values oracle = oracle_decoder.run(seam_input, true);
-    const Values exact = run_partitioned(seam_input, {3, 3, 3});
+    const Values exact  = run_partitioned(seam_input, {3, 3, 3});
     assert_close(oracle, exact);
     Values reset;
     for (int64_t begin = 0; begin < 9; begin += 3) {
@@ -406,6 +406,6 @@ int main() {
         reset_error = std::max(reset_error,
                                std::fabs(reset[i] - oracle[i]));
     }
-    assert(reset_error > 1e-3f);
+    GGML_ASSERT(reset_error > 1e-3f);
     return 0;
 }

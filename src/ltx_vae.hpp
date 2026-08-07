@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include "ltxv.hpp"
 #include "ltx_vae_temporal.hpp"
+#include "ltxv.hpp"
 #include "vae.hpp"
 #include "wan.hpp"
 
@@ -28,11 +28,11 @@ namespace LTXVAE {
         std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> previous_pending_h = {};
         std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> next_pending_x     = {};
         std::array<ggml_tensor*, LTX_ENCODER_TEMPORAL_LEVELS> next_pending_h     = {};
-        size_t conv_index = 0;
-        int temporal_level = 0;
-        bool allow_missing_history = false;
-        bool preflight             = false;
-        bool exact                 = true;
+        size_t conv_index                                                        = 0;
+        int temporal_level                                                       = 0;
+        bool allow_missing_history                                               = false;
+        bool preflight                                                           = false;
+        bool exact                                                               = true;
     };
 
     struct DecoderStreamingGraphState {
@@ -184,20 +184,20 @@ namespace LTXVAE {
                     state.exact = false;
                 }
                 auto first_frame = ggml_ext_slice(ctx->ggml_ctx, x, 2, 0, 1);
-                history         = first_frame;
+                history          = first_frame;
                 for (int i = 1; i < pad; ++i) {
                     history = ggml_concat(ctx->ggml_ctx, history, first_frame, 2);
                 }
             }
 
             GGML_ASSERT(history->ne[2] == pad);
-            auto padded = pad > 0 ? ggml_concat(ctx->ggml_ctx, history, x, 2) : x;
+            auto padded       = pad > 0 ? ggml_concat(ctx->ggml_ctx, history, x, 2) : x;
             auto next_history = ggml_ext_slice(ctx->ggml_ctx,
                                                padded,
                                                2,
                                                padded->ne[2] - pad,
                                                padded->ne[2]);
-            next_history = ggml_cont(ctx->ggml_ctx, next_history);
+            next_history      = ggml_cont(ctx->ggml_ctx, next_history);
             state.next_conv_history.push_back(next_history);
             state.conv_index++;
             return conv->forward(ctx, padded);
@@ -208,9 +208,9 @@ namespace LTXVAE {
             ggml_tensor* x,
             DecoderStreamingGraphState& state) {
             GGML_ASSERT(state.temporal_state != nullptr);
-            const size_t index = state.conv_index++;
+            const size_t index         = state.conv_index++;
             const int64_t input_frames = x == nullptr ? 0 : x->ne[2];
-            const auto phase = state.temporal_state->advance_convolution(
+            const auto phase           = state.temporal_state->advance_convolution(
                 index,
                 input_frames,
                 state.final);
@@ -259,7 +259,7 @@ namespace LTXVAE {
                                            2,
                                            padded->ne[2] - 1,
                                            padded->ne[2]);
-                padded = ggml_concat(ctx->ggml_ctx, padded, last, 2);
+                padded    = ggml_concat(ctx->ggml_ctx, padded, last, 2);
             } else {
                 if (padded->ne[2] < 2) {
                     state.exact = false;
@@ -536,7 +536,7 @@ namespace LTXVAE {
                                              4,
                                              1,
                                              false);
-                shift1 = reshape_channel_broadcast(
+                shift1      = reshape_channel_broadcast(
                     ctx->ggml_ctx,
                     ggml_cont(ctx->ggml_ctx, chunks[0]));
                 scale1 = reshape_channel_broadcast(
@@ -747,9 +747,9 @@ namespace LTXVAE {
                 auto resnet = std::dynamic_pointer_cast<ResnetBlock3D>(
                     blocks["res_blocks." + std::to_string(i)]);
                 x = resnet->forward_decoder_chunk(ctx,
-                                                   x,
-                                                   timestep_embed,
-                                                   state);
+                                                  x,
+                                                  timestep_embed,
+                                                  state);
                 if (x == nullptr) {
                     return nullptr;
                 }
@@ -777,9 +777,9 @@ namespace LTXVAE {
                 blocks["res_blocks." +
                        std::to_string(residual_index)]);
             return resnet->forward_decoder_chunk(ctx,
-                                                  x,
-                                                  timestep_embed,
-                                                  state);
+                                                 x,
+                                                 timestep_embed,
+                                                 state);
         }
     };
 
@@ -872,14 +872,14 @@ namespace LTXVAE {
                 return nullptr;
             }
             auto conv = std::dynamic_pointer_cast<CausalConv3d>(blocks["conv"]);
-            x = conv->forward_decoder_chunk(ctx, x, state);
+            x         = conv->forward_decoder_chunk(ctx, x, state);
             if (x == nullptr) {
                 return nullptr;
             }
             LTXVAE::DecoderUpsamplePhase phase;
             if (factor_t > 1) {
                 const size_t upsample_index = state.upsample_index++;
-                phase = state.temporal_state->advance_upsampler(
+                phase                       = state.temporal_state->advance_upsampler(
                     upsample_index,
                     x->ne[2]);
                 if (upsample_index >= LTX_DECODER_TEMPORAL_LEVELS) {
@@ -922,12 +922,12 @@ namespace LTXVAE {
             GGML_ASSERT(out_channels % factor == 0);
 
             blocks["conv"]            = std::make_shared<CausalConv3d>(in_channels,
-                                                            out_channels / factor,
-                                                            3,
-                                                            std::tuple<int, int, int>{1, 1, 1},
-                                                            1,
-                                                            true,
-                                                            force_conv_prec_f32);
+                                                                       out_channels / factor,
+                                                                       3,
+                                                                       std::tuple<int, int, int>{1, 1, 1},
+                                                                       1,
+                                                                       true,
+                                                                       force_conv_prec_f32);
             blocks["skip_downsample"] = std::make_shared<WAN::AvgDown3D>(in_channels, out_channels, factor_t, factor_s);
             blocks["conv_downsample"] = std::make_shared<WAN::AvgDown3D>(out_channels / factor, out_channels, factor_t, factor_s);
         }
@@ -997,7 +997,7 @@ namespace LTXVAE {
                 h = ggml_concat(ctx->ggml_ctx, pending_h, h, 2);
             }
 
-            const int64_t grouped_frames = x->ne[2];
+            const int64_t grouped_frames  = x->ne[2];
             const int64_t complete_frames = grouped_frames - (phase.pending_after[level] ? 1 : 0);
             if (grouped_frames != phase.level_output_frames[level] * 2 +
                                       (phase.pending_after[level] ? 1 : 0)) {
@@ -1334,7 +1334,7 @@ namespace LTXVAE {
                     channels                                           = next_channels;
                 } else if (block.type == "compress_all_res") {
                     causal_conv_count++;
-                    int64_t next_channels = channels * block.multiplier;
+                    int64_t next_channels                              = channels * block.multiplier;
                     blocks["down_blocks." + std::to_string(block_idx)] = std::make_shared<SpaceToDepthDownsample>(channels,
                                                                                                                   next_channels,
                                                                                                                   2,
@@ -1422,7 +1422,7 @@ namespace LTXVAE {
                                                    last_channel->ne[1],
                                                    last_channel->ne[2],
                                                    latent_channels - 1);
-            auto repeated = ggml_repeat(ctx->ggml_ctx, last_channel, repeat_shape);
+            auto repeated     = ggml_repeat(ctx->ggml_ctx, last_channel, repeat_shape);
             return ggml_concat(ctx->ggml_ctx, x, repeated, 3);
         }
     };
@@ -1446,12 +1446,12 @@ namespace LTXVAE {
         };
 
         struct StreamingStage {
-            StreamingStageType type = StreamingStageType::CONV_IN;
-            int block_index         = -1;
+            StreamingStageType type     = StreamingStageType::CONV_IN;
+            int block_index             = -1;
             int residual_index_in_block = -1;
-            size_t conv_index       = 0;
-            size_t residual_index   = 0;
-            size_t upsample_index   = 0;
+            size_t conv_index           = 0;
+            size_t residual_index       = 0;
+            size_t upsample_index       = 0;
         };
 
         std::vector<StreamingStage> streaming_stages;
@@ -1489,7 +1489,7 @@ namespace LTXVAE {
                                                                                    conv_in_out_channels);
             int64_t channels                   = conv_in_out_channels;
 
-            blocks["conv_in"] = std::make_shared<CausalConv3d>(in_channels, channels, 3);
+            blocks["conv_in"]          = std::make_shared<CausalConv3d>(in_channels, channels, 3);
             size_t next_conv_index     = 0;
             size_t next_residual_index = 0;
             size_t next_upsample_index = 0;
@@ -1799,7 +1799,7 @@ namespace LTXVAE {
             if (stage_begin >= streaming_stages.size()) {
                 return x;
             }
-            ggml_tensor* output = nullptr;
+            ggml_tensor* output        = nullptr;
             const int64_t input_frames = x->ne[2];
             for (int64_t frame = 0; frame < input_frames; ++frame) {
                 if (frame > 0) {
@@ -1920,7 +1920,7 @@ namespace LTXVAE {
             state.residual_index = flush_stage.residual_index;
             state.upsample_index = flush_stage.upsample_index;
             state.final          = true;
-            ggml_tensor* x = execute_streaming_stage(
+            ggml_tensor* x       = execute_streaming_stage(
                 ctx,
                 nullptr,
                 scaled_timestep,
@@ -1973,11 +1973,11 @@ namespace LTXVAE {
                                                               patch_size);
             }
             blocks["decoder"]                = std::make_shared<Decoder>(version,
-                                                          tensor_storage_map,
-                                                          prefix,
-                                                          patch_size,
-                                                          false,
-                                                          timestep_conditioning);
+                                                                         tensor_storage_map,
+                                                                         prefix,
+                                                                         patch_size,
+                                                                         false,
+                                                                         timestep_conditioning);
             blocks["per_channel_statistics"] = std::make_shared<PerChannelStatistics>();
         }
 
@@ -2124,16 +2124,16 @@ namespace LTXVAE {
                 std::dynamic_pointer_cast<PerChannelStatistics>(
                     blocks["per_channel_statistics"]);
             auto latents = processor->un_normalize(ctx, z);
-            auto out = decoder->forward_decoder_chunk(ctx,
-                                                       latents,
-                                                       timestep,
-                                                       state);
+            auto out     = decoder->forward_decoder_chunk(ctx,
+                                                          latents,
+                                                          timestep,
+                                                          state);
             return out == nullptr
                        ? nullptr
                        : WAN::WanVAE::unpatchify(ctx->ggml_ctx,
-                                                out,
-                                                patch_size,
-                                                1);
+                                                 out,
+                                                 patch_size,
+                                                 1);
         }
 
         ggml_tensor* decode_stream_flush_stage(
@@ -2150,9 +2150,9 @@ namespace LTXVAE {
             return out == nullptr
                        ? nullptr
                        : WAN::WanVAE::unpatchify(ctx->ggml_ctx,
-                                                out,
-                                                patch_size,
-                                                1);
+                                                 out,
+                                                 patch_size,
+                                                 1);
         }
 
         ggml_tensor* encode(GGMLRunnerContext* ctx,
@@ -2208,10 +2208,10 @@ struct LTXVideoVAE : public VAE {
     static constexpr int MIN_ENCODER_CHUNK_FRAMES      = 9;
 
     bool decode_only;
-    bool temporal_tiling_enabled = false;
-    int temporal_tile_frames     = DEFAULT_TEMPORAL_TILE_FRAMES;
-    int temporal_tile_overlap    = DEFAULT_TEMPORAL_TILE_OVERLAP;
-    int encoder_chunk_frames     = DEFAULT_ENCODER_CHUNK_FRAMES;
+    bool temporal_tiling_enabled         = false;
+    int temporal_tile_frames             = DEFAULT_TEMPORAL_TILE_FRAMES;
+    int temporal_tile_overlap            = DEFAULT_TEMPORAL_TILE_OVERLAP;
+    int encoder_chunk_frames             = DEFAULT_ENCODER_CHUNK_FRAMES;
     bool encoder_chunk_frames_configured = false;
     int ltx_vae_version;
     bool timestep_conditioning;
@@ -2250,10 +2250,10 @@ struct LTXVideoVAE : public VAE {
     }
 
     void set_tiling_params(const sd_tiling_params_t& params) override {
-        temporal_tiling_enabled = params.temporal_tiling;
-        temporal_tile_frames    = DEFAULT_TEMPORAL_TILE_FRAMES;
-        temporal_tile_overlap   = DEFAULT_TEMPORAL_TILE_OVERLAP;
-        encoder_chunk_frames    = DEFAULT_ENCODER_CHUNK_FRAMES;
+        temporal_tiling_enabled         = params.temporal_tiling;
+        temporal_tile_frames            = DEFAULT_TEMPORAL_TILE_FRAMES;
+        temporal_tile_overlap           = DEFAULT_TEMPORAL_TILE_OVERLAP;
+        encoder_chunk_frames            = DEFAULT_ENCODER_CHUNK_FRAMES;
         encoder_chunk_frames_configured = false;
 
         for (const auto& [key, value] : parse_key_value_args(params.extra_tiling_args, "LTX VAE extra tiling arg")) {
@@ -2265,13 +2265,14 @@ struct LTXVideoVAE : public VAE {
             } else if (key == "temporal_tile_overlap") {
                 temporal_tile_overlap = std::max(0, parsed);
             } else if (key == "encoder_chunk_frames") {
-                encoder_chunk_frames = std::max(MIN_ENCODER_CHUNK_FRAMES, parsed);
+                encoder_chunk_frames            = std::max(MIN_ENCODER_CHUNK_FRAMES, parsed);
                 encoder_chunk_frames_configured = true;
                 if (parsed < MIN_ENCODER_CHUNK_FRAMES) {
-                    LOG_WARN("encoder_chunk_frames=%d is below the minimum exact production "
-                             "payload; using %d",
-                             parsed,
-                             MIN_ENCODER_CHUNK_FRAMES);
+                    LOG_WARN(
+                        "encoder_chunk_frames=%d is below the minimum exact production "
+                        "payload; using %d",
+                        parsed,
+                        MIN_ENCODER_CHUNK_FRAMES);
                 }
             } else {
                 LOG_WARN("ignoring unknown LTX VAE extra tiling arg '%s'", key.c_str());
@@ -2368,10 +2369,10 @@ struct LTXVideoVAE : public VAE {
 
     struct EncoderStreamingPlan {
         LTXVAE::EncoderChunkPlan temporal;
-        size_t max_compute_bytes = 0;
-        size_t max_cache_bytes   = 0;
+        size_t max_compute_bytes   = 0;
+        size_t max_cache_bytes     = 0;
         size_t runtime_param_bytes = 0;
-        size_t capacity_bytes    = std::numeric_limits<size_t>::max();
+        size_t capacity_bytes      = std::numeric_limits<size_t>::max();
     };
 
     struct DecoderStreamingPlan {
@@ -2385,7 +2386,7 @@ struct LTXVideoVAE : public VAE {
     };
 
     struct DecoderCacheSpec {
-        ggml_type type = GGML_TYPE_F32;
+        ggml_type type            = GGML_TYPE_F32;
         std::array<int64_t, 4> ne = {};
 
         bool valid() const {
@@ -2405,8 +2406,8 @@ struct LTXVideoVAE : public VAE {
 
         LTXVAE::EncoderStreamingGraphState state;
         const size_t expected_conv_count = vae.get_encoder_causal_conv_count();
-        state.allow_missing_history = phase.first_frame[0];
-        state.preflight             = preflight;
+        state.allow_missing_history      = phase.first_frame[0];
+        state.preflight                  = preflight;
         if (!preflight) {
             state.previous_conv_history.resize(
                 expected_conv_count,
@@ -2422,9 +2423,9 @@ struct LTXVideoVAE : public VAE {
             }
         }
 
-        auto runner_ctx  = get_context();
-        ggml_tensor* out = vae.encode_chunk(&runner_ctx, x, phase, state);
-        bool exact       = state.exact;
+        auto runner_ctx       = get_context();
+        ggml_tensor* out      = vae.encode_chunk(&runner_ctx, x, phase, state);
+        bool exact            = state.exact;
         const bool has_output = out != nullptr;
         if (has_output != (phase.output_frames > 0)) {
             exact = false;
@@ -2499,18 +2500,19 @@ struct LTXVideoVAE : public VAE {
             *state_bytes_out = state_bytes;
         }
         if (!exact) {
-            LOG_WARN("unable to build exact LTX VAE encoder chunk graph: "
-                     "input=%lld output=%lld has_output=%d conv=%zu/%d "
-                     "history=%zu temporal_levels=%d/%d state_exact=%d",
-                     (long long)phase.input_frames,
-                     (long long)phase.output_frames,
-                     has_output ? 1 : 0,
-                     state.conv_index,
-                     (int)expected_conv_count,
-                     state.next_conv_history.size(),
-                     state.temporal_level,
-                     expected_temporal_levels,
-                     state.exact ? 1 : 0);
+            LOG_WARN(
+                "unable to build exact LTX VAE encoder chunk graph: "
+                "input=%lld output=%lld has_output=%d conv=%zu/%d "
+                "history=%zu temporal_levels=%d/%d state_exact=%d",
+                (long long)phase.input_frames,
+                (long long)phase.output_frames,
+                has_output ? 1 : 0,
+                state.conv_index,
+                (int)expected_conv_count,
+                state.next_conv_history.size(),
+                state.temporal_level,
+                expected_temporal_levels,
+                state.exact ? 1 : 0);
         }
         return gf;
     }
@@ -2519,16 +2521,16 @@ struct LTXVideoVAE : public VAE {
                                const LTXVAE::EncoderTemporalPhase& phase,
                                size_t* compute_bytes,
                                size_t* state_bytes) {
-        bool exact      = false;
-        bool has_output = false;
+        bool exact               = false;
+        bool has_output          = false;
         size_t graph_state_bytes = 0;
-        auto get_graph = [&]() -> ggml_cgraph* {
+        auto get_graph           = [&]() -> ggml_cgraph* {
             return build_encoder_chunk_graph(x_chunk,
-                                             phase,
-                                             true,
-                                             &exact,
-                                             &has_output,
-                                             &graph_state_bytes);
+                                                       phase,
+                                                       true,
+                                                       &exact,
+                                                       &has_output,
+                                                       &graph_state_bytes);
         };
 
         ggml_cgraph* gf = nullptr;
@@ -2571,18 +2573,28 @@ struct LTXVideoVAE : public VAE {
                                         bool force_chunking,
                                         EncoderStreamingPlan* selected) {
         GGML_ASSERT(selected != nullptr);
-        const int64_t total_frames = input.shape()[2];
+        const int64_t total_frames             = input.shape()[2];
         const sd::VaeFallbackCapacity capacity = get_vae_fallback_capacity();
-        const size_t budget = sd::vae_fallback_budget(capacity);
+        const size_t budget                    = sd::vae_fallback_budget(capacity);
+        const size_t free_budget =
+            capacity.free_memory_bytes > 0
+                ? sd::vae_fallback_scaled_budget(capacity.free_memory_bytes,
+                                                 capacity.free_memory_ratio)
+                : std::numeric_limits<size_t>::max();
         const size_t runtime_param_bytes =
-            params_backend == runtime_backend ? 0 : get_params_buffer_size();
+            get_pending_runtime_params_size();
 
         size_t full_required = 0;
         if (!measure_full_graph(input, &full_required)) {
             return false;
         }
 
-        const bool capacity_driven = full_required > budget;
+        const bool capacity_driven =
+            !LTXVAE::encoder_phase_fits_capacity(full_required,
+                                                 0,
+                                                 runtime_param_bytes,
+                                                 capacity.max_buffer_bytes,
+                                                 free_budget);
         if (!force_chunking && !capacity_driven) {
             return false;
         }
@@ -2632,11 +2644,11 @@ struct LTXVideoVAE : public VAE {
                     start += phase.input_frames;
                     continue;
                 }
-                auto x_chunk = sd::ops::slice(input,
-                                              2,
-                                              start,
-                                              start + phase.input_frames);
-                size_t required = 0;
+                auto x_chunk       = sd::ops::slice(input,
+                                                    2,
+                                                    start,
+                                                    start + phase.input_frames);
+                size_t required    = 0;
                 size_t state_bytes = 0;
                 if (!measure_encoder_chunk(x_chunk, phase, &required, &state_bytes)) {
                     fits = false;
@@ -2645,19 +2657,12 @@ struct LTXVideoVAE : public VAE {
                 max_compute = std::max(max_compute, required);
                 max_cache   = std::max(max_cache, state_bytes);
 
-                const bool logical_fits =
-                    required <= capacity.max_buffer_bytes &&
-                    state_bytes <= capacity.max_buffer_bytes;
-                const size_t free_budget = capacity.free_memory_bytes > 0
-                                               ? sd::vae_fallback_scaled_budget(
-                                                     capacity.free_memory_bytes,
-                                                     capacity.free_memory_ratio)
-                                               : std::numeric_limits<size_t>::max();
-                const bool memory_fits =
-                    runtime_param_bytes <= free_budget &&
-                    state_bytes <= free_budget - runtime_param_bytes &&
-                    required <= free_budget - runtime_param_bytes - state_bytes;
-                if (!logical_fits || !memory_fits) {
+                if (!LTXVAE::encoder_phase_fits_capacity(
+                        required,
+                        state_bytes,
+                        runtime_param_bytes,
+                        capacity.max_buffer_bytes,
+                        free_budget)) {
                     fits = false;
                     break;
                 }
@@ -2667,11 +2672,11 @@ struct LTXVideoVAE : public VAE {
             if (!fits) {
                 continue;
             }
-            selected->temporal         = std::move(temporal);
-            selected->max_compute_bytes = max_compute;
-            selected->max_cache_bytes   = max_cache;
+            selected->temporal            = std::move(temporal);
+            selected->max_compute_bytes   = max_compute;
+            selected->max_cache_bytes     = max_cache;
             selected->runtime_param_bytes = runtime_param_bytes;
-            selected->capacity_bytes    = budget;
+            selected->capacity_bytes      = budget;
             return true;
         }
         return false;
@@ -2743,10 +2748,10 @@ struct LTXVideoVAE : public VAE {
         bool* has_output_out,
         int64_t* output_frames_out,
         size_t* state_bytes_out) {
-        ggml_cgraph* gf = new_graph_custom(20480);
-        ggml_tensor* z = z_chunk_tensor == nullptr
-                             ? nullptr
-                             : make_input(*z_chunk_tensor);
+        ggml_cgraph* gf       = new_graph_custom(20480);
+        ggml_tensor* z        = z_chunk_tensor == nullptr
+                                    ? nullptr
+                                    : make_input(*z_chunk_tensor);
         ggml_tensor* timestep = nullptr;
         if (timestep_conditioning) {
             timestep = make_input(decode_timestep_tensor);
@@ -2943,11 +2948,11 @@ struct LTXVideoVAE : public VAE {
         size_t* compute_bytes,
         size_t* state_bytes,
         int64_t* output_frames) {
-        bool exact      = false;
-        bool has_output = false;
-        size_t measured_state_bytes = 0;
+        bool exact                     = false;
+        bool has_output                = false;
+        size_t measured_state_bytes    = 0;
         int64_t measured_output_frames = 0;
-        auto get_graph = [&]() -> ggml_cgraph* {
+        auto get_graph                 = [&]() -> ggml_cgraph* {
             return build_decoder_stream_graph(
                 z_chunk_tensor,
                 flush_stage_index,
@@ -2990,7 +2995,8 @@ struct LTXVideoVAE : public VAE {
         const sd::Tensor<float>& input,
         DecoderStreamingPlan* selected) {
         GGML_ASSERT(selected != nullptr);
-        if (input.dim() < 4 || input.shape()[2] <= 0 ||
+        if (input.dim() < LTXVAE::LTX_MIN_VIDEO_TENSOR_RANK ||
+            input.shape()[LTXVAE::LTX_TEMPORAL_AXIS] <= 0 ||
             vae.get_decoder_temporal_upsample_count() !=
                 LTXVAE::LTX_DECODER_TEMPORAL_LEVELS) {
             return false;
@@ -3006,14 +3012,15 @@ struct LTXVideoVAE : public VAE {
         std::vector<DecoderCacheSpec> residual_cache_specs;
         std::vector<LTXVAE::DecoderCapacitySample> samples;
         std::vector<int64_t> chunk_output_frames;
-        const int64_t total_frames = input.shape()[2];
+        const int64_t total_frames =
+            input.shape()[LTXVAE::LTX_TEMPORAL_AXIS];
         for (int64_t frame = 0; frame < total_frames; ++frame) {
-            auto z_chunk = sd::ops::slice(input,
-                                          2,
-                                          frame,
-                                          frame + 1);
-            size_t compute_bytes = 0;
-            size_t state_bytes   = 0;
+            auto z_chunk          = sd::ops::slice(input,
+                                                   2,
+                                                   frame,
+                                                   frame + 1);
+            size_t compute_bytes  = 0;
+            size_t state_bytes    = 0;
             int64_t output_frames = 0;
             if (!measure_decoder_stream_graph(
                     &z_chunk,
@@ -3062,8 +3069,8 @@ struct LTXVideoVAE : public VAE {
         for (size_t flush_stage = 0;
              flush_stage < flush_stage_count;
              ++flush_stage) {
-            size_t compute_bytes = 0;
-            size_t state_bytes   = 0;
+            size_t compute_bytes  = 0;
+            size_t state_bytes    = 0;
             int64_t output_frames = 0;
             if (!measure_decoder_stream_graph(
                     nullptr,
@@ -3127,7 +3134,7 @@ struct LTXVideoVAE : public VAE {
         output_shape[1] *= get_scale_factor();
         output_shape[2] =
             LTXVAE::ltx_decoder_temporal_output_frames(total_frames);
-        output_shape[3] = 3;
+        output_shape[3]        = 3;
         size_t output_elements = 1;
         for (int64_t dimension : output_shape) {
             if (dimension <= 0 ||
@@ -3161,9 +3168,7 @@ struct LTXVideoVAE : public VAE {
                       capacity.free_memory_ratio)
                 : max_buffer_bytes;
         const size_t runtime_param_bytes =
-            params_backend == runtime_backend
-                ? 0
-                : get_params_buffer_size();
+            get_pending_runtime_params_size();
         auto capacity_plan = LTXVAE::make_decoder_capacity_plan(
             samples,
             runtime_param_bytes,
@@ -3237,19 +3242,19 @@ struct LTXVideoVAE : public VAE {
         std::vector<DecoderCacheSpec> conv_cache_specs;
         std::vector<DecoderCacheSpec> residual_cache_specs;
         int64_t output_offset = 0;
-        bool failed = false;
+        bool failed           = false;
 
         try {
             for (int64_t frame = 0;
                  frame < plan.total_latent_frames;
                  ++frame) {
-                auto z_chunk = sd::ops::slice(input,
-                                              2,
-                                              frame,
-                                              frame + 1);
-                bool exact       = false;
-                bool has_output  = false;
-                int64_t emitted  = 0;
+                auto z_chunk       = sd::ops::slice(input,
+                                                    2,
+                                                    frame,
+                                                    frame + 1);
+                bool exact         = false;
+                bool has_output    = false;
+                int64_t emitted    = 0;
                 size_t state_bytes = 0;
                 const int64_t expected_emitted =
                     plan.chunk_output_frames[static_cast<size_t>(frame)];
@@ -3321,9 +3326,9 @@ struct LTXVideoVAE : public VAE {
             for (size_t flush_stage = 0;
                  !failed && flush_stage < plan.flush_stage_count;
                  ++flush_stage) {
-                bool exact        = false;
-                bool has_output   = false;
-                int64_t emitted   = 0;
+                bool exact         = false;
+                bool has_output    = false;
+                int64_t emitted    = 0;
                 size_t state_bytes = 0;
                 const size_t plan_index =
                     static_cast<size_t>(plan.total_latent_frames) +
@@ -3469,21 +3474,22 @@ struct LTXVideoVAE : public VAE {
         const sd::Tensor<float>& input,
         size_t expected_dim,
         const EncoderStreamingPlan& plan) {
-        LOG_INFO("Using exact LTX VAE encoder streaming: first_payload=%d, "
-                 "continuation_payload=%d, total_frames=%lld, chunks=%zu, "
-                 "max_compute=%.2f MiB, state=%.2f MiB, runtime_params=%.2f MiB, "
-                 "budget=%.2f MiB (%zu bytes)",
-                 plan.temporal.first_chunk_frames,
-                 plan.temporal.continuation_frames,
-                 (long long)plan.temporal.total_frames,
-                 plan.temporal.chunks.size(),
-                 plan.max_compute_bytes / (1024.0 * 1024.0),
-                 plan.max_cache_bytes / (1024.0 * 1024.0),
-                 plan.runtime_param_bytes / (1024.0 * 1024.0),
-                 plan.capacity_bytes == std::numeric_limits<size_t>::max()
-                     ? 0.0
-                     : plan.capacity_bytes / (1024.0 * 1024.0),
-                 plan.capacity_bytes);
+        LOG_INFO(
+            "Using exact LTX VAE encoder streaming: first_payload=%d, "
+            "continuation_payload=%d, total_frames=%lld, chunks=%zu, "
+            "max_compute=%.2f MiB, state=%.2f MiB, runtime_params=%.2f MiB, "
+            "budget=%.2f MiB (%zu bytes)",
+            plan.temporal.first_chunk_frames,
+            plan.temporal.continuation_frames,
+            (long long)plan.temporal.total_frames,
+            plan.temporal.chunks.size(),
+            plan.max_compute_bytes / (1024.0 * 1024.0),
+            plan.max_cache_bytes / (1024.0 * 1024.0),
+            plan.runtime_param_bytes / (1024.0 * 1024.0),
+            plan.capacity_bytes == std::numeric_limits<size_t>::max()
+                ? 0.0
+                : plan.capacity_bytes / (1024.0 * 1024.0),
+            plan.capacity_bytes);
 
         free_cache_ctx_and_buffer();
         cache_tensor_map.clear();
@@ -3497,18 +3503,18 @@ struct LTXVideoVAE : public VAE {
                  ++chunk_index) {
                 const auto& phase = plan.temporal.chunks[chunk_index];
                 auto x_chunk      = sd::ops::slice(input,
-                                              2,
-                                              start,
-                                              start + phase.input_frames);
+                                                   2,
+                                                   start,
+                                                   start + phase.input_frames);
                 bool exact        = false;
                 bool has_output   = false;
-                auto get_graph = [&]() -> ggml_cgraph* {
+                auto get_graph    = [&]() -> ggml_cgraph* {
                     return build_encoder_chunk_graph(x_chunk,
-                                                     phase,
-                                                     false,
-                                                     &exact,
-                                                     &has_output,
-                                                     nullptr);
+                                                        phase,
+                                                        false,
+                                                        &exact,
+                                                        &has_output,
+                                                        nullptr);
                 };
 
                 auto result = GGMLRunner::compute<float>(
@@ -3535,29 +3541,30 @@ struct LTXVideoVAE : public VAE {
                                  : sd::ops::concat(output, chunk, 2);
                 }
 
-                LOG_INFO("LTX VAE encoder chunk %zu/%zu: input=[%lld,%lld), "
-                         "levels=%lld/%lld/%lld -> %lld/%lld/%lld, output=%lld, "
-                         "first=%d/%d/%d, pending=%d/%d/%d -> %d/%d/%d",
-                         chunk_index + 1,
-                         plan.temporal.chunks.size(),
-                         (long long)start,
-                         (long long)(start + phase.input_frames),
-                         (long long)phase.level_input_frames[0],
-                         (long long)phase.level_input_frames[1],
-                         (long long)phase.level_input_frames[2],
-                         (long long)phase.level_output_frames[0],
-                         (long long)phase.level_output_frames[1],
-                         (long long)phase.level_output_frames[2],
-                         (long long)phase.output_frames,
-                         phase.first_frame[0] ? 1 : 0,
-                         phase.first_frame[1] ? 1 : 0,
-                         phase.first_frame[2] ? 1 : 0,
-                         phase.pending_before[0] ? 1 : 0,
-                         phase.pending_before[1] ? 1 : 0,
-                         phase.pending_before[2] ? 1 : 0,
-                         phase.pending_after[0] ? 1 : 0,
-                         phase.pending_after[1] ? 1 : 0,
-                         phase.pending_after[2] ? 1 : 0);
+                LOG_INFO(
+                    "LTX VAE encoder chunk %zu/%zu: input=[%lld,%lld), "
+                    "levels=%lld/%lld/%lld -> %lld/%lld/%lld, output=%lld, "
+                    "first=%d/%d/%d, pending=%d/%d/%d -> %d/%d/%d",
+                    chunk_index + 1,
+                    plan.temporal.chunks.size(),
+                    (long long)start,
+                    (long long)(start + phase.input_frames),
+                    (long long)phase.level_input_frames[0],
+                    (long long)phase.level_input_frames[1],
+                    (long long)phase.level_input_frames[2],
+                    (long long)phase.level_output_frames[0],
+                    (long long)phase.level_output_frames[1],
+                    (long long)phase.level_output_frames[2],
+                    (long long)phase.output_frames,
+                    phase.first_frame[0] ? 1 : 0,
+                    phase.first_frame[1] ? 1 : 0,
+                    phase.first_frame[2] ? 1 : 0,
+                    phase.pending_before[0] ? 1 : 0,
+                    phase.pending_before[1] ? 1 : 0,
+                    phase.pending_before[2] ? 1 : 0,
+                    phase.pending_after[0] ? 1 : 0,
+                    phase.pending_after[1] ? 1 : 0,
+                    phase.pending_after[2] ? 1 : 0);
                 start += phase.input_frames;
             }
         } catch (const std::exception& error) {
@@ -3605,18 +3612,24 @@ struct LTXVideoVAE : public VAE {
         sd::Tensor<float> input = z;
         size_t expected_dim     = static_cast<size_t>(z.dim());
         if (!decode_graph) {
-            if (input.dim() == 4) {
-                input        = input.unsqueeze(2);
-                expected_dim = 5;
-            } else if (input.dim() != 5) {
+            if (input.dim() == LTXVAE::LTX_MIN_VIDEO_TENSOR_RANK) {
+                input        = input.unsqueeze(LTXVAE::LTX_TEMPORAL_AXIS);
+                expected_dim = LTXVAE::LTX_VIDEO_TENSOR_RANK;
+            } else if (input.dim() != LTXVAE::LTX_VIDEO_TENSOR_RANK) {
                 LOG_ERROR("LTX video VAE encoder expects 4D image or 5D video input, got dim=%lld",
                           (long long)input.dim());
                 return {};
             }
 
-            int64_t cropped_t = std::max<int64_t>(1, 1 + ((input.shape()[2] - 1) / 8) * 8);
-            if (cropped_t != input.shape()[2]) {
-                input = sd::ops::slice(input, 2, 0, cropped_t);
+            int64_t cropped_t = std::max<int64_t>(
+                1,
+                1 + ((input.shape()[LTXVAE::LTX_TEMPORAL_AXIS] - 1) / 8) * 8);
+            if (cropped_t !=
+                input.shape()[LTXVAE::LTX_TEMPORAL_AXIS]) {
+                input = sd::ops::slice(input,
+                                       LTXVAE::LTX_TEMPORAL_AXIS,
+                                       0,
+                                       cropped_t);
             }
         }
         const auto decoder_execution_mode =
@@ -3636,7 +3649,8 @@ struct LTXVideoVAE : public VAE {
         if (decode_graph &&
             decoder_execution_mode ==
                 LTXVAE::DecoderExecutionMode::EXACT_STATEFUL &&
-            input.dim() >= 4 && input.shape()[2] > 0) {
+            input.dim() >= LTXVAE::LTX_MIN_VIDEO_TENSOR_RANK &&
+            input.shape()[LTXVAE::LTX_TEMPORAL_AXIS] > 0) {
             DecoderStreamingPlan plan;
             if (resolve_decoder_streaming_plan(input, &plan)) {
                 // A runtime failure after this point must not migrate an
@@ -3648,18 +3662,18 @@ struct LTXVideoVAE : public VAE {
             }
             LOG_WARN(
                 "automatic Vulkan exact-stateful LTX VAE decoder preflight "
-                "failed before state creation; effective mode is "
-                "complete-graph fallback so normal preflight can route it to "
-                "CPU without changing decoder semantics");
+                "failed before state creation; using temporal tiling when "
+                "enabled, otherwise complete-graph preflight/fallback");
         }
-        if (decode_graph &&
-            decoder_execution_mode ==
-                LTXVAE::DecoderExecutionMode::DEFAULT &&
-            temporal_tiling_enabled && input.dim() == 5 &&
-            input.shape()[2] > 1) {
+        if (LTXVAE::should_use_decoder_temporal_tiling(
+                decode_graph,
+                temporal_tiling_enabled,
+                input.dim(),
+                input.shape()[LTXVAE::LTX_TEMPORAL_AXIS])) {
             return decode_temporal_tiled_streaming(n_threads, input, expected_dim);
         }
-        if (!decode_graph && input.shape()[2] > 1) {
+        if (!decode_graph &&
+            input.shape()[LTXVAE::LTX_TEMPORAL_AXIS] > 1) {
             const bool force_chunking = encoder_chunk_frames_configured;
             EncoderStreamingPlan plan;
             if (resolve_encoder_streaming_plan(input, force_chunking, &plan)) {
@@ -3671,11 +3685,13 @@ struct LTXVideoVAE : public VAE {
                 if (!chunked.empty()) {
                     return chunked;
                 }
-                LOG_WARN("exact LTX VAE encoder stream failed after preflight; "
-                         "retrying the complete graph so automatic CPU fallback can preserve semantics");
+                LOG_WARN(
+                    "exact LTX VAE encoder stream failed after preflight; "
+                    "retrying the complete graph so automatic CPU fallback can preserve semantics");
             } else if (force_chunking) {
-                LOG_WARN("no exact LTX VAE encoder chunk plan fits the configured backend capacity; "
-                         "retrying the complete graph so automatic CPU fallback can preserve semantics");
+                LOG_WARN(
+                    "no exact LTX VAE encoder chunk plan fits the configured backend capacity; "
+                    "retrying the complete graph so automatic CPU fallback can preserve semantics");
             }
         }
         auto get_graph = [&]() -> ggml_cgraph* {
