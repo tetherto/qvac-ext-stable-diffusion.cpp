@@ -80,6 +80,7 @@ namespace sd {
                 : std::numeric_limits<size_t>::max();
         const bool within_capacity =
             required_bytes <= capacity.max_buffer_bytes &&
+            pending_runtime_param_bytes <= capacity.max_buffer_bytes &&
             decision.required_bytes <= decision.budget_bytes;
 
         if (!fallback_enabled) {

@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace LTXVAE {
@@ -32,6 +33,13 @@ namespace LTXVAE {
         return backend == DecoderBackendKind::VULKAN
                    ? DecoderExecutionMode::EXACT_STATEFUL
                    : DecoderExecutionMode::DEFAULT;
+    }
+
+    template <typename Tensor, typename StatefulDecode, typename CompleteDecode>
+    Tensor decode_stateful_or_complete(StatefulDecode stateful_decode,
+                                       CompleteDecode complete_decode) {
+        Tensor streamed = stateful_decode();
+        return streamed.empty() ? complete_decode() : std::move(streamed);
     }
 
     inline bool should_use_decoder_temporal_tiling(bool decode_graph,
