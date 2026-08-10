@@ -3435,7 +3435,13 @@ struct LTXVideoVAE : public VAE {
             LTXVAE::DecoderExecutionMode::EXACT_STATEFUL) {
             DecoderStreamingPlan plan;
             if (resolve_decoder_streaming_plan(input, &plan)) {
-                return decode_stateful_exact_streaming(n_threads, input, static_cast<size_t>(input.dim()), plan);
+                return LTXVAE::decode_stateful_or_complete<sd::Tensor<float>>(
+                    [&]() { return decode_stateful_exact_streaming(n_threads, input, static_cast<size_t>(input.dim()), plan); },
+                    [&]() {
+                        auto graph = [&]() { return build_graph(input, true); };
+                        return restore_trailing_singleton_dims(GGMLRunner::compute(graph, n_threads, false),
+                                                               static_cast<size_t>(input.dim()));
+                    });
             }
         }
         return decode_temporal_tiled_streaming(n_threads,
@@ -3617,6 +3623,14 @@ struct LTXVideoVAE : public VAE {
                     ? "exact-stateful"
                     : "default");
         }
+        auto decode_complete_graph = [&]() -> sd::Tensor<float> {
+            auto get_graph = [&]() -> ggml_cgraph* {
+                return build_graph(input, decode_graph);
+            };
+            return restore_trailing_singleton_dims(
+                GGMLRunner::compute(get_graph, n_threads, false),
+                expected_dim);
+        };
         if (decode_graph &&
             decoder_execution_mode ==
                 LTXVAE::DecoderExecutionMode::EXACT_STATEFUL &&
@@ -3624,12 +3638,18 @@ struct LTXVideoVAE : public VAE {
             input.shape()[LTXVAE::LTX_TEMPORAL_AXIS] > 0) {
             DecoderStreamingPlan plan;
             if (resolve_decoder_streaming_plan(input, &plan)) {
-                // A runtime failure after this point must not migrate an
-                // already-created state stream to another backend.
-                return decode_stateful_exact_streaming(n_threads,
-                                                       input,
-                                                       expected_dim,
-                                                       plan);
+                // A runtime failure clears the stateful cache inside the
+                // streaming path, then retries the unchanged original input
+                // through the complete graph so normal fallback remains
+                // available. Metal and CUDA never enter this path.
+                return LTXVAE::decode_stateful_or_complete<sd::Tensor<float>>(
+                    [&]() {
+                        return decode_stateful_exact_streaming(n_threads,
+                                                               input,
+                                                               expected_dim,
+                                                               plan);
+                    },
+                    decode_complete_graph);
             }
             LOG_WARN(
                 "automatic Vulkan exact-stateful LTX VAE decoder preflight "
@@ -3658,14 +3678,7 @@ struct LTXVideoVAE : public VAE {
                     "retrying the complete graph so automatic CPU fallback can preserve semantics");
             }
         }
-        auto get_graph = [&]() -> ggml_cgraph* {
-            return build_graph(input, decode_graph);
-        };
-        auto result = restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), expected_dim);
-        if (result.empty()) {
-            return {};
-        }
-        return result;
+        return decode_complete_graph();
     }
 
     sd::Tensor<float> apply_latent_statistics(const int n_threads,
