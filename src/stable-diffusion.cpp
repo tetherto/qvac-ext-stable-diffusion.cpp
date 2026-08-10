@@ -1479,31 +1479,65 @@ public:
 
         LOG_INFO("apply lora immediately");
 
-        size_t rm = lora_state_diff.size() - lora_state.size();
+        size_t rm = lora_state_diff.size() > lora_state.size()
+                        ? lora_state_diff.size() - lora_state.size()
+                        : 0;
         if (rm != 0) {
             LOG_INFO("attempting to apply %lu LoRAs (removing %lu applied LoRAs)", lora_state.size(), rm);
         } else {
             LOG_INFO("attempting to apply %lu LoRAs", lora_state.size());
         }
 
-        for (auto& kv : lora_state_diff) {
-            int64_t t0 = ggml_time_ms();
-            const bool requested =
-                lora_state.find(kv.first) != lora_state.end();
+        struct PendingLora {
+            std::string id;
+            float multiplier = 0.0f;
+            bool requested    = false;
+            std::shared_ptr<LoraModel> model;
+        };
+        std::vector<PendingLora> pending;
+        pending.reserve(lora_state_diff.size());
 
-            auto lora = load_lora_model_from_file(kv.first, kv.second, SDBackendModule::DIFFUSION);
+        for (auto& kv : lora_state_diff) {
+            auto lora = load_lora_model_from_file(
+                kv.first, kv.second, SDBackendModule::DIFFUSION);
             if (!lora || lora->lora_tensors.empty() ||
                 lora->count_compatible_model_tensors(tensors) == 0) {
                 LOG_ERROR("requested LoRA '%s' did not load any shape-compatible model tensors",
                           kv.first.c_str());
                 result.all_requested_applied = false;
-                continue;
+                return result;
             }
+            pending.push_back({kv.first,
+                               kv.second,
+                               lora_state.find(kv.first) != lora_state.end(),
+                               std::move(lora)});
+        }
+
+        // Loading and shape-checking every requested change is deliberately a
+        // separate phase. A valid LoRA must not be merged into the model when
+        // a later requested LoRA is missing or incompatible; otherwise the
+        // failed request leaves both model weights and curr_lora_state out of
+        // sync and cannot be safely reused on the next generation.
+        if (!validate_lora_changes(
+                pending,
+                [](const PendingLora& change) {
+                    return change.model != nullptr &&
+                           !change.model->lora_tensors.empty();
+                })) {
+            result.all_requested_applied = false;
+            return result;
+        }
+
+        std::unordered_set<std::string> next_diffusion_lora_ids =
+            curr_diffusion_lora_ids;
+        for (auto& change : pending) {
+            int64_t t0 = ggml_time_ms();
+            auto& lora = change.model;
             if (!lora->apply(tensors, version, n_threads)) {
                 LOG_ERROR("requested LoRA '%s' failed while applying compatible tensors",
-                          kv.first.c_str());
+                          change.id.c_str());
                 result.all_requested_applied = false;
-                continue;
+                return result;
             }
             std::map<std::string, ggml_tensor*> diffusion_tensors;
             for (const auto& [name, tensor] : tensors) {
@@ -1511,22 +1545,21 @@ public:
                     diffusion_tensors[name] = tensor;
                 }
             }
-            if (requested &&
+            if (change.requested &&
                 lora->count_compatible_model_tensors(diffusion_tensors) > 0) {
-                curr_diffusion_lora_ids.insert(kv.first);
-            } else if (!requested) {
-                curr_diffusion_lora_ids.erase(kv.first);
+                next_diffusion_lora_ids.insert(change.id);
+            } else if (!change.requested) {
+                next_diffusion_lora_ids.erase(change.id);
             }
             lora->free_params_buffer();
 
             int64_t t1 = ggml_time_ms();
 
-            LOG_INFO("lora '%s' applied, taking %.2fs", kv.first.c_str(), (t1 - t0) * 1.0f / 1000);
+            LOG_INFO("lora '%s' applied, taking %.2fs", change.id.c_str(), (t1 - t0) * 1.0f / 1000);
         }
 
-        if (result.all_requested_applied) {
-            curr_lora_state = lora_state;
-        }
+        curr_lora_state         = lora_state;
+        curr_diffusion_lora_ids = std::move(next_diffusion_lora_ids);
         for (const auto& [lora_id, multiplier] : lora_state) {
             (void)multiplier;
             result.diffusion_adapter_applied =
