@@ -2038,7 +2038,6 @@ public:
             if (loaded_lora_ids != nullptr) {
                 loaded_lora_ids->insert(lora->lora_id);
             }
-            runtime_lora_models.push_back(lora);
             module_lora_models.push_back(std::move(lora));
         }
         return module_lora_models;
@@ -2060,23 +2059,25 @@ public:
     }
 
     LoraApplyResult apply_loras_at_runtime(const std::vector<ModelManager::LoraSpec>& loras) {
-        if (model_manager != nullptr) {
-            model_manager->set_loras({}, version);
-        }
-        runtime_lora_models.clear();
-        clear_lora_adapters();
         if (loras.empty()) {
+            if (model_manager != nullptr) {
+                model_manager->set_loras({}, version);
+            }
+            runtime_lora_models.clear();
+            clear_lora_adapters();
             return {};
         }
 
         std::set<std::string> loaded_lora_ids;
-        bool diffusion_lora_applied = false;
         std::set<std::string> model_tensor_names;
         if (model_manager != nullptr) {
             model_tensor_names = model_manager->tensor_names();
         }
 
         LOG_INFO("apply lora at runtime");
+        std::vector<std::shared_ptr<LoraModel>> pending_cond_stage_loras;
+        std::vector<std::shared_ptr<LoraModel>> pending_diffusion_loras;
+        std::vector<std::shared_ptr<LoraModel>> pending_first_stage_loras;
         if (cond_stage_model) {
             auto lora_tensor_filter = [&](const std::string& tensor_name) {
                 if (is_cond_stage_model_name(tensor_name)) {
@@ -2084,19 +2085,11 @@ public:
                 }
                 return false;
             };
-            auto cond_stage_lora_models =
-                load_runtime_loras_for_module(loras,
-                                              model_tensor_names,
-                                              SDBackendModule::TE,
-                                              lora_tensor_filter,
-                                              &loaded_lora_ids);
-            // Only attach the adapter when there are LoRAs targeting the cond_stage model.
-            // An empty MultiLoraAdapter still routes every linear/conv through
-            // forward_with_lora() instead of the direct kernel path — slower for no benefit.
-            if (!cond_stage_lora_models.empty()) {
-                auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(cond_stage_lora_models);
-                cond_stage_model->set_weight_adapter(multi_lora_adapter);
-            }
+            pending_cond_stage_loras = load_runtime_loras_for_module(loras,
+                                                                     model_tensor_names,
+                                                                     SDBackendModule::TE,
+                                                                     lora_tensor_filter,
+                                                                     &loaded_lora_ids);
         }
         if (diffusion_model) {
             auto lora_tensor_filter = [&](const std::string& tensor_name) {
@@ -2105,20 +2098,11 @@ public:
                 }
                 return false;
             };
-            auto diffusion_lora_models =
-                load_runtime_loras_for_module(loras,
-                                              model_tensor_names,
-                                              SDBackendModule::DIFFUSION,
-                                              lora_tensor_filter,
-                                              &loaded_lora_ids);
-            if (!diffusion_lora_models.empty()) {
-                diffusion_lora_applied = true;
-                auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(diffusion_lora_models);
-                diffusion_model->set_weight_adapter(multi_lora_adapter);
-                if (high_noise_diffusion_model) {
-                    high_noise_diffusion_model->set_weight_adapter(multi_lora_adapter);
-                }
-            }
+            pending_diffusion_loras = load_runtime_loras_for_module(loras,
+                                                                    model_tensor_names,
+                                                                    SDBackendModule::DIFFUSION,
+                                                                    lora_tensor_filter,
+                                                                    &loaded_lora_ids);
         }
 
         if (first_stage_model) {
@@ -2128,26 +2112,54 @@ public:
                 }
                 return false;
             };
-            auto first_stage_lora_models =
-                load_runtime_loras_for_module(loras,
-                                              model_tensor_names,
-                                              SDBackendModule::VAE,
-                                              lora_tensor_filter,
-                                              &loaded_lora_ids);
-            if (!first_stage_lora_models.empty()) {
-                auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(first_stage_lora_models);
-                first_stage_model->set_weight_adapter(multi_lora_adapter);
-            }
+            pending_first_stage_loras = load_runtime_loras_for_module(loras,
+                                                                      model_tensor_names,
+                                                                      SDBackendModule::VAE,
+                                                                      lora_tensor_filter,
+                                                                      &loaded_lora_ids);
         }
         std::set<std::string> requested_lora_ids;
         for (const auto& lora : loras) {
             requested_lora_ids.insert(lora_log_id(lora));
         }
-        return {std::includes(loaded_lora_ids.begin(),
-                              loaded_lora_ids.end(),
-                              requested_lora_ids.begin(),
-                              requested_lora_ids.end()),
-                diffusion_lora_applied};
+        const bool all_requested_applied =
+            std::includes(loaded_lora_ids.begin(),
+                          loaded_lora_ids.end(),
+                          requested_lora_ids.begin(),
+                          requested_lora_ids.end());
+        if (!all_requested_applied) {
+            LOG_ERROR("one or more requested LoRAs failed validation; preserving existing adapters");
+            return {false, false};
+        }
+
+        if (model_manager != nullptr) {
+            model_manager->set_loras({}, version);
+        }
+        clear_lora_adapters();
+        runtime_lora_models.clear();
+        auto retain_models = [&](const std::vector<std::shared_ptr<LoraModel>>& models) {
+            runtime_lora_models.insert(runtime_lora_models.end(), models.begin(), models.end());
+        };
+        retain_models(pending_cond_stage_loras);
+        retain_models(pending_diffusion_loras);
+        retain_models(pending_first_stage_loras);
+
+        if (!pending_cond_stage_loras.empty()) {
+            cond_stage_model->set_weight_adapter(
+                std::make_shared<MultiLoraAdapter>(pending_cond_stage_loras));
+        }
+        if (!pending_diffusion_loras.empty()) {
+            auto adapter = std::make_shared<MultiLoraAdapter>(pending_diffusion_loras);
+            diffusion_model->set_weight_adapter(adapter);
+            if (high_noise_diffusion_model) {
+                high_noise_diffusion_model->set_weight_adapter(adapter);
+            }
+        }
+        if (!pending_first_stage_loras.empty()) {
+            first_stage_model->set_weight_adapter(
+                std::make_shared<MultiLoraAdapter>(pending_first_stage_loras));
+        }
+        return {true, !pending_diffusion_loras.empty()};
     }
 
     void lora_stat() {
@@ -2168,6 +2180,7 @@ public:
             lora_spec.path          = lora_id;
             lora_spec.multiplier    = loras[i].multiplier;
             lora_spec.is_high_noise = loras[i].is_high_noise;
+            lora_spec.required      = true;
             all_loras.push_back(std::move(lora_spec));
             if (loras[i].is_high_noise) {
                 lora_id = "|high_noise|" + lora_id;

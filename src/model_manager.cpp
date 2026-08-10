@@ -518,6 +518,11 @@ bool ModelManager::apply_loras_to_params(const std::vector<TensorState*>& states
         std::map<std::string, ggml_tensor*> model_tensors;
         std::vector<TensorState*> states;
     };
+    struct PendingLoraApplication {
+        LoraApplyGroup* group = nullptr;
+        const LoraSpec* spec  = nullptr;
+        std::shared_ptr<LoraModel> lora;
+    };
 
     std::map<ggml_backend_t, LoraApplyGroup> groups;
     for (TensorState* state : states) {
@@ -557,6 +562,8 @@ bool ModelManager::apply_loras_to_params(const std::vector<TensorState*>& states
     }
 
     std::set<std::string> all_tensor_names = tensor_names();
+    std::vector<PendingLoraApplication> pending;
+    std::set<std::string> compatible_required_loras;
     for (auto& group_pair : groups) {
         ggml_backend_t compute_backend = group_pair.first;
         LoraApplyGroup& group          = group_pair.second;
@@ -587,17 +594,55 @@ bool ModelManager::apply_loras_to_params(const std::vector<TensorState*>& states
                 continue;
             }
             if (lora->lora_tensors.empty()) {
-                if (lora_spec.required) {
-                    LOG_ERROR("required lora has no tensors: %s", lora_spec.path.c_str());
-                    return false;
-                }
                 continue;
             }
             lora->multiplier = lora_spec.multiplier;
-            lora->apply(group.model_tensors, all_tensor_names, lora_version_, n_threads_, false);
-            lora->release_loaded_tensors();
+            if (lora->count_compatible_model_tensors(group.model_tensors) == 0) {
+                continue;
+            }
+            if (lora_spec.required) {
+                compatible_required_loras.insert(id);
+            }
+            pending.push_back({&group, &lora_spec, std::move(lora)});
         }
+    }
 
+    for (const LoraSpec& lora_spec : loras_) {
+        if (lora_spec.required &&
+            compatible_required_loras.count(lora_id(lora_spec)) == 0) {
+            LOG_ERROR("required lora has no shape-compatible model tensors: %s",
+                      lora_spec.path.c_str());
+            return false;
+        }
+    }
+
+    // Validate and load every requested change before mutating model weights.
+    // This prevents a missing or incompatible later LoRA from leaving an
+    // earlier LoRA partially committed.
+    if (!validate_lora_changes(
+            pending,
+            [](const PendingLoraApplication& application) {
+                return application.group != nullptr &&
+                       application.spec != nullptr &&
+                       application.lora != nullptr;
+            })) {
+        return false;
+    }
+    for (auto& application : pending) {
+        if (!application.lora->apply(application.group->model_tensors,
+                                     all_tensor_names,
+                                     lora_version_,
+                                     n_threads_,
+                                     false)) {
+            LOG_ERROR("failed to apply lora: %s",
+                      application.spec->path.c_str());
+            return false;
+        }
+        application.lora->release_loaded_tensors();
+    }
+
+    for (auto& group_pair : groups) {
+        LoraApplyGroup& group = group_pair.second;
         for (TensorState* state : group.states) {
             if (state != nullptr) {
                 state->applied_lora_epoch = current_lora_epoch_;
