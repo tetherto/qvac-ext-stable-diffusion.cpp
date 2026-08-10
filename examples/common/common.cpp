@@ -439,6 +439,10 @@ ArgOptions SDContextParams::get_options() {
          "--max-vram",
          "maximum VRAM budget in GiB for graph-cut segmented execution. 0 disables graph splitting; a negative value auto-detects free VRAM, sparing the specified value (e.g. -0.5 will keep at least 0.5 GiB free)",
          &max_vram},
+        {"",
+         "--vae-auto-cpu-fallback-memory-ratio",
+         "fraction of reported free device memory available to a preflighted VAE graph (default: 0.9)",
+         &vae_auto_cpu_fallback_memory_ratio},
     };
 
     options.bool_options = {
@@ -470,6 +474,10 @@ ArgOptions SDContextParams::get_options() {
          "--vae-on-cpu",
          "keep vae in cpu (for low vram)",
          true, &vae_on_cpu},
+        {"",
+         "--vae-auto-cpu-fallback",
+         "preflight VAE graphs and route only oversized graphs to CPU (default: false)",
+         true, &vae_auto_cpu_fallback},
         {"",
          "--fa",
          "use flash attention",
@@ -672,6 +680,12 @@ bool SDContextParams::validate(SDMode mode) {
         return false;
     }
 
+    if (!(vae_auto_cpu_fallback_memory_ratio > 0.0f &&
+          vae_auto_cpu_fallback_memory_ratio <= 1.0f)) {
+        LOG_ERROR("error: vae_auto_cpu_fallback_memory_ratio must be in (0, 1]");
+        return false;
+    }
+
     return true;
 }
 
@@ -736,6 +750,8 @@ std::string SDContextParams::to_string() const {
         << "  control_net_cpu: " << (control_net_cpu ? "true" : "false") << ",\n"
         << "  clip_on_cpu: " << (clip_on_cpu ? "true" : "false") << ",\n"
         << "  vae_on_cpu: " << (vae_on_cpu ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback: " << (vae_auto_cpu_fallback ? "true" : "false") << ",\n"
+        << "  vae_auto_cpu_fallback_memory_ratio: " << vae_auto_cpu_fallback_memory_ratio << ",\n"
         << "  flash_attn: " << (flash_attn ? "true" : "false") << ",\n"
         << "  diffusion_flash_attn: " << (diffusion_flash_attn ? "true" : "false") << ",\n"
         << "  diffusion_conv_direct: " << (diffusion_conv_direct ? "true" : "false") << ",\n"
@@ -815,6 +831,8 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t(bool vae_decode_only, bool f
         backend.c_str(),
         params_backend.c_str(),
         SD_BACKEND_PREF_GPU,  // qvac: default to GPU; honored only when --backend is unset
+        vae_auto_cpu_fallback,
+        vae_auto_cpu_fallback_memory_ratio,
     };
     return sd_ctx_params;
 }
@@ -877,7 +895,7 @@ ArgOptions SDGenerationParams::get_options() {
          &extra_sample_args},
         {"",
          "--extra-tiling-args",
-         "extra VAE tiling args, key=value list. LTX video VAE supports temporal_tile_frames (default: 4), temporal_tile_overlap (default: 1)",
+         "extra VAE tiling args, key=value list. LTX video VAE supports temporal_tile_frames (default: 4), temporal_tile_overlap (default: 1), encoder_chunk_frames (automatic cap: 49, minimum: 9)",
          &extra_tiling_args},
     };
 
@@ -1027,6 +1045,14 @@ ArgOptions SDGenerationParams::get_options() {
          "--vace-strength",
          "wan vace strength",
          &vace_strength},
+        {"",
+         "--reference-attention-strength",
+         "LTX IC-LoRA reference conditioning strength in [0, 1] (default: 1.0)",
+         &reference_attention_strength},
+        {"",
+         "--reference-downscale-factor",
+         "LTX IC-LoRA reference image downscale factor (currently must be 1.0; default: 1.0)",
+         &reference_downscale_factor},
         {"",
          "--vae-tile-overlap",
          "tile overlap for vae tiling, in fraction of tile size (default: 0.5)",
@@ -1366,7 +1392,7 @@ ArgOptions SDGenerationParams::get_options() {
          on_high_noise_skip_layers_arg},
         {"-r",
          "--ref-image",
-         "reference image for Flux Kontext models (can be used multiple times)",
+         "reference image for Flux Kontext or LTX IC-LoRA video models (can be used multiple times)",
          on_ref_image_arg},
         {"",
          "--cache-mode",
@@ -1688,6 +1714,10 @@ bool SDGenerationParams::from_json_str(
     load_if_exists("control_strength", control_strength);
     load_if_exists("moe_boundary", moe_boundary);
     load_if_exists("vace_strength", vace_strength);
+    load_if_exists("reference_attention_strength",
+                   reference_attention_strength);
+    load_if_exists("reference_downscale_factor",
+                   reference_downscale_factor);
 
     load_if_exists("auto_resize_ref_image", auto_resize_ref_image);
     load_if_exists("increase_ref_index", increase_ref_index);
@@ -2141,6 +2171,20 @@ bool SDGenerationParams::validate(SDMode mode) {
         return false;
     }
 
+    if (mode == VID_GEN && !ref_images.empty()) {
+        if (!std::isfinite(reference_attention_strength) ||
+            reference_attention_strength < 0.f ||
+            reference_attention_strength > 1.f) {
+            LOG_ERROR("error: reference attention strength must be finite and in [0, 1]");
+            return false;
+        }
+        if (!std::isfinite(reference_downscale_factor) ||
+            reference_downscale_factor != 1.f) {
+            LOG_ERROR("error: LTX IC-LoRA currently requires a finite reference downscale factor exactly equal to 1");
+            return false;
+        }
+    }
+
     if (sample_params.shifted_timestep < 0 || sample_params.shifted_timestep > 1000) {
         LOG_ERROR("error: shifted_timestep must be in range [0, 1000]");
         return false;
@@ -2303,6 +2347,12 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
         control_frame_views.push_back(frame.get());
     }
 
+    ref_image_views.clear();
+    ref_image_views.reserve(ref_images.size());
+    for (auto& ref_image : ref_images) {
+        ref_image_views.push_back(ref_image.get());
+    }
+
     sample_params.guidance.slg.layers                 = skip_layers.empty() ? nullptr : skip_layers.data();
     sample_params.guidance.slg.layer_count            = skip_layers.size();
     high_noise_sample_params.guidance.slg.layers      = high_noise_skip_layers.empty() ? nullptr : high_noise_skip_layers.data();
@@ -2314,38 +2364,42 @@ sd_vid_gen_params_t SDGenerationParams::to_sd_vid_gen_params_t() {
     vae_tiling_params.extra_tiling_args               = extra_tiling_args.empty() ? nullptr : extra_tiling_args.c_str();
     cache_params.scm_mask                             = scm_mask.empty() ? nullptr : scm_mask.c_str();
 
-    params.loras                     = lora_vec.empty() ? nullptr : lora_vec.data();
-    params.lora_count                = static_cast<uint32_t>(lora_vec.size());
-    params.prompt                    = prompt.c_str();
-    params.negative_prompt           = negative_prompt.c_str();
-    params.clip_skip                 = clip_skip;
-    params.init_image                = init_image.get();
-    params.end_image                 = end_image.get();
-    params.control_frames            = control_frame_views.empty() ? nullptr : control_frame_views.data();
-    params.control_frames_size       = static_cast<int>(control_frame_views.size());
-    params.width                     = get_resolved_width();
-    params.height                    = get_resolved_height();
-    params.sample_params             = sample_params;
-    params.high_noise_sample_params  = high_noise_sample_params;
-    params.moe_boundary              = moe_boundary;
-    params.strength                  = strength;
-    params.seed                      = seed;
-    params.video_frames              = video_frames;
-    params.fps                       = fps;
-    params.vace_strength             = vace_strength;
-    params.vae_tiling_params         = vae_tiling_params;
-    params.cache                     = cache_params;
-    params.hires.enabled             = hires_enabled;
-    params.hires.upscaler            = resolved_hires_upscaler;
-    params.hires.model_path          = hires_upscaler_model_path.empty() ? nullptr : hires_upscaler_model_path.c_str();
-    params.hires.scale               = hires_scale;
-    params.hires.target_width        = hires_width;
-    params.hires.target_height       = hires_height;
-    params.hires.steps               = hires_steps;
-    params.hires.denoising_strength  = hires_denoising_strength;
-    params.hires.upscale_tile_size   = hires_upscale_tile_size;
-    params.hires.custom_sigmas       = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
-    params.hires.custom_sigmas_count = static_cast<int>(hires_custom_sigmas.size());
+    params.loras                        = lora_vec.empty() ? nullptr : lora_vec.data();
+    params.lora_count                   = static_cast<uint32_t>(lora_vec.size());
+    params.prompt                       = prompt.c_str();
+    params.negative_prompt              = negative_prompt.c_str();
+    params.clip_skip                    = clip_skip;
+    params.init_image                   = init_image.get();
+    params.end_image                    = end_image.get();
+    params.control_frames               = control_frame_views.empty() ? nullptr : control_frame_views.data();
+    params.control_frames_size          = static_cast<int>(control_frame_views.size());
+    params.reference_images             = ref_image_views.empty() ? nullptr : ref_image_views.data();
+    params.reference_images_count       = static_cast<int>(ref_image_views.size());
+    params.reference_attention_strength = reference_attention_strength;
+    params.reference_downscale_factor   = reference_downscale_factor;
+    params.width                        = get_resolved_width();
+    params.height                       = get_resolved_height();
+    params.sample_params                = sample_params;
+    params.high_noise_sample_params     = high_noise_sample_params;
+    params.moe_boundary                 = moe_boundary;
+    params.strength                     = strength;
+    params.seed                         = seed;
+    params.video_frames                 = video_frames;
+    params.fps                          = fps;
+    params.vace_strength                = vace_strength;
+    params.vae_tiling_params            = vae_tiling_params;
+    params.cache                        = cache_params;
+    params.hires.enabled                = hires_enabled;
+    params.hires.upscaler               = resolved_hires_upscaler;
+    params.hires.model_path             = hires_upscaler_model_path.empty() ? nullptr : hires_upscaler_model_path.c_str();
+    params.hires.scale                  = hires_scale;
+    params.hires.target_width           = hires_width;
+    params.hires.target_height          = hires_height;
+    params.hires.steps                  = hires_steps;
+    params.hires.denoising_strength     = hires_denoising_strength;
+    params.hires.upscale_tile_size      = hires_upscale_tile_size;
+    params.hires.custom_sigmas          = hires_custom_sigmas.empty() ? nullptr : hires_custom_sigmas.data();
+    params.hires.custom_sigmas_count    = static_cast<int>(hires_custom_sigmas.size());
     return params;
 }
 
@@ -2415,6 +2469,8 @@ std::string SDGenerationParams::to_string() const {
         << "  video_frames: " << video_frames << ",\n"
         << "  fps: " << fps << ",\n"
         << "  vace_strength: " << vace_strength << ",\n"
+        << "  reference_attention_strength: " << reference_attention_strength << ",\n"
+        << "  reference_downscale_factor: " << reference_downscale_factor << ",\n"
         << "  strength: " << strength << ",\n"
         << "  control_strength: " << control_strength << ",\n"
         << "  seed: " << seed << ",\n"

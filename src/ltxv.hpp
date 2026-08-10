@@ -72,33 +72,12 @@ namespace LTXV {
         return max_block + 1;
     }
 
-    __STATIC_INLINE__ std::vector<float> generate_freq_grid(float theta,
-                                                            int positional_dims,
-                                                            int dim) {
-        const int n_elem     = 2 * positional_dims;
-        const int freq_count = dim / n_elem;
-
-        std::vector<float> out(freq_count);
-        if (freq_count <= 0) {
-            return out;
-        }
-        if (freq_count == 1) {
-            out[0] = 1.5707963267948966f;
-            return out;
-        }
-
-        const float half_pi   = 1.5707963267948966f;
-        const float log_theta = std::log(theta);
-        for (int i = 0; i < freq_count; i++) {
-            float ratio = static_cast<float>(i) / static_cast<float>(freq_count - 1);
-            out[i]      = std::exp(log_theta * ratio) * half_pi;
-        }
-        return out;
-    }
-
-    __STATIC_INLINE__ std::vector<double> generate_freq_grid_double(double theta,
-                                                                    int positional_dims,
-                                                                    int dim) {
+    // Prepare RoPE matrices once on the host in binary64, then round the shared
+    // table to F32 before copying it to any backend. This avoids backend trig
+    // implementations and single-precision intermediate differences.
+    __STATIC_INLINE__ std::vector<double> generate_freq_grid(double theta,
+                                                             int positional_dims,
+                                                             int dim) {
         const int n_elem     = 2 * positional_dims;
         const int freq_count = dim / n_elem;
 
@@ -107,11 +86,11 @@ namespace LTXV {
             return out;
         }
         if (freq_count == 1) {
-            out[0] = 1.5707963267948966;
+            out[0] = 0x1.921fb54442d18p+0;
             return out;
         }
 
-        const double half_pi   = 1.5707963267948966;
+        const double half_pi   = 0x1.921fb54442d18p+0;
         const double log_theta = std::log(theta);
         for (int i = 0; i < freq_count; i++) {
             double ratio = static_cast<double>(i) / static_cast<double>(freq_count - 1);
@@ -121,16 +100,16 @@ namespace LTXV {
     }
 
     __STATIC_INLINE__ std::vector<float> build_rope_matrix_from_frequencies(
-        const std::vector<std::vector<float>>& frequencies,
+        const std::vector<std::vector<double>>& frequencies,
         int dim) {
         const int half_dim = dim / 2;
         std::vector<float> out(static_cast<size_t>(frequencies.size()) * static_cast<size_t>(half_dim) * 4, 0.f);
 
         for (size_t token = 0; token < frequencies.size(); token++) {
             for (int i = 0; i < half_dim; i++) {
-                float angle = i < static_cast<int>(frequencies[token].size()) ? frequencies[token][i] : 0.f;
-                float c     = std::cos(angle);
-                float s     = std::sin(angle);
+                double angle = i < static_cast<int>(frequencies[token].size()) ? frequencies[token][i] : 0.0;
+                float c      = static_cast<float>(std::cos(angle));
+                float s      = static_cast<float>(std::sin(angle));
 
                 size_t base   = (token * static_cast<size_t>(half_dim) + static_cast<size_t>(i)) * 4;
                 out[base + 0] = c;
@@ -143,8 +122,8 @@ namespace LTXV {
         return out;
     }
 
-    __STATIC_INLINE__ std::vector<std::vector<float>> split_frequencies_by_heads(
-        const std::vector<std::vector<float>>& frequencies,
+    __STATIC_INLINE__ std::vector<std::vector<double>> split_frequencies_by_heads(
+        const std::vector<std::vector<double>>& frequencies,
         int inner_dim,
         int num_heads) {
         GGML_ASSERT(num_heads > 0);
@@ -153,9 +132,9 @@ namespace LTXV {
         const int per_head_half_dim = inner_half_dim / num_heads;
         GGML_ASSERT(inner_half_dim % num_heads == 0);
 
-        std::vector<std::vector<float>> out(
+        std::vector<std::vector<double>> out(
             frequencies.size() * static_cast<size_t>(num_heads),
-            std::vector<float>(per_head_half_dim, 0.f));
+            std::vector<double>(per_head_half_dim, 0.0));
 
         for (size_t token = 0; token < frequencies.size(); token++) {
             GGML_ASSERT(static_cast<int>(frequencies[token].size()) == inner_half_dim);
@@ -180,11 +159,11 @@ namespace LTXV {
                                                                  bool use_middle_indices_grid                       = false) {
         GGML_ASSERT(max_pos.size() == 3);
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = generate_freq_grid(theta, 3, dim);
-        const int half_dim               = dim / 2;
-        const int pad_size               = half_dim - static_cast<int>(indices.size()) * 3;
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 3, dim);
+        const int half_dim                = dim / 2;
+        const int pad_size                = half_dim - static_cast<int>(indices.size()) * 3;
 
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(width * height * frames), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(width * height * frames), std::vector<double>(half_dim, 0.0));
 
         const int scale_t = std::get<0>(vae_scale_factors);
         const int scale_h = std::get<1>(vae_scale_factors);
@@ -192,45 +171,45 @@ namespace LTXV {
 
         size_t token = 0;
         for (int64_t t = 0; t < frames; t++) {
-            float pixel_t = static_cast<float>(t * scale_t);
+            double pixel_t = static_cast<double>(t * scale_t);
             if (causal_temporal_positioning) {
-                pixel_t = std::max(0.f, pixel_t + 1.f - scale_t);
+                pixel_t = std::max(0.0, pixel_t + 1.0 - scale_t);
             }
-            pixel_t /= frame_rate;
+            pixel_t /= static_cast<double>(frame_rate);
             if (use_middle_indices_grid) {
-                float end = static_cast<float>((t + 1) * scale_t);
+                double end = static_cast<double>((t + 1) * scale_t);
                 if (causal_temporal_positioning) {
-                    end = std::max(0.f, end + 1.f - scale_t);
+                    end = std::max(0.0, end + 1.0 - scale_t);
                 }
-                end /= frame_rate;
-                pixel_t = 0.5f * (pixel_t + end);
+                end /= static_cast<double>(frame_rate);
+                pixel_t = 0.5 * (pixel_t + end);
             }
 
             for (int64_t h = 0; h < height; h++) {
-                float pixel_h = static_cast<float>(h * scale_h);
+                double pixel_h = static_cast<double>(h * scale_h);
                 if (use_middle_indices_grid) {
-                    pixel_h += 0.5f * static_cast<float>(scale_h);
+                    pixel_h += 0.5 * static_cast<double>(scale_h);
                 }
                 for (int64_t w = 0; w < width; w++) {
-                    float pixel_w = static_cast<float>(w * scale_w);
+                    double pixel_w = static_cast<double>(w * scale_w);
                     if (use_middle_indices_grid) {
-                        pixel_w += 0.5f * static_cast<float>(scale_w);
+                        pixel_w += 0.5 * static_cast<double>(scale_w);
                     }
 
                     int out_idx = 0;
                     for (int i = 0; i < pad_size; i++) {
-                        freqs[token][out_idx++] = 0.f;
+                        freqs[token][out_idx++] = 0.0;
                     }
 
-                    const float coords[3] = {
+                    const double coords[3] = {
                         pixel_t / max_pos[0],
                         pixel_h / max_pos[1],
                         pixel_w / max_pos[2],
                     };
 
-                    for (float index : indices) {
+                    for (double index : indices) {
                         for (int axis = 0; axis < 3; axis++) {
-                            freqs[token][out_idx++] = index * (coords[axis] * 2.f - 1.f);
+                            freqs[token][out_idx++] = index * (coords[axis] * 2.0 - 1.0);
                         }
                     }
                     token++;
@@ -259,31 +238,31 @@ namespace LTXV {
             GGML_ASSERT(positions.shape()[3] == 1);
         }
 
-        const int64_t tokens             = positions.shape()[2];
-        const std::vector<float> indices = generate_freq_grid(theta, 3, dim);
-        const int half_dim               = dim / 2;
-        const int pad_size               = half_dim - static_cast<int>(indices.size()) * 3;
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(tokens), std::vector<float>(half_dim, 0.f));
+        const int64_t tokens              = positions.shape()[2];
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 3, dim);
+        const int half_dim                = dim / 2;
+        const int pad_size                = half_dim - static_cast<int>(indices.size()) * 3;
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(tokens), std::vector<double>(half_dim, 0.0));
 
         for (int64_t token = 0; token < tokens; token++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[token][out_idx++] = 0.f;
+                freqs[token][out_idx++] = 0.0;
             }
 
-            float coords[3];
+            double coords[3];
             for (int axis = 0; axis < 3; axis++) {
-                float start  = positions.dim() == 4 ? positions.index(0, axis, token, 0)
-                                                    : positions.index(0, axis, token);
-                float end    = positions.dim() == 4 ? positions.index(1, axis, token, 0)
-                                                    : positions.index(1, axis, token);
-                float coord  = use_middle_indices_grid ? 0.5f * (start + end) : start;
-                coords[axis] = coord / static_cast<float>(max_pos[axis]);
+                double start = positions.dim() == 4 ? static_cast<double>(positions.index(0, axis, token, 0))
+                                                    : static_cast<double>(positions.index(0, axis, token));
+                double end   = positions.dim() == 4 ? static_cast<double>(positions.index(1, axis, token, 0))
+                                                    : static_cast<double>(positions.index(1, axis, token));
+                double coord = use_middle_indices_grid ? 0.5 * (start + end) : start;
+                coords[axis] = coord / static_cast<double>(max_pos[axis]);
             }
 
-            for (float index : indices) {
+            for (double index : indices) {
                 for (int axis = 0; axis < 3; axis++) {
-                    freqs[token][out_idx++] = index * (coords[axis] * 2.f - 1.f);
+                    freqs[token][out_idx++] = index * (coords[axis] * 2.0 - 1.0);
                 }
             }
         }
@@ -301,29 +280,21 @@ namespace LTXV {
                                                               float positional_scale = 4096.f,
                                                               bool double_precision  = false) {
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = double_precision ? std::vector<float>() : generate_freq_grid(theta, 1, dim);
-        const std::vector<double> indices_d =
-            double_precision ? generate_freq_grid_double(static_cast<double>(theta), 1, dim) : std::vector<double>();
-        const int half_dim = dim / 2;
-        const int pad_size = half_dim - static_cast<int>(double_precision ? indices_d.size() : indices.size());
+        (void)double_precision;  // Kept for source compatibility; preparation is always binary64.
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 1, dim);
+        const int half_dim                = dim / 2;
+        const int pad_size                = half_dim - static_cast<int>(indices.size());
 
-        std::vector<std::vector<float>> freqs(static_cast<size_t>(seq_len), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(static_cast<size_t>(seq_len), std::vector<double>(half_dim, 0.0));
         for (int64_t pos = 0; pos < seq_len; pos++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[static_cast<size_t>(pos)][out_idx++] = 0.f;
+                freqs[static_cast<size_t>(pos)][out_idx++] = 0.0;
             }
 
-            if (double_precision) {
-                double coord = static_cast<double>(pos) / static_cast<double>(positional_scale);
-                for (double index : indices_d) {
-                    freqs[static_cast<size_t>(pos)][out_idx++] = static_cast<float>(index * (coord * 2.0 - 1.0));
-                }
-            } else {
-                float coord = static_cast<float>(pos) / positional_scale;
-                for (float index : indices) {
-                    freqs[static_cast<size_t>(pos)][out_idx++] = index * (coord * 2.f - 1.f);
-                }
+            double coord = static_cast<double>(pos) / static_cast<double>(positional_scale);
+            for (double index : indices) {
+                freqs[static_cast<size_t>(pos)][out_idx++] = index * (coord * 2.0 - 1.0);
             }
         }
 
@@ -381,9 +352,9 @@ namespace LTXV {
             : embedding_dim(embedding_dim), embedding_coefficient(embedding_coefficient) {
             blocks["emb.timestep_embedder"] = std::make_shared<TimestepEmbedder>(embedding_dim);
             blocks["linear"]                = std::make_shared<Linear>(embedding_dim,
-                                                        embedding_coefficient * embedding_dim,
-                                                        true,
-                                                        true);
+                                                                       embedding_coefficient * embedding_dim,
+                                                                       true,
+                                                                       true);
         }
 
         std::pair<ggml_tensor*, ggml_tensor*> forward(GGMLRunnerContext* ctx,
@@ -464,10 +435,13 @@ namespace LTXV {
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
                              ggml_tensor* x,
-                             ggml_tensor* context = nullptr,
-                             ggml_tensor* mask    = nullptr,
-                             ggml_tensor* pe      = nullptr,
-                             ggml_tensor* k_pe    = nullptr) {
+                             ggml_tensor* context                  = nullptr,
+                             ggml_tensor* mask                     = nullptr,
+                             ggml_tensor* pe                       = nullptr,
+                             ggml_tensor* k_pe                     = nullptr,
+                             int64_t reference_key_prefix_tokens   = 0,
+                             int64_t reference_query_prefix_tokens = 0,
+                             float reference_attention_strength    = 1.f) {
             if (context == nullptr) {
                 context = x;
             }
@@ -503,6 +477,70 @@ namespace LTXV {
                                               mask,
                                               false,
                                               ctx->flash_attn_enabled);
+
+            if (reference_key_prefix_tokens > 0 &&
+                reference_attention_strength < 1.f) {
+                GGML_ASSERT(reference_key_prefix_tokens < k->ne[1]);
+                GGML_ASSERT(reference_query_prefix_tokens >= 0 &&
+                            reference_query_prefix_tokens < q->ne[1]);
+                auto target_q    = reference_query_prefix_tokens > 0
+                                       ? ggml_ext_slice(ctx->ggml_ctx,
+                                                        q,
+                                                        1,
+                                                        reference_query_prefix_tokens,
+                                                        q->ne[1])
+                                       : q;
+                auto target_k    = ggml_ext_slice(ctx->ggml_ctx,
+                                                  k,
+                                                  1,
+                                                  reference_key_prefix_tokens,
+                                                  k->ne[1]);
+                auto target_v    = ggml_ext_slice(ctx->ggml_ctx,
+                                                  v,
+                                                  1,
+                                                  reference_key_prefix_tokens,
+                                                  v->ne[1]);
+                auto target_only = ggml_ext_attention_ext(
+                    ctx->ggml_ctx,
+                    ctx->backend,
+                    target_q,
+                    target_k,
+                    target_v,
+                    heads,
+                    nullptr,
+                    false,
+                    ctx->flash_attn_enabled);
+                auto full_target = reference_query_prefix_tokens > 0
+                                       ? ggml_ext_slice(ctx->ggml_ctx,
+                                                        out,
+                                                        1,
+                                                        reference_query_prefix_tokens,
+                                                        out->ne[1])
+                                       : out;
+                auto reference_delta =
+                    ggml_sub(ctx->ggml_ctx, full_target, target_only);
+                auto mixed_target = ggml_add(
+                    ctx->ggml_ctx,
+                    target_only,
+                    ggml_ext_scale(ctx->ggml_ctx,
+                                   reference_delta,
+                                   reference_attention_strength,
+                                   true));
+                if (reference_query_prefix_tokens > 0) {
+                    auto reference_out = ggml_ext_slice(
+                        ctx->ggml_ctx,
+                        out,
+                        1,
+                        0,
+                        reference_query_prefix_tokens);
+                    out = ggml_concat(ctx->ggml_ctx,
+                                      reference_out,
+                                      mixed_target,
+                                      1);
+                } else {
+                    out = mixed_target;
+                }
+            }
 
             if (blocks.count("to_gate_logits") > 0) {
                 auto to_gate_logits = std::dynamic_pointer_cast<Linear>(blocks["to_gate_logits"]);
@@ -830,28 +868,20 @@ namespace LTXV {
                                                                           float max_pos         = 20.f,
                                                                           bool double_precision = false) {
         GGML_ASSERT(dim % num_heads == 0);
-        const std::vector<float> indices = double_precision ? std::vector<float>() : generate_freq_grid(theta, 1, dim);
-        const std::vector<double> indices_d =
-            double_precision ? generate_freq_grid_double(static_cast<double>(theta), 1, dim) : std::vector<double>();
-        const int half_dim = dim / 2;
-        const int pad_size = half_dim - static_cast<int>(double_precision ? indices_d.size() : indices.size());
+        (void)double_precision;  // Kept for source compatibility; preparation is always binary64.
+        const std::vector<double> indices = generate_freq_grid(static_cast<double>(theta), 1, dim);
+        const int half_dim                = dim / 2;
+        const int pad_size                = half_dim - static_cast<int>(indices.size());
 
-        std::vector<std::vector<float>> freqs(coords.size(), std::vector<float>(half_dim, 0.f));
+        std::vector<std::vector<double>> freqs(coords.size(), std::vector<double>(half_dim, 0.0));
         for (size_t pos = 0; pos < coords.size(); pos++) {
             int out_idx = 0;
             for (int i = 0; i < pad_size; i++) {
-                freqs[pos][out_idx++] = 0.f;
+                freqs[pos][out_idx++] = 0.0;
             }
-            if (double_precision) {
-                double coord = static_cast<double>(coords[pos]) / static_cast<double>(max_pos);
-                for (double index : indices_d) {
-                    freqs[pos][out_idx++] = static_cast<float>(index * (coord * 2.0 - 1.0));
-                }
-            } else {
-                float coord = coords[pos] / max_pos;
-                for (float index : indices) {
-                    freqs[pos][out_idx++] = index * (coord * 2.f - 1.f);
-                }
+            double coord = static_cast<double>(coords[pos]) / static_cast<double>(max_pos);
+            for (double index : indices) {
+                freqs[pos][out_idx++] = index * (coord * 2.0 - 1.0);
             }
         }
         if (num_heads > 1) {
@@ -1071,7 +1101,10 @@ namespace LTXV {
                                                       ggml_tensor* a_cross_gate_timestep,
                                                       ggml_tensor* v_prompt_timestep,
                                                       ggml_tensor* a_prompt_timestep,
-                                                      ggml_tensor* self_attention_mask = nullptr) {
+                                                      ggml_tensor* self_attention_mask    = nullptr,
+                                                      bool skip_video_self_attention      = false,
+                                                      int64_t video_reference_token_count = 0,
+                                                      float reference_attention_strength  = 1.f) {
             auto attn1               = std::dynamic_pointer_cast<CrossAttention>(blocks["attn1"]);
             auto audio_attn1         = std::dynamic_pointer_cast<CrossAttention>(blocks["audio_attn1"]);
             auto attn2               = std::dynamic_pointer_cast<CrossAttention>(blocks["attn2"]);
@@ -1089,21 +1122,31 @@ namespace LTXV {
             bool run_v2a = run_ax;
 
             auto v_mods = get_ada_values(ctx, v_table, v_timestep, v_dim, cross_attention_adaln ? 9 : 6);
-            auto v_norm = rms_norm(ctx->ggml_ctx, vx);
-            v_norm      = modulate(ctx->ggml_ctx, v_norm, v_mods[0], v_mods[1]);
-            auto v_sa   = attn1->forward(ctx, v_norm, nullptr, self_attention_mask, v_pe);
-            vx          = ggml_add(ctx->ggml_ctx, vx, apply_gate(ctx->ggml_ctx, v_sa, v_mods[2]));
-            auto v_txt  = apply_text_cross_attention(ctx,
-                                                     vx,
-                                                     v_context,
-                                                     attn2.get(),
-                                                     v_table,
+            if (!skip_video_self_attention) {
+                auto v_norm = rms_norm(ctx->ggml_ctx, vx);
+                v_norm      = modulate(ctx->ggml_ctx, v_norm, v_mods[0], v_mods[1]);
+                auto v_sa   = attn1->forward(ctx,
+                                             v_norm,
+                                             nullptr,
+                                             self_attention_mask,
+                                             v_pe,
+                                             nullptr,
+                                             video_reference_token_count,
+                                             video_reference_token_count,
+                                             reference_attention_strength);
+                vx          = ggml_add(ctx->ggml_ctx, vx, apply_gate(ctx->ggml_ctx, v_sa, v_mods[2]));
+            }
+            auto v_txt = apply_text_cross_attention(ctx,
+                                                    vx,
+                                                    v_context,
+                                                    attn2.get(),
+                                                    v_table,
                                                     cross_attention_adaln ? params["prompt_scale_shift_table"] : nullptr,
-                                                     v_timestep,
-                                                     v_prompt_timestep,
-                                                     v_dim,
-                                                     attention_mask);
-            vx          = ggml_add(ctx->ggml_ctx, vx, v_txt);
+                                                    v_timestep,
+                                                    v_prompt_timestep,
+                                                    v_dim,
+                                                    attention_mask);
+            vx         = ggml_add(ctx->ggml_ctx, vx, v_txt);
 
             if (run_ax) {
                 auto a_mods = get_ada_values(ctx, a_table, a_timestep, a_dim, cross_attention_adaln ? 9 : 6);
@@ -1146,10 +1189,19 @@ namespace LTXV {
                     auto v2a_video       = get_ada_values(ctx, v2a_video_table, v_cross_scale_shift_timestep, v_dim, 4);
                     auto ax_scaled       = modulate(ctx->ggml_ctx, ax_norm3, v2a_audio[3], v2a_audio[2]);
                     auto vx_scaled       = modulate(ctx->ggml_ctx, vx_norm3, v2a_video[3], v2a_video[2]);
-                    auto v2a_out         = video_to_audio_attn->forward(ctx, ax_scaled, vx_scaled, nullptr, a_cross_pe, v_cross_pe);
-                    auto v2a_gate_table  = ggml_ext_slice(ctx->ggml_ctx, params["scale_shift_table_a2v_ca_audio"], 1, 4, 5);
-                    auto v2a_gate        = get_ada_values(ctx, v2a_gate_table, a_cross_gate_timestep, a_dim, 1)[0];
-                    ax                   = ggml_add(ctx->ggml_ctx, ax, apply_gate(ctx->ggml_ctx, v2a_out, v2a_gate));
+                    auto v2a_out         = video_to_audio_attn->forward(
+                        ctx,
+                        ax_scaled,
+                        vx_scaled,
+                        nullptr,
+                        a_cross_pe,
+                        v_cross_pe,
+                        video_reference_token_count,
+                        0,
+                        reference_attention_strength);
+                    auto v2a_gate_table = ggml_ext_slice(ctx->ggml_ctx, params["scale_shift_table_a2v_ca_audio"], 1, 4, 5);
+                    auto v2a_gate       = get_ada_values(ctx, v2a_gate_table, a_cross_gate_timestep, a_dim, 1)[0];
+                    ax                  = ggml_add(ctx->ggml_ctx, ax, apply_gate(ctx->ggml_ctx, v2a_out, v2a_gate));
                 }
                 auto a_ff_mods = get_ada_values(ctx, a_table, a_timestep, a_dim, cross_attention_adaln ? 9 : 6, 3, 3);
                 auto ax_scaled = rms_norm(ctx->ggml_ctx, ax);
@@ -1169,6 +1221,9 @@ namespace LTXV {
     };
 
     struct LTXAVModelBlock : public GGMLBlock {
+        static constexpr bool PATCH_PROJECTION_FORCE_F32_WEIGHTS      = true;
+        static constexpr bool PATCH_PROJECTION_FORCE_F32_ACCUMULATION = true;
+
         LTXAVParams cfg;
 
         void init_params(ggml_context* ctx,
@@ -1186,8 +1241,16 @@ namespace LTXV {
 
         LTXAVModelBlock(const LTXAVParams& params)
             : cfg(params) {
-            blocks["patchify_proj"]       = std::make_shared<Linear>(cfg.in_channels, cfg.hidden_size, true, true);
-            blocks["audio_patchify_proj"] = std::make_shared<Linear>(cfg.audio_in_channels, cfg.audio_hidden_size, true, true);
+            blocks["patchify_proj"]       = std::make_shared<Linear>(cfg.in_channels,
+                                                                     cfg.hidden_size,
+                                                                     true,
+                                                                     PATCH_PROJECTION_FORCE_F32_WEIGHTS,
+                                                                     PATCH_PROJECTION_FORCE_F32_ACCUMULATION);
+            blocks["audio_patchify_proj"] = std::make_shared<Linear>(cfg.audio_in_channels,
+                                                                     cfg.audio_hidden_size,
+                                                                     true,
+                                                                     PATCH_PROJECTION_FORCE_F32_WEIGHTS,
+                                                                     PATCH_PROJECTION_FORCE_F32_ACCUMULATION);
             blocks["adaln_single"]        = std::make_shared<AdaLayerNormSingle>(cfg.hidden_size, cfg.cross_attention_adaln ? 9 : 6);
             blocks["audio_adaln_single"]  = std::make_shared<AdaLayerNormSingle>(cfg.audio_hidden_size, cfg.cross_attention_adaln ? 9 : 6);
             if (cfg.cross_attention_adaln) {
@@ -1418,7 +1481,10 @@ namespace LTXV {
                                                       ggml_tensor* v_cross_pe,
                                                       ggml_tensor* a_cross_pe,
                                                       ggml_tensor* video_connector_pe,
-                                                      ggml_tensor* audio_connector_pe) {
+                                                      ggml_tensor* audio_connector_pe,
+                                                      int64_t video_reference_token_count                      = 0,
+                                                      float reference_attention_strength                       = 1.f,
+                                                      const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto patchify_proj       = std::dynamic_pointer_cast<Linear>(blocks["patchify_proj"]);
             auto audio_patchify_proj = std::dynamic_pointer_cast<Linear>(blocks["audio_patchify_proj"]);
             auto adaln_single        = std::dynamic_pointer_cast<AdaLayerNormSingle>(blocks["adaln_single"]);
@@ -1493,26 +1559,35 @@ namespace LTXV {
 
             for (int i = 0; i < cfg.num_layers; i++) {
                 auto block = std::dynamic_pointer_cast<BasicAVTransformerBlock>(blocks["transformer_blocks." + std::to_string(i)]);
-                auto out   = block->forward(ctx,
-                                            vx,
-                                            ax,
-                                            v_context,
-                                            a_context,
-                                            nullptr,
-                                            v_timestep_mod,
-                                            a_timestep_mod,
-                                            v_pe,
-                                            a_pe,
-                                            v_cross_pe,
-                                            a_cross_pe,
-                                            av_ca_video_scale_shift_timestep,
-                                            av_ca_audio_scale_shift_timestep,
-                                            av_ca_a2v_gate_noise_timestep,
-                                            av_ca_v2a_gate_noise_timestep,
-                                            v_prompt_timestep_mod,
-                                            a_prompt_timestep_mod);
-                vx         = out.first;
-                ax         = out.second;
+                const bool skip_video_self_attention =
+                    skip_video_self_attention_blocks != nullptr &&
+                    std::find(skip_video_self_attention_blocks->begin(),
+                              skip_video_self_attention_blocks->end(),
+                              i) != skip_video_self_attention_blocks->end();
+                auto out = block->forward(ctx,
+                                          vx,
+                                          ax,
+                                          v_context,
+                                          a_context,
+                                          nullptr,
+                                          v_timestep_mod,
+                                          a_timestep_mod,
+                                          v_pe,
+                                          a_pe,
+                                          v_cross_pe,
+                                          a_cross_pe,
+                                          av_ca_video_scale_shift_timestep,
+                                          av_ca_audio_scale_shift_timestep,
+                                          av_ca_a2v_gate_noise_timestep,
+                                          av_ca_v2a_gate_noise_timestep,
+                                          v_prompt_timestep_mod,
+                                          a_prompt_timestep_mod,
+                                          nullptr,
+                                          skip_video_self_attention,
+                                          video_reference_token_count,
+                                          reference_attention_strength);
+                vx       = out.first;
+                ax       = out.second;
                 sd::ggml_graph_cut::mark_graph_cut(vx, "ltxav.transformer_blocks." + std::to_string(i), "vx");
                 sd::ggml_graph_cut::mark_graph_cut(ax, "ltxav.transformer_blocks." + std::to_string(i), "ax");
             }
@@ -1739,12 +1814,15 @@ namespace LTXV {
 
         ggml_cgraph* build_graph(const sd::Tensor<float>& x_tensor,
                                  const sd::Tensor<float>& timesteps_tensor,
-                                 const sd::Tensor<float>& context_tensor         = {},
-                                 const sd::Tensor<float>& audio_x_tensor         = {},
-                                 const sd::Tensor<float>& audio_timesteps_tensor = {},
-                                 int audio_length                                = 0,
-                                 float frame_rate                                = 24.f,
-                                 const sd::Tensor<float>& video_positions_tensor = {}) {
+                                 const sd::Tensor<float>& context_tensor                  = {},
+                                 const sd::Tensor<float>& audio_x_tensor                  = {},
+                                 const sd::Tensor<float>& audio_timesteps_tensor          = {},
+                                 int audio_length                                         = 0,
+                                 float frame_rate                                         = 24.f,
+                                 const sd::Tensor<float>& video_positions_tensor          = {},
+                                 int64_t video_reference_token_count                      = 0,
+                                 float reference_attention_strength                       = 1.f,
+                                 const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto split_inputs = split_av_latents(x_tensor, audio_length);
             vx_input_cache    = split_inputs.first;
             if (!audio_x_tensor.empty()) {
@@ -1894,7 +1972,10 @@ namespace LTXV {
                                             video_cross_pe,
                                             audio_cross_pe,
                                             video_connector_pe,
-                                            audio_connector_pe);
+                                            audio_connector_pe,
+                                            video_reference_token_count,
+                                            reference_attention_strength,
+                                            skip_video_self_attention_blocks);
             auto out        = merge_av_latents(compute_ctx, out_pair.first, out_pair.second);
             ggml_build_forward_expand(gf, out);
             return gf;
@@ -1903,14 +1984,27 @@ namespace LTXV {
         sd::Tensor<float> compute(int n_threads,
                                   const sd::Tensor<float>& x,
                                   const sd::Tensor<float>& timesteps,
-                                  const sd::Tensor<float>& context         = {},
-                                  const sd::Tensor<float>& audio_x         = {},
-                                  const sd::Tensor<float>& audio_timesteps = {},
-                                  int audio_length                         = 0,
-                                  float frame_rate                         = 24.f,
-                                  const sd::Tensor<float>& video_positions = {}) {
+                                  const sd::Tensor<float>& context                         = {},
+                                  const sd::Tensor<float>& audio_x                         = {},
+                                  const sd::Tensor<float>& audio_timesteps                 = {},
+                                  int audio_length                                         = 0,
+                                  float frame_rate                                         = 24.f,
+                                  const sd::Tensor<float>& video_positions                 = {},
+                                  int64_t video_reference_token_count                      = 0,
+                                  float reference_attention_strength                       = 1.f,
+                                  const std::vector<int>* skip_video_self_attention_blocks = nullptr) {
             auto get_graph = [&]() -> ggml_cgraph* {
-                return build_graph(x, timesteps, context, audio_x, audio_timesteps, audio_length, frame_rate, video_positions);
+                return build_graph(x,
+                                   timesteps,
+                                   context,
+                                   audio_x,
+                                   audio_timesteps,
+                                   audio_length,
+                                   frame_rate,
+                                   video_positions,
+                                   video_reference_token_count,
+                                   reference_attention_strength,
+                                   skip_video_self_attention_blocks);
             };
             auto out = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
             return out;
@@ -1929,7 +2023,10 @@ namespace LTXV {
                            tensor_or_empty(extra->audio_timesteps),
                            extra->audio_length,
                            extra->frame_rate,
-                           tensor_or_empty(extra->video_positions));
+                           tensor_or_empty(extra->video_positions),
+                           extra->video_reference_token_count,
+                           extra->reference_attention_strength,
+                           extra->skip_video_self_attention_blocks);
         }
 
         void test(const std::string& x_path,

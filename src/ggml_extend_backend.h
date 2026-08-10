@@ -25,9 +25,14 @@ struct SDBackendAssignment {
     std::unordered_map<SDBackendModule, std::string> module_names;
 
     bool empty() const;
+    bool has_explicit(SDBackendModule module) const;
     std::string get(SDBackendModule module) const;
     void set_default(const std::string& name);
     void set_module(SDBackendModule module, const std::string& name);
+    bool set_module_if_unassigned(SDBackendModule module, const std::string& name);
+    void apply_keep_cpu_overrides(bool keep_clip_on_cpu,
+                                  bool keep_vae_on_cpu,
+                                  bool keep_control_net_on_cpu);
 };
 
 struct SDBackendHandleDeleter {
@@ -55,7 +60,26 @@ public:
               bool keep_clip_on_cpu,
               bool keep_vae_on_cpu,
               bool keep_control_net_on_cpu,
+              bool vae_auto_cpu_fallback,
               std::string* error);
+    // Source compatibility for callers predating automatic VAE fallback.
+    // Keeping the feature disabled preserves their existing backend routing.
+    bool init(const char* backend_spec,
+              const char* params_backend_spec,
+              bool offload_params_to_cpu,
+              bool keep_clip_on_cpu,
+              bool keep_vae_on_cpu,
+              bool keep_control_net_on_cpu,
+              std::string* error) {
+        return init(backend_spec,
+                    params_backend_spec,
+                    offload_params_to_cpu,
+                    keep_clip_on_cpu,
+                    keep_vae_on_cpu,
+                    keep_control_net_on_cpu,
+                    false,
+                    error);
+    }
     void reset();
 
     ggml_backend_t runtime_backend(SDBackendModule module);

@@ -27,6 +27,7 @@
 #include "lens.hpp"
 #include "lora.hpp"
 #include "ltx_audio_vae.h"
+#include "ltx_conditioning.hpp"
 #include "ltx_latent_upscaler.hpp"
 #include "ltx_vae.hpp"
 #include "ltxv.hpp"
@@ -165,10 +166,18 @@ static void ggml_sd_log_bridge(enum ggml_log_level level, const char* text, void
         return;
     }
     switch (level) {
-        case GGML_LOG_LEVEL_DEBUG: LOG_DEBUG("ggml: %s", text); break;
-        case GGML_LOG_LEVEL_WARN: LOG_WARN("ggml: %s", text); break;
-        case GGML_LOG_LEVEL_ERROR: LOG_ERROR("ggml: %s", text); break;
-        default: LOG_INFO("ggml: %s", text); break;
+        case GGML_LOG_LEVEL_DEBUG:
+            LOG_DEBUG("ggml: %s", text);
+            break;
+        case GGML_LOG_LEVEL_WARN:
+            LOG_WARN("ggml: %s", text);
+            break;
+        case GGML_LOG_LEVEL_ERROR:
+            LOG_ERROR("ggml: %s", text);
+            break;
+        default:
+            LOG_INFO("ggml: %s", text);
+            break;
     }
 }
 
@@ -224,6 +233,13 @@ public:
 
     // lora_name => multiplier
     std::unordered_map<std::string, float> curr_lora_state;
+    std::unordered_set<std::string> curr_diffusion_lora_ids;
+
+    struct LoraApplyResult {
+        bool all_requested_applied     = true;
+        bool diffusion_adapter_applied = false;
+        size_t requested_count         = 0;
+    };
 
     std::shared_ptr<Denoiser> denoiser = std::make_shared<CompVisDenoiser>();
 
@@ -269,8 +285,12 @@ public:
                 derived_backend = "cpu";
             } else {
                 switch (sd_ctx_params->preferred_gpu_backend) {
-                    case SD_BACKEND_PREF_CPU: derived_backend = "cpu"; break;
-                    case SD_BACKEND_PREF_OPENCL: derived_backend = "opencl"; break;
+                    case SD_BACKEND_PREF_CPU:
+                        derived_backend = "cpu";
+                        break;
+                    case SD_BACKEND_PREF_OPENCL:
+                        derived_backend = "opencl";
+                        break;
                     case SD_BACKEND_PREF_GPU:
                     default:
                         // Leave empty: upstream auto-selection is GPU-first AND
@@ -291,6 +311,7 @@ public:
                                   sd_ctx_params->keep_clip_on_cpu,
                                   sd_ctx_params->keep_vae_on_cpu,
                                   sd_ctx_params->keep_control_net_on_cpu,
+                                  sd_ctx_params->vae_auto_cpu_fallback,
                                   &error)) {
             LOG_ERROR("backend config failed: %s", error.c_str());
             return false;
@@ -593,9 +614,9 @@ public:
                                                                      params_backend_for(SDBackendModule::TE),
                                                                      tensor_storage_map);
                 diffusion_model  = std::make_shared<MMDiTRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                params_backend_for(SDBackendModule::DIFFUSION),
-                                                                tensor_storage_map,
-                                                                "model.diffusion_model");
+                                                                 params_backend_for(SDBackendModule::DIFFUSION),
+                                                                 tensor_storage_map,
+                                                                 "model.diffusion_model");
             } else if (sd_version_is_pid(version)) {
                 vae_decode_only  = false;
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
@@ -603,9 +624,9 @@ public:
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<Pid::PiDRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                   params_backend_for(SDBackendModule::DIFFUSION),
-                                                                   tensor_storage_map,
-                                                                   "model.diffusion_model.net");
+                                                                    params_backend_for(SDBackendModule::DIFFUSION),
+                                                                    tensor_storage_map,
+                                                                    "model.diffusion_model.net");
             } else if (sd_version_is_flux(version)) {
                 bool is_chroma = false;
                 for (auto pair : tensor_storage_map) {
@@ -654,19 +675,19 @@ public:
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<Flux::FluxRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                     params_backend_for(SDBackendModule::DIFFUSION),
-                                                                     tensor_storage_map,
-                                                                     "model.diffusion_model",
-                                                                     version,
-                                                                     sd_ctx_params->chroma_use_dit_mask);
+                                                                      params_backend_for(SDBackendModule::DIFFUSION),
+                                                                      tensor_storage_map,
+                                                                      "model.diffusion_model",
+                                                                      version,
+                                                                      sd_ctx_params->chroma_use_dit_mask);
             } else if (sd_version_is_ltxav(version)) {
                 cond_stage_model = std::make_shared<LTXAVEmbedder>(backend_for(SDBackendModule::TE),
                                                                    params_backend_for(SDBackendModule::TE),
                                                                    tensor_storage_map);
                 diffusion_model  = std::make_shared<LTXV::LTXAVRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                      params_backend_for(SDBackendModule::DIFFUSION),
-                                                                      tensor_storage_map,
-                                                                      "model.diffusion_model");
+                                                                       params_backend_for(SDBackendModule::DIFFUSION),
+                                                                       tensor_storage_map,
+                                                                       "model.diffusion_model");
             } else if (sd_version_is_wan(version)) {
                 cond_stage_model = std::make_shared<T5CLIPEmbedder>(backend_for(SDBackendModule::TE),
                                                                     params_backend_for(SDBackendModule::TE),
@@ -675,10 +696,10 @@ public:
                                                                     0,
                                                                     true);
                 diffusion_model  = std::make_shared<WAN::WanRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                   params_backend_for(SDBackendModule::DIFFUSION),
-                                                                   tensor_storage_map,
-                                                                   "model.diffusion_model",
-                                                                   version);
+                                                                    params_backend_for(SDBackendModule::DIFFUSION),
+                                                                    tensor_storage_map,
+                                                                    "model.diffusion_model",
+                                                                    version);
                 if (strlen(SAFE_STR(sd_ctx_params->high_noise_diffusion_model_path)) > 0) {
                     high_noise_diffusion_model = std::make_shared<WAN::WanRunner>(backend_for(SDBackendModule::DIFFUSION),
                                                                                   params_backend_for(SDBackendModule::DIFFUSION),
@@ -710,11 +731,11 @@ public:
                                                                  "",
                                                                  enable_vision);
                 diffusion_model  = std::make_shared<Qwen::QwenImageRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                          params_backend_for(SDBackendModule::DIFFUSION),
-                                                                          tensor_storage_map,
-                                                                          "model.diffusion_model",
-                                                                          version,
-                                                                          sd_ctx_params->qwen_image_zero_cond_t);
+                                                                           params_backend_for(SDBackendModule::DIFFUSION),
+                                                                           tensor_storage_map,
+                                                                           "model.diffusion_model",
+                                                                           version,
+                                                                           sd_ctx_params->qwen_image_zero_cond_t);
             } else if (sd_version_is_longcat(version)) {
                 bool enable_vision = false;
                 if (!vae_decode_only) {
@@ -727,65 +748,65 @@ public:
                                                                  "",
                                                                  enable_vision);
                 diffusion_model  = std::make_shared<Flux::FluxRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                     params_backend_for(SDBackendModule::DIFFUSION),
-                                                                     tensor_storage_map,
-                                                                     "model.diffusion_model",
-                                                                     version,
-                                                                     sd_ctx_params->chroma_use_dit_mask);
+                                                                      params_backend_for(SDBackendModule::DIFFUSION),
+                                                                      tensor_storage_map,
+                                                                      "model.diffusion_model",
+                                                                      version,
+                                                                      sd_ctx_params->chroma_use_dit_mask);
             } else if (version == VERSION_HIDREAM_O1) {
                 cond_stage_model = std::make_shared<HiDreamO1::HiDreamO1Conditioner>(backend_for(SDBackendModule::TE),
                                                                                      params_backend_for(SDBackendModule::TE),
                                                                                      tensor_storage_map);
                 diffusion_model  = std::make_shared<HiDreamO1::HiDreamO1Runner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                               params_backend_for(SDBackendModule::DIFFUSION),
-                                                                               tensor_storage_map,
-                                                                               "model");
+                                                                                params_backend_for(SDBackendModule::DIFFUSION),
+                                                                                tensor_storage_map,
+                                                                                "model");
             } else if (sd_version_is_anima(version)) {
                 cond_stage_model = std::make_shared<AnimaConditioner>(backend_for(SDBackendModule::TE),
                                                                       params_backend_for(SDBackendModule::TE),
                                                                       tensor_storage_map);
                 diffusion_model  = std::make_shared<Anima::AnimaRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                       params_backend_for(SDBackendModule::DIFFUSION),
-                                                                       tensor_storage_map,
-                                                                       "model.diffusion_model");
+                                                                        params_backend_for(SDBackendModule::DIFFUSION),
+                                                                        tensor_storage_map,
+                                                                        "model.diffusion_model");
             } else if (sd_version_is_ideogram4(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  params_backend_for(SDBackendModule::TE),
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<Ideogram4::Ideogram4Runner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                               params_backend_for(SDBackendModule::DIFFUSION),
-                                                                               tensor_storage_map,
-                                                                               "model.diffusion_model",
-                                                                               version);
+                                                                                params_backend_for(SDBackendModule::DIFFUSION),
+                                                                                tensor_storage_map,
+                                                                                "model.diffusion_model",
+                                                                                version);
             } else if (sd_version_is_z_image(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  params_backend_for(SDBackendModule::TE),
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<ZImage::ZImageRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                         params_backend_for(SDBackendModule::DIFFUSION),
-                                                                         tensor_storage_map,
-                                                                         "model.diffusion_model",
-                                                                         version);
+                                                                          params_backend_for(SDBackendModule::DIFFUSION),
+                                                                          tensor_storage_map,
+                                                                          "model.diffusion_model",
+                                                                          version);
             } else if (sd_version_is_ernie_image(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  params_backend_for(SDBackendModule::TE),
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<ErnieImage::ErnieImageRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                                 params_backend_for(SDBackendModule::DIFFUSION),
-                                                                                 tensor_storage_map,
-                                                                                 "model.diffusion_model");
+                                                                                  params_backend_for(SDBackendModule::DIFFUSION),
+                                                                                  tensor_storage_map,
+                                                                                  "model.diffusion_model");
             } else if (sd_version_is_lens(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  params_backend_for(SDBackendModule::TE),
                                                                  tensor_storage_map,
                                                                  version);
                 diffusion_model  = std::make_shared<Lens::LensRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                     params_backend_for(SDBackendModule::DIFFUSION),
-                                                                     tensor_storage_map,
-                                                                     "model.diffusion_model");
+                                                                      params_backend_for(SDBackendModule::DIFFUSION),
+                                                                      tensor_storage_map,
+                                                                      "model.diffusion_model");
             } else {  // SD1.x SD2.x SDXL
                 std::map<std::string, std::string> embbeding_map;
                 for (uint32_t i = 0; i < sd_ctx_params->embedding_count; i++) {
@@ -933,10 +954,21 @@ public:
                 }
             }
 
+            auto configure_vae_fallback = [&](const std::shared_ptr<GGMLRunner>& model) {
+                if (model) {
+                    model->set_vae_auto_cpu_fallback(
+                        sd_ctx_params->vae_auto_cpu_fallback,
+                        sd_ctx_params->vae_auto_cpu_fallback_memory_ratio);
+                }
+            };
+            configure_vae_fallback(first_stage_model);
+            configure_vae_fallback(preview_vae);
+
             if (use_audio_vae) {
                 audio_vae_model = std::make_shared<LTXV::LTXAudioVAERunner>(backend_for(SDBackendModule::VAE),
                                                                             params_backend_for(SDBackendModule::VAE),
                                                                             tensor_storage_map);
+                configure_vae_fallback(audio_vae_model);
                 get_param_tensors_p(audio_vae_model, vae_mmap, "");
             }
 
@@ -982,11 +1014,11 @@ public:
                                                                        version);
                 }
                 pmid_lora               = std::make_shared<LoraModel>("pmid",
-                                                        backend_for(SDBackendModule::PHOTOMAKER),
-                                                        params_backend_for(SDBackendModule::PHOTOMAKER),
-                                                        sd_ctx_params->photo_maker_path,
-                                                        "",
-                                                        version);
+                                                                      backend_for(SDBackendModule::PHOTOMAKER),
+                                                                      params_backend_for(SDBackendModule::PHOTOMAKER),
+                                                                      sd_ctx_params->photo_maker_path,
+                                                                      "",
+                                                                      version);
                 auto lora_tensor_filter = [&](const std::string& tensor_name) {
                     if (starts_with(tensor_name, "lora.model")) {
                         return true;
@@ -1427,7 +1459,10 @@ public:
         return lora;
     }
 
-    void apply_loras_immediately(const std::unordered_map<std::string, float>& lora_state) {
+    LoraApplyResult apply_loras_immediately(
+        const std::unordered_map<std::string, float>& lora_state) {
+        LoraApplyResult result;
+        result.requested_count = lora_state.size();
         std::unordered_map<std::string, float> lora_state_diff;
         for (auto& kv : lora_state) {
             const std::string& lora_name = kv.first;
@@ -1441,37 +1476,113 @@ public:
         }
 
         if (lora_state_diff.empty()) {
-            return;
+            for (const auto& [lora_id, multiplier] : lora_state) {
+                (void)multiplier;
+                result.diffusion_adapter_applied =
+                    result.diffusion_adapter_applied ||
+                    curr_diffusion_lora_ids.count(lora_id) > 0;
+            }
+            return result;
         }
 
         LOG_INFO("apply lora immediately");
 
-        size_t rm = lora_state_diff.size() - lora_state.size();
+        size_t rm = lora_state_diff.size() > lora_state.size()
+                        ? lora_state_diff.size() - lora_state.size()
+                        : 0;
         if (rm != 0) {
             LOG_INFO("attempting to apply %lu LoRAs (removing %lu applied LoRAs)", lora_state.size(), rm);
         } else {
             LOG_INFO("attempting to apply %lu LoRAs", lora_state.size());
         }
 
-        for (auto& kv : lora_state_diff) {
-            int64_t t0 = ggml_time_ms();
+        struct PendingLora {
+            std::string id;
+            float multiplier = 0.0f;
+            bool requested    = false;
+            std::shared_ptr<LoraModel> model;
+        };
+        std::vector<PendingLora> pending;
+        pending.reserve(lora_state_diff.size());
 
-            auto lora = load_lora_model_from_file(kv.first, kv.second, SDBackendModule::DIFFUSION);
-            if (!lora || lora->lora_tensors.empty()) {
-                continue;
+        for (auto& kv : lora_state_diff) {
+            auto lora = load_lora_model_from_file(
+                kv.first, kv.second, SDBackendModule::DIFFUSION);
+            if (!lora || lora->lora_tensors.empty() ||
+                lora->count_compatible_model_tensors(tensors) == 0) {
+                LOG_ERROR("requested LoRA '%s' did not load any shape-compatible model tensors",
+                          kv.first.c_str());
+                result.all_requested_applied = false;
+                return result;
             }
-            lora->apply(tensors, version, n_threads);
+            pending.push_back({kv.first,
+                               kv.second,
+                               lora_state.find(kv.first) != lora_state.end(),
+                               std::move(lora)});
+        }
+
+        // Loading and shape-checking every requested change is deliberately a
+        // separate phase. A valid LoRA must not be merged into the model when
+        // a later requested LoRA is missing or incompatible; otherwise the
+        // failed request leaves both model weights and curr_lora_state out of
+        // sync and cannot be safely reused on the next generation.
+        if (!validate_lora_changes(
+                pending,
+                [](const PendingLora& change) {
+                    return change.model != nullptr &&
+                           !change.model->lora_tensors.empty();
+                })) {
+            result.all_requested_applied = false;
+            return result;
+        }
+
+        std::unordered_set<std::string> next_diffusion_lora_ids =
+            curr_diffusion_lora_ids;
+        for (auto& change : pending) {
+            int64_t t0 = ggml_time_ms();
+            auto& lora = change.model;
+            if (!lora->apply(tensors, version, n_threads)) {
+                LOG_ERROR("requested LoRA '%s' failed while applying compatible tensors",
+                          change.id.c_str());
+                result.all_requested_applied = false;
+                return result;
+            }
+            std::map<std::string, ggml_tensor*> diffusion_tensors;
+            for (const auto& [name, tensor] : tensors) {
+                if (is_diffusion_model_name(name)) {
+                    diffusion_tensors[name] = tensor;
+                }
+            }
+            if (change.requested &&
+                lora->count_compatible_model_tensors(diffusion_tensors) > 0) {
+                next_diffusion_lora_ids.insert(change.id);
+            } else if (!change.requested) {
+                next_diffusion_lora_ids.erase(change.id);
+            }
             lora->free_params_buffer();
 
             int64_t t1 = ggml_time_ms();
 
-            LOG_INFO("lora '%s' applied, taking %.2fs", kv.first.c_str(), (t1 - t0) * 1.0f / 1000);
+            LOG_INFO("lora '%s' applied, taking %.2fs", change.id.c_str(), (t1 - t0) * 1.0f / 1000);
         }
 
-        curr_lora_state = lora_state;
+        curr_lora_state         = lora_state;
+        curr_diffusion_lora_ids = std::move(next_diffusion_lora_ids);
+        for (const auto& [lora_id, multiplier] : lora_state) {
+            (void)multiplier;
+            result.diffusion_adapter_applied =
+                result.diffusion_adapter_applied ||
+                curr_diffusion_lora_ids.count(lora_id) > 0;
+        }
+        return result;
     }
 
-    void apply_loras_at_runtime(const std::unordered_map<std::string, float>& lora_state) {
+    LoraApplyResult apply_loras_at_runtime(
+        const std::unordered_map<std::string, float>& lora_state) {
+        LoraApplyResult result;
+        result.requested_count = lora_state.size();
+        std::unordered_set<std::string> compatible_lora_ids;
+        std::unordered_set<std::string> diffusion_lora_ids;
         cond_stage_lora_models.clear();
         diffusion_lora_models.clear();
         first_stage_lora_models.clear();
@@ -1488,7 +1599,7 @@ public:
             first_stage_model->set_weight_adapter(nullptr);
         }
         if (lora_state.empty()) {
-            return;
+            return result;
         }
         LOG_INFO("apply lora at runtime");
         if (cond_stage_model) {
@@ -1517,7 +1628,10 @@ public:
                 auto lora = load_lora_model_from_file(lora_id, multiplier, SDBackendModule::TE, lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
-                    cond_stage_lora_models.push_back(lora);
+                    if (lora->count_compatible_model_tensors(tensors) > 0) {
+                        cond_stage_lora_models.push_back(lora);
+                        compatible_lora_ids.insert(lora_id);
+                    }
                 }
             }
             // Only attach the adapter when there are LoRAs targeting the cond_stage model.
@@ -1554,7 +1668,11 @@ public:
                 auto lora = load_lora_model_from_file(lora_name, multiplier, SDBackendModule::DIFFUSION, lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
-                    diffusion_lora_models.push_back(lora);
+                    if (lora->count_compatible_model_tensors(tensors) > 0) {
+                        diffusion_lora_models.push_back(lora);
+                        compatible_lora_ids.insert(lora_name);
+                        diffusion_lora_ids.insert(lora_name);
+                    }
                 }
             }
             if (!diffusion_lora_models.empty()) {
@@ -1592,7 +1710,10 @@ public:
                 auto lora = load_lora_model_from_file(lora_name, multiplier, SDBackendModule::VAE, lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
-                    first_stage_lora_models.push_back(lora);
+                    if (lora->count_compatible_model_tensors(tensors) > 0) {
+                        first_stage_lora_models.push_back(lora);
+                        compatible_lora_ids.insert(lora_name);
+                    }
                 }
             }
             if (!first_stage_lora_models.empty()) {
@@ -1600,6 +1721,18 @@ public:
                 first_stage_model->set_weight_adapter(multi_lora_adapter);
             }
         }
+        for (const auto& [lora_id, multiplier] : lora_state) {
+            (void)multiplier;
+            if (compatible_lora_ids.find(lora_id) ==
+                compatible_lora_ids.end()) {
+                LOG_ERROR("requested LoRA '%s' was missing, unreadable, empty, or incompatible with all model tensors",
+                          lora_id.c_str());
+                result.all_requested_applied = false;
+            }
+        }
+        result.diffusion_adapter_applied =
+            !diffusion_lora_ids.empty();
+        return result;
     }
 
     void lora_stat() {
@@ -1625,7 +1758,15 @@ public:
         }
     }
 
-    void apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    LoraApplyResult apply_loras(const sd_lora_t* loras,
+                                uint32_t lora_count) {
+        LoraApplyResult result;
+        result.requested_count = lora_count;
+        if (lora_count > 0 && loras == nullptr) {
+            LOG_ERROR("requested LoRA list is null");
+            result.all_requested_applied = false;
+            return result;
+        }
         std::unordered_map<std::string, float> lora_f2m;
         for (uint32_t i = 0; i < lora_count; i++) {
             std::string lora_id = SAFE_STR(loras[i].path);
@@ -1637,14 +1778,16 @@ public:
         }
         int64_t t0 = ggml_time_ms();
         if (apply_lora_immediately) {
-            apply_loras_immediately(lora_f2m);
+            result = apply_loras_immediately(lora_f2m);
         } else {
-            apply_loras_at_runtime(lora_f2m);
+            result = apply_loras_at_runtime(lora_f2m);
         }
-        int64_t t1 = ggml_time_ms();
+        result.requested_count = lora_count;
+        int64_t t1             = ggml_time_ms();
         if (!lora_f2m.empty()) {
             LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         }
+        return result;
     }
 
     SDCondition get_pmid_conditon(sd_pm_params_t pm_params,
@@ -1821,9 +1964,9 @@ public:
                                                    : sd::ops::slice(latents, 2, 0, channels)
                                         : latents;
         if (preview_mode == PREVIEW_PROJ) {
-            int patch_sz                     = 1;
-            const float(*latent_rgb_proj)[3] = nullptr;
-            float* latent_rgb_bias           = nullptr;
+            int patch_sz                      = 1;
+            const float (*latent_rgb_proj)[3] = nullptr;
+            float* latent_rgb_bias            = nullptr;
 
             if (channels == 128) {
                 if (sd_version_uses_flux2_vae(version)) {
@@ -2046,7 +2189,9 @@ public:
                              int audio_length,
                              float frame_rate,
                              const sd_cache_params_t* cache_params,
-                             const sd::Tensor<float>& video_positions = {}) {
+                             const sd::Tensor<float>& video_positions = {},
+                             int64_t video_reference_token_count      = 0,
+                             float reference_attention_strength       = 1.f) {
         std::vector<int> skip_layers(guidance.slg.layers, guidance.slg.layers + guidance.slg.layer_count);
         float cfg_scale     = guidance.txt_cfg;
         float img_cfg_scale = guidance.img_cfg;
@@ -2215,7 +2360,10 @@ public:
                         audio_timesteps_tensor.empty() ? nullptr : &audio_timesteps_tensor,
                         audio_length,
                         frame_rate,
-                        video_positions.empty() ? nullptr : &video_positions};
+                        video_positions.empty() ? nullptr : &video_positions,
+                        video_reference_token_count,
+                        reference_attention_strength,
+                        local_skip_layers};
                 } else {
                     diffusion_params.extra = std::monostate{};
                 }
@@ -2812,32 +2960,34 @@ void sd_hires_params_init(sd_hires_params_t* hires_params) {
 }
 
 void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
-    *sd_ctx_params                         = {};
-    sd_ctx_params->vae_decode_only         = true;
-    sd_ctx_params->free_params_immediately = true;
-    sd_ctx_params->n_threads               = sd_get_num_physical_cores();
-    sd_ctx_params->wtype                   = SD_TYPE_COUNT;
-    sd_ctx_params->rng_type                = CUDA_RNG;
-    sd_ctx_params->sampler_rng_type        = RNG_TYPE_COUNT;
-    sd_ctx_params->prediction              = PREDICTION_COUNT;
-    sd_ctx_params->lora_apply_mode         = LORA_APPLY_AUTO;
-    sd_ctx_params->offload_params_to_cpu   = false;
-    sd_ctx_params->max_vram                = 0.f;
-    sd_ctx_params->stream_layers           = false;
-    sd_ctx_params->enable_mmap             = false;
-    sd_ctx_params->keep_clip_on_cpu        = false;
-    sd_ctx_params->keep_control_net_on_cpu = false;
-    sd_ctx_params->keep_vae_on_cpu         = false;
-    sd_ctx_params->diffusion_flash_attn    = false;
-    sd_ctx_params->circular_x              = false;
-    sd_ctx_params->circular_y              = false;
-    sd_ctx_params->chroma_use_dit_mask     = true;
-    sd_ctx_params->chroma_use_t5_mask      = false;
-    sd_ctx_params->chroma_t5_mask_pad      = 1;
-    sd_ctx_params->vae_format              = SD_VAE_FORMAT_AUTO;
-    sd_ctx_params->backend                 = nullptr;
-    sd_ctx_params->params_backend          = nullptr;
-    sd_ctx_params->preferred_gpu_backend   = SD_BACKEND_PREF_GPU;
+    *sd_ctx_params                                    = {};
+    sd_ctx_params->vae_decode_only                    = true;
+    sd_ctx_params->free_params_immediately            = true;
+    sd_ctx_params->n_threads                          = sd_get_num_physical_cores();
+    sd_ctx_params->wtype                              = SD_TYPE_COUNT;
+    sd_ctx_params->rng_type                           = CUDA_RNG;
+    sd_ctx_params->sampler_rng_type                   = RNG_TYPE_COUNT;
+    sd_ctx_params->prediction                         = PREDICTION_COUNT;
+    sd_ctx_params->lora_apply_mode                    = LORA_APPLY_AUTO;
+    sd_ctx_params->offload_params_to_cpu              = false;
+    sd_ctx_params->max_vram                           = 0.f;
+    sd_ctx_params->stream_layers                      = false;
+    sd_ctx_params->enable_mmap                        = false;
+    sd_ctx_params->keep_clip_on_cpu                   = false;
+    sd_ctx_params->keep_control_net_on_cpu            = false;
+    sd_ctx_params->keep_vae_on_cpu                    = false;
+    sd_ctx_params->vae_auto_cpu_fallback              = false;
+    sd_ctx_params->vae_auto_cpu_fallback_memory_ratio = 0.9f;
+    sd_ctx_params->diffusion_flash_attn               = false;
+    sd_ctx_params->circular_x                         = false;
+    sd_ctx_params->circular_y                         = false;
+    sd_ctx_params->chroma_use_dit_mask                = true;
+    sd_ctx_params->chroma_use_t5_mask                 = false;
+    sd_ctx_params->chroma_t5_mask_pad                 = 1;
+    sd_ctx_params->vae_format                         = SD_VAE_FORMAT_AUTO;
+    sd_ctx_params->backend                            = nullptr;
+    sd_ctx_params->params_backend                     = nullptr;
+    sd_ctx_params->preferred_gpu_backend              = SD_BACKEND_PREF_GPU;
 }
 
 char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
@@ -2879,6 +3029,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "keep_clip_on_cpu: %s\n"
              "keep_control_net_on_cpu: %s\n"
              "keep_vae_on_cpu: %s\n"
+             "vae_auto_cpu_fallback: %s\n"
+             "vae_auto_cpu_fallback_memory_ratio: %.3f\n"
              "flash_attn: %s\n"
              "diffusion_flash_attn: %s\n"
              "circular_x: %s\n"
@@ -2919,6 +3071,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              BOOL_STR(sd_ctx_params->keep_clip_on_cpu),
              BOOL_STR(sd_ctx_params->keep_control_net_on_cpu),
              BOOL_STR(sd_ctx_params->keep_vae_on_cpu),
+             BOOL_STR(sd_ctx_params->vae_auto_cpu_fallback),
+             sd_ctx_params->vae_auto_cpu_fallback_memory_ratio,
              BOOL_STR(sd_ctx_params->flash_attn),
              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
              BOOL_STR(sd_ctx_params->circular_x),
@@ -3090,6 +3244,10 @@ void sd_vid_gen_params_init(sd_vid_gen_params_t* sd_vid_gen_params) {
     sd_vid_gen_params->fps                                   = 16;
     sd_vid_gen_params->moe_boundary                          = 0.875f;
     sd_vid_gen_params->vace_strength                         = 1.f;
+    sd_vid_gen_params->reference_images                      = nullptr;
+    sd_vid_gen_params->reference_images_count                = 0;
+    sd_vid_gen_params->reference_attention_strength          = 1.f;
+    sd_vid_gen_params->reference_downscale_factor            = 1.f;
     sd_vid_gen_params->vae_tiling_params                     = {false, false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
     sd_vid_gen_params->hires.enabled                         = false;
     sd_vid_gen_params->hires.upscaler                        = SD_HIRES_UPSCALER_LATENT;
@@ -3615,7 +3773,7 @@ struct SamplePlan {
 
         if (sample_params->custom_sigmas_count > 0) {
             sigmas      = std::vector<float>(sample_params->custom_sigmas,
-                                        sample_params->custom_sigmas + sample_params->custom_sigmas_count);
+                                             sample_params->custom_sigmas + sample_params->custom_sigmas_count);
             total_steps = static_cast<int>(sigmas.size()) - 1;
             LOG_WARN("total_steps != custom_sigmas_count - 1, set total_steps to %d", total_steps);
             if (sample_steps >= total_steps) {
@@ -3684,88 +3842,10 @@ struct ImageGenerationLatents {
     int64_t ref_image_num                  = 0;
     int64_t video_conditioning_frame_count = 0;
     int64_t video_target_frame_count       = 0;
+    int64_t video_reference_token_count    = 0;
+    bool video_conditioning_first          = false;
     int audio_length                       = 0;
 };
-
-static float ltxv_latent_corner_to_pixel_frame(int64_t corner_index,
-                                               int temporal_scale,
-                                               bool causal_temporal_positioning) {
-    float pixel_t = static_cast<float>(corner_index * temporal_scale);
-    if (causal_temporal_positioning) {
-        pixel_t = std::max(0.f, pixel_t + 1.f - static_cast<float>(temporal_scale));
-    }
-    return pixel_t;
-}
-
-static void set_ltxv_video_position(sd::Tensor<float>* positions,
-                                    int64_t token,
-                                    float t_start,
-                                    float t_end,
-                                    float h_start,
-                                    float h_end,
-                                    float w_start,
-                                    float w_end) {
-    positions->index(0, 0, token, 0) = t_start;
-    positions->index(1, 0, token, 0) = t_end;
-    positions->index(0, 1, token, 0) = h_start;
-    positions->index(1, 1, token, 0) = h_end;
-    positions->index(0, 2, token, 0) = w_start;
-    positions->index(1, 2, token, 0) = w_end;
-}
-
-static sd::Tensor<float> build_ltxv_video_positions(int64_t width,
-                                                    int64_t height,
-                                                    int64_t target_latent_frames,
-                                                    int64_t keyframe_latent_frames,
-                                                    int keyframe_frame_idx,
-                                                    int keyframe_pixel_frames,
-                                                    int fps,
-                                                    int spatial_scale,
-                                                    int temporal_scale,
-                                                    bool causal_temporal_positioning) {
-    GGML_ASSERT(width > 0 && height > 0 && target_latent_frames > 0);
-    GGML_ASSERT(keyframe_latent_frames > 0);
-    GGML_ASSERT(fps > 0);
-
-    int64_t total_tokens = width * height * (target_latent_frames + keyframe_latent_frames);
-    sd::Tensor<float> positions({2, 3, total_tokens, 1});
-    int64_t token = 0;
-
-    for (int64_t t = 0; t < target_latent_frames; t++) {
-        float t_start = ltxv_latent_corner_to_pixel_frame(t, temporal_scale, causal_temporal_positioning) / static_cast<float>(fps);
-        float t_end   = ltxv_latent_corner_to_pixel_frame(t + 1, temporal_scale, causal_temporal_positioning) / static_cast<float>(fps);
-        for (int64_t h = 0; h < height; h++) {
-            float h_start = static_cast<float>(h * spatial_scale);
-            float h_end   = static_cast<float>((h + 1) * spatial_scale);
-            for (int64_t w = 0; w < width; w++) {
-                float w_start = static_cast<float>(w * spatial_scale);
-                float w_end   = static_cast<float>((w + 1) * spatial_scale);
-                set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
-            }
-        }
-    }
-
-    for (int64_t t = 0; t < keyframe_latent_frames; t++) {
-        float t_start = static_cast<float>(keyframe_frame_idx + t * temporal_scale);
-        float t_end   = static_cast<float>(keyframe_frame_idx + (t + 1) * temporal_scale);
-        if (keyframe_pixel_frames == 1) {
-            t_end = t_start + 1.f;
-        }
-        t_start /= static_cast<float>(fps);
-        t_end /= static_cast<float>(fps);
-        for (int64_t h = 0; h < height; h++) {
-            float h_start = static_cast<float>(h * spatial_scale);
-            float h_end   = static_cast<float>((h + 1) * spatial_scale);
-            for (int64_t w = 0; w < width; w++) {
-                float w_start = static_cast<float>(w * spatial_scale);
-                float w_end   = static_cast<float>((w + 1) * spatial_scale);
-                set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
-            }
-        }
-    }
-
-    return positions;
-}
 
 static sd::Tensor<float> pack_ltxav_audio_and_video_latents(const sd::Tensor<float>& video_latent,
                                                             const sd::Tensor<float>& audio_latent) {
@@ -3858,6 +3938,30 @@ static sd::Tensor<float> make_ltxav_video_denoise_mask(const sd::Tensor<float>& 
                             1,
                             1},
                            value);
+}
+
+static sd::Tensor<float> make_ltxav_static_reference_video(const sd::Tensor<float>& image, int frames) {
+    if (image.empty() || image.dim() != 4 || frames <= 0) {
+        return {};
+    }
+
+    const int64_t width    = image.shape()[0];
+    const int64_t height   = image.shape()[1];
+    const int64_t channels = image.shape()[2];
+    const int64_t batches  = image.shape()[3];
+    const int64_t plane    = width * height;
+    sd::Tensor<float> video({width, height, frames, channels, batches});
+
+    for (int64_t batch = 0; batch < batches; ++batch) {
+        for (int64_t channel = 0; channel < channels; ++channel) {
+            const float* source = image.data() + (batch * channels + channel) * plane;
+            for (int frame = 0; frame < frames; ++frame) {
+                float* destination = video.data() + ((batch * channels + channel) * frames + frame) * plane;
+                std::copy_n(source, plane, destination);
+            }
+        }
+    }
+    return video;
 }
 
 static sd::Tensor<float> encode_ltxav_condition_image(sd_ctx_t* sd_ctx,
@@ -4616,7 +4720,13 @@ SD_API sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* s
     sd_ctx->sd->rng->manual_seed(request.seed);
     sd_ctx->sd->sampler_rng->manual_seed(request.seed);
     sd_ctx->sd->set_flow_shift(sd_img_gen_params->sample_params.flow_shift);
-    sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count);
+    const auto lora_result =
+        sd_ctx->sd->apply_loras(sd_img_gen_params->loras,
+                                sd_img_gen_params->lora_count);
+    if (!lora_result.all_requested_applied) {
+        LOG_ERROR("image generation aborted because a requested LoRA was not applied");
+        return nullptr;
+    }
 
     ImageVaeAxesGuard axes_guard(sd_ctx, sd_img_gen_params, request);
 
@@ -4708,10 +4818,10 @@ SD_API sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* s
         if (request.hires.upscaler == SD_HIRES_UPSCALER_MODEL) {
             LOG_INFO("hires fix: loading model upscaler from '%s'", request.hires.model_path);
             hires_upscaler                    = std::make_unique<UpscalerGGML>(sd_ctx->sd->n_threads,
-                                                            false,
-                                                            request.hires.upscale_tile_size,
-                                                            sd_ctx->sd->backend_spec,
-                                                            sd_ctx->sd->params_backend_spec);
+                                                                               false,
+                                                                               request.hires.upscale_tile_size,
+                                                                               sd_ctx->sd->backend_spec,
+                                                                               sd_ctx->sd->params_backend_spec);
             const size_t max_graph_vram_bytes = sd::ggml_graph_cut::max_vram_gib_to_bytes(sd_ctx->sd->max_vram);
             hires_upscaler->set_max_graph_vram_bytes(max_graph_vram_bytes);
             if (!hires_upscaler->load_from_file(request.hires.model_path,
@@ -4845,6 +4955,7 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
 
     sd::Tensor<float> start_image;
     sd::Tensor<float> end_image;
+    std::vector<sd::Tensor<float>> reference_images;
 
     if (sd_vid_gen_params->init_image.data) {
         start_image = sd_image_to_tensor(sd_vid_gen_params->init_image, request->width, request->height);
@@ -4853,10 +4964,30 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
     if (sd_vid_gen_params->end_image.data) {
         end_image = sd_image_to_tensor(sd_vid_gen_params->end_image, request->width, request->height);
     }
+    if (sd_vid_gen_params->reference_images_count < 0 ||
+        (sd_vid_gen_params->reference_images_count > 0 && sd_vid_gen_params->reference_images == nullptr)) {
+        LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+        return std::nullopt;
+    }
+    for (int i = 0; i < sd_vid_gen_params->reference_images_count; ++i) {
+        const sd_image_t& image = sd_vid_gen_params->reference_images[i];
+        if (image.data == nullptr) {
+            LOG_ERROR("LTX IC-LoRA reference image %d is empty", i);
+            return std::nullopt;
+        }
+        reference_images.push_back(sd_image_to_tensor(image, request->width, request->height));
+        if (reference_images.back().empty()) {
+            LOG_ERROR("failed to prepare LTX IC-LoRA reference image %d", i);
+            return std::nullopt;
+        }
+    }
 
     if (sd_version_is_ltxav(sd_ctx->sd->version)) {
         latents.audio_length = get_ltxav_num_audio_latents(request->frames, request->fps);
         latents.audio_latent = make_ltxav_empty_audio_latent(latents.audio_length);
+    } else if (!reference_images.empty()) {
+        LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+        return std::nullopt;
     }
 
     if (sd_version_is_ltxav(sd_ctx->sd->version)) {
@@ -4865,7 +4996,34 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
             return std::nullopt;
         }
 
-        if (!start_image.empty() || !end_image.empty()) {
+        if (!reference_images.empty() &&
+            (!start_image.empty() || !end_image.empty())) {
+            LOG_ERROR("LTX IC-LoRA reference conditioning cannot be combined with init_image or end_image");
+            return std::nullopt;
+        }
+        if (!reference_images.empty()) {
+            if (reference_images.size() != 1) {
+                LOG_ERROR("LTX Ingredients requires exactly one composite reference sheet");
+                return std::nullopt;
+            }
+            const auto reference_validation =
+                sd::validate_ltx_reference_parameters(
+                    sd_vid_gen_params->reference_attention_strength,
+                    sd_vid_gen_params->reference_downscale_factor);
+            if (reference_validation != sd::LtxReferenceValidation::VALID) {
+                if (reference_validation ==
+                        sd::LtxReferenceValidation::NONFINITE_ATTENTION_STRENGTH ||
+                    reference_validation ==
+                        sd::LtxReferenceValidation::ATTENTION_STRENGTH_OUT_OF_RANGE) {
+                    LOG_ERROR("LTX IC-LoRA reference_attention_strength must be finite and in [0, 1]");
+                } else {
+                    LOG_ERROR("LTX IC-LoRA reference_downscale_factor must be finite and exactly 1");
+                }
+                return std::nullopt;
+            }
+        }
+
+        if (!start_image.empty() || !end_image.empty() || !reference_images.empty()) {
             if (sd_ctx->sd->vae_decode_only) {
                 LOG_ERROR("LTXAV image conditioning requires VAE encoder weights; create the context with vae_decode_only=false");
                 return std::nullopt;
@@ -4875,6 +5033,8 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                 LOG_INFO("FLF2V");
             } else if (!start_image.empty()) {
                 LOG_INFO("IMG2VID");
+            } else if (!reference_images.empty()) {
+                LOG_INFO("LTX IC-LoRA reference conditioning");
             } else {
                 LOG_INFO("END2VID");
             }
@@ -4888,7 +5048,8 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
 
             auto apply_video_condition_by_keyframe_index = [&](const sd::Tensor<float>& keyframes,
                                                                int frame_idx,
-                                                               const char* name) -> bool {
+                                                               const char* name,
+                                                               bool condition_first = false) -> bool {
                 int64_t keyframe_frames = keyframes.shape()[2];
                 if (keyframe_frames <= 0 || keyframes.shape()[0] != latents.init_latent.shape()[0] ||
                     keyframes.shape()[1] != latents.init_latent.shape()[1] ||
@@ -4899,25 +5060,33 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
 
                 latents.video_target_frame_count       = latents.init_latent.shape()[2];
                 latents.video_conditioning_frame_count = keyframe_frames;
-                latents.init_latent                    = sd::ops::concat(latents.init_latent, keyframes, 2);
+                latents.video_conditioning_first       = condition_first;
 
-                auto keyframe_mask      = sd::full<float>({keyframes.shape()[0],
-                                                           keyframes.shape()[1],
-                                                           keyframes.shape()[2],
-                                                           1,
-                                                           1},
+                auto keyframe_mask = sd::full<float>({keyframes.shape()[0],
+                                                      keyframes.shape()[1],
+                                                      keyframes.shape()[2],
+                                                      1,
+                                                      1},
                                                      conditioned_mask);
-                latents.denoise_mask    = sd::ops::concat(latents.denoise_mask, keyframe_mask, 2);
-                latents.video_positions = build_ltxv_video_positions(latents.init_latent.shape()[0],
-                                                                     latents.init_latent.shape()[1],
-                                                                     latents.video_target_frame_count,
-                                                                     keyframe_frames,
-                                                                     frame_idx,
-                                                                     1,
-                                                                     request->fps,
-                                                                     request->vae_scale_factor,
-                                                                     8,
-                                                                     true);
+                if (condition_first) {
+                    latents.init_latent  = sd::ops::concat(keyframes, latents.init_latent, 2);
+                    latents.denoise_mask = sd::ops::concat(keyframe_mask, latents.denoise_mask, 2);
+                } else {
+                    latents.init_latent  = sd::ops::concat(latents.init_latent, keyframes, 2);
+                    latents.denoise_mask = sd::ops::concat(latents.denoise_mask, keyframe_mask, 2);
+                }
+                latents.video_positions = sd::build_ltxv_video_positions(
+                    latents.init_latent.shape()[0],
+                    latents.init_latent.shape()[1],
+                    latents.video_target_frame_count,
+                    keyframe_frames,
+                    frame_idx,
+                    1,
+                    request->fps,
+                    request->vae_scale_factor,
+                    8,
+                    true,
+                    condition_first);
                 return true;
             };
 
@@ -4950,6 +5119,44 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
                 if (!ok) {
                     return std::nullopt;
                 }
+            }
+
+            if (!reference_images.empty()) {
+                sd::Tensor<float> reference_latents;
+                for (size_t i = 0; i < reference_images.size(); ++i) {
+                    auto static_reference =
+                        make_ltxav_static_reference_video(reference_images[i], request->frames);
+                    auto reference_latent = sd_ctx->sd->encode_first_stage(static_reference);
+                    if (reference_latent.empty()) {
+                        LOG_ERROR("failed to encode LTX IC-LoRA reference image %zu", i);
+                        return std::nullopt;
+                    }
+                    reference_latents = reference_latents.empty()
+                                            ? std::move(reference_latent)
+                                            : sd::ops::concat(reference_latents, reference_latent, 2);
+                }
+                if (!apply_video_condition_by_keyframe_index(reference_latents,
+                                                             0,
+                                                             "IC-LoRA reference",
+                                                             true)) {
+                    return std::nullopt;
+                }
+                const int64_t reference_frames = reference_latents.shape()[2];
+                latents.video_reference_token_count =
+                    reference_latents.shape()[0] *
+                    reference_latents.shape()[1] *
+                    reference_frames;
+                // Reference preservation and reference attention are separate.
+                // Keep references fixed while the transformer controls how
+                // strongly target/audio queries attend to reference tokens.
+                sd::ops::fill_slice(&latents.denoise_mask,
+                                    2,
+                                    0,
+                                    reference_frames,
+                                    0.f);
+                LOG_INFO("LTX IC-LoRA conditioned on %zu static reference image(s), strength %.3f",
+                         reference_images.size(),
+                         sd_vid_gen_params->reference_attention_strength);
             }
 
             int64_t t2 = ggml_time_ms();
@@ -5312,11 +5519,16 @@ static bool apply_ltxv_refine_image_conditioning(sd_ctx_t* sd_ctx,
         latent == nullptr || latent->empty() || denoise_mask == nullptr || video_positions == nullptr) {
         return true;
     }
-    if (sd_vid_gen_params->init_image.data == nullptr &&
-        sd_vid_gen_params->end_image.data == nullptr) {
+    const bool has_refine_images =
+        sd_vid_gen_params->init_image.data != nullptr ||
+        sd_vid_gen_params->end_image.data != nullptr;
+    const bool has_conditioning_metadata =
+        latents.video_conditioning_frame_count > 0 &&
+        latents.video_target_frame_count > 0;
+    if (!has_refine_images && !has_conditioning_metadata) {
         return true;
     }
-    if (sd_ctx->sd->vae_decode_only) {
+    if (has_refine_images && sd_ctx->sd->vae_decode_only) {
         LOG_ERROR("LTXV refine image conditioning requires VAE encoder weights; create the context with vae_decode_only=false");
         return false;
     }
@@ -5382,17 +5594,45 @@ static bool apply_ltxv_refine_image_conditioning(sd_ctx_t* sd_ctx,
                                                        1.f - conditioning_strength)) {
                 return false;
             }
-            *video_positions = build_ltxv_video_positions(video_latent.shape()[0],
-                                                          video_latent.shape()[1],
-                                                          target_latent_frames,
-                                                          end_image_latent.shape()[2],
-                                                          frame_idx,
-                                                          1,
-                                                          request.fps,
-                                                          request.vae_scale_factor,
-                                                          8,
-                                                          true);
         }
+    }
+
+    if (has_conditioning_metadata) {
+        const int64_t target_frames =
+            latents.video_target_frame_count;
+        const int64_t conditioning_frames =
+            latents.video_conditioning_frame_count;
+        if (target_frames + conditioning_frames !=
+            video_latent.shape()[2]) {
+            LOG_ERROR("LTXV refine conditioning metadata does not match upscaled latent frames");
+            return false;
+        }
+        const int conditioning_frame_idx =
+            latents.video_conditioning_first ? 0 : request.frames - 1;
+        *video_positions = sd::build_ltxv_video_positions(
+            video_latent.shape()[0],
+            video_latent.shape()[1],
+            target_frames,
+            conditioning_frames,
+            conditioning_frame_idx,
+            1,
+            request.fps,
+            request.vae_scale_factor,
+            8,
+            true,
+            latents.video_conditioning_first);
+        if (video_positions->empty()) {
+            LOG_ERROR("failed to rebuild LTXV refine conditioning positions");
+            return false;
+        }
+
+        const int64_t conditioning_begin =
+            latents.video_conditioning_first ? 0 : target_frames;
+        sd::ops::fill_slice(&video_mask,
+                            2,
+                            conditioning_begin,
+                            conditioning_begin + conditioning_frames,
+                            0.f);
     }
 
     if (!audio_latent.empty()) {
@@ -5402,7 +5642,7 @@ static bool apply_ltxv_refine_image_conditioning(sd_ctx_t* sd_ctx,
         *latent       = std::move(video_latent);
         *denoise_mask = std::move(video_mask);
     }
-    LOG_INFO("LTXV refine image conditioning applied at %dx%d", image_width, image_height);
+    LOG_INFO("LTXV refine conditioning applied at %dx%d", image_width, image_height);
     return true;
 }
 
@@ -5448,10 +5688,52 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         }
     }
 
+    if (sd_vid_gen_params->reference_images_count != 0) {
+        if (sd_vid_gen_params->reference_images_count < 0 ||
+            sd_vid_gen_params->reference_images == nullptr) {
+            LOG_ERROR("invalid LTX IC-LoRA reference image inputs");
+            return false;
+        }
+        if (!sd_version_is_ltxav(sd_ctx->sd->version)) {
+            LOG_ERROR("IC-LoRA reference conditioning is supported only for LTX video models");
+            return false;
+        }
+        if (sd_vid_gen_params->reference_images_count != 1) {
+            LOG_ERROR("LTX Ingredients requires exactly one composite reference sheet");
+            return false;
+        }
+        const auto reference_validation =
+            sd::validate_ltx_reference_parameters(
+                sd_vid_gen_params->reference_attention_strength,
+                sd_vid_gen_params->reference_downscale_factor);
+        if (reference_validation != sd::LtxReferenceValidation::VALID) {
+            if (reference_validation ==
+                    sd::LtxReferenceValidation::NONFINITE_ATTENTION_STRENGTH ||
+                reference_validation ==
+                    sd::LtxReferenceValidation::ATTENTION_STRENGTH_OUT_OF_RANGE) {
+                LOG_ERROR("LTX IC-LoRA reference_attention_strength must be finite and in [0, 1]");
+            } else {
+                LOG_ERROR("LTX IC-LoRA reference_downscale_factor must be finite and exactly 1");
+            }
+            return false;
+        }
+    }
+
     sd_ctx->sd->rng->manual_seed(request.seed);
     sd_ctx->sd->sampler_rng->manual_seed(request.seed);
     sd_ctx->sd->set_flow_shift(sd_vid_gen_params->sample_params.flow_shift);
-    sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count);
+    const auto lora_result =
+        sd_ctx->sd->apply_loras(sd_vid_gen_params->loras,
+                                sd_vid_gen_params->lora_count);
+    if (!lora_result.all_requested_applied) {
+        LOG_ERROR("video generation aborted because a requested LoRA was not applied");
+        return false;
+    }
+    if (sd_vid_gen_params->reference_images_count > 0 &&
+        !lora_result.diffusion_adapter_applied) {
+        LOG_ERROR("LTX reference conditioning requires a successfully loaded, shape-compatible diffusion IC-LoRA");
+        return false;
+    }
 
     SamplePlan plan(sd_ctx, sd_vid_gen_params, request);
     auto latent_inputs_opt = prepare_video_generation_latents(sd_ctx, sd_vid_gen_params, &request);
@@ -5517,7 +5799,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                            latents.audio_length,
                                                            static_cast<float>(request.fps),
                                                            request.cache_params,
-                                                           latents.video_positions);
+                                                           latents.video_positions,
+                                                           latents.video_reference_token_count,
+                                                           sd_vid_gen_params->reference_attention_strength);
         int64_t sampling_end          = ggml_time_ms();
         if (x_t_sampled.empty()) {
             LOG_ERROR("sampling(high noise) failed after %.2fs", (sampling_end - sampling_start) * 1.0f / 1000);
@@ -5563,7 +5847,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                         latents.audio_length,
                                                         static_cast<float>(request.fps),
                                                         request.cache_params,
-                                                        latents.video_positions);
+                                                        latents.video_positions,
+                                                        latents.video_reference_token_count,
+                                                        sd_vid_gen_params->reference_attention_strength);
 
     int64_t sampling_end = ggml_time_ms();
     if (final_latent.empty()) {
@@ -5653,6 +5939,11 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
             }
             return false;
         }
+        const int64_t hires_reference_token_count =
+            sd_vid_gen_params->reference_images_count > 0
+                ? x_t.shape()[0] * x_t.shape()[1] *
+                      latents.video_conditioning_frame_count
+                : 0;
         noise = sd::Tensor<float>::randn_like(x_t, sd_ctx->sd->rng);
 
         W                                   = hires_request.width / hires_request.vae_scale_factor;
@@ -5707,7 +5998,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                             latents.audio_length,
                                             static_cast<float>(hires_request.fps),
                                             hires_request.cache_params,
-                                            hires_video_positions);
+                                            hires_video_positions,
+                                            hires_reference_token_count,
+                                            sd_vid_gen_params->reference_attention_strength);
         sampling_end   = ggml_time_ms();
         if (sd_ctx->sd->free_params_immediately) {
             sd_ctx->sd->diffusion_model->free_params_buffer();
@@ -5755,7 +6048,8 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     if (latents.video_conditioning_frame_count > 0) {
         int64_t target_frames = latents.video_target_frame_count > 0 ? latents.video_target_frame_count
                                                                      : final_latent.shape()[2] - latents.video_conditioning_frame_count;
-        final_latent          = sd::ops::slice(final_latent, 2, 0, target_frames);
+        int64_t target_start  = latents.video_conditioning_first ? latents.video_conditioning_frame_count : 0;
+        final_latent          = sd::ops::slice(final_latent, 2, target_start, target_start + target_frames);
     }
 
     if (latents.ref_image_num > 0) {

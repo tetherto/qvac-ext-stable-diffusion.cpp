@@ -1,10 +1,23 @@
 #ifndef __LORA_HPP__
 #define __LORA_HPP__
 
+#include <limits>
 #include <mutex>
+#include <vector>
 #include "ggml_extend.hpp"
 
 #define LORA_GRAPH_BASE_SIZE 10240
+
+template <typename Change, typename Validator>
+bool validate_lora_changes(const std::vector<Change>& changes,
+                           Validator validator) {
+    for (const auto& change : changes) {
+        if (!validator(change)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 struct LoraModel : public GGMLRunner {
     std::string lora_id;
@@ -70,7 +83,10 @@ struct LoraModel : public GGMLRunner {
             return true;
         };
 
-        model_loader.load_tensors(on_new_tensor_cb, n_threads);
+        if (!model_loader.load_tensors(on_new_tensor_cb, n_threads)) {
+            LOG_ERROR("loading LoRA tensor metadata failed");
+            return false;
+        }
 
         if (tensors_to_create.empty()) {
             return true;
@@ -92,7 +108,10 @@ struct LoraModel : public GGMLRunner {
         }
 
         dry_run = false;
-        model_loader.load_tensors(on_new_tensor_cb, n_threads);
+        if (!model_loader.load_tensors(on_new_tensor_cb, n_threads)) {
+            LOG_ERROR("loading LoRA tensor data failed");
+            return false;
+        }
 
         LOG_DEBUG("finished loaded lora");
         return true;
@@ -131,6 +150,216 @@ struct LoraModel : public GGMLRunner {
 
             lora_tensors = std::move(new_lora_tensors);
         }
+    }
+
+    static bool tensor_elements_match_or_pad(const ggml_tensor* adapter,
+                                             const ggml_tensor* model) {
+        if (adapter == nullptr || model == nullptr) {
+            return false;
+        }
+        if (ggml_nelements(adapter) == ggml_nelements(model)) {
+            return true;
+        }
+        return ggml_n_dims(adapter) == 2 &&
+               ggml_n_dims(model) == 2 &&
+               adapter->ne[0] == model->ne[0] &&
+               adapter->ne[1] > 0 &&
+               adapter->ne[1] < model->ne[1];
+    }
+
+    static std::optional<size_t> merged_lora_elements(
+        const ggml_tensor* down,
+        const ggml_tensor* up,
+        const ggml_tensor* mid = nullptr) {
+        if (down == nullptr || up == nullptr) {
+            return std::nullopt;
+        }
+        int down_dims = ggml_n_dims(down);
+        down_dims += down_dims % 2;
+        const int64_t down_rows = down->ne[down_dims - 1];
+        const int64_t down_columns =
+            down_rows > 0 ? ggml_nelements(down) / down_rows : 0;
+        const int up_dims     = ggml_n_dims(up);
+        const int64_t up_rows = up->ne[up_dims - 1];
+        const int64_t up_columns =
+            up_rows > 0 ? ggml_nelements(up) / up_rows : 0;
+        if (down_rows <= 0 || down_columns <= 0 || up_rows <= 0 ||
+            up_columns != down_rows) {
+            return std::nullopt;
+        }
+        size_t elements = static_cast<size_t>(down_columns) *
+                          static_cast<size_t>(up_rows);
+        if (mid != nullptr) {
+            const size_t rank_squared =
+                static_cast<size_t>(down_rows) *
+                static_cast<size_t>(down_rows);
+            if (rank_squared == 0 ||
+                ggml_nelements(mid) % rank_squared != 0) {
+                return std::nullopt;
+            }
+            elements *= ggml_nelements(mid) / rank_squared;
+        }
+        return elements;
+    }
+
+    size_t count_compatible_model_tensors(
+        const std::map<std::string, ggml_tensor*>& model_tensors) {
+        preprocess_lora_tensors(model_tensors);
+        size_t compatible = 0;
+        auto safe_product = [](size_t first, size_t second) {
+            if (first != 0 &&
+                second > std::numeric_limits<size_t>::max() / first) {
+                return std::optional<size_t>();
+            }
+            return std::optional<size_t>(first * second);
+        };
+        for (const auto& model_pair : model_tensors) {
+            const std::string& model_name = model_pair.first;
+            ggml_tensor* model_tensor     = model_pair.second;
+            const std::string prefix = "lora." + model_name;
+            auto raw                 = lora_tensors.find(prefix + ".diff");
+            if (raw != lora_tensors.end() &&
+                tensor_elements_match_or_pad(raw->second, model_tensor)) {
+                ++compatible;
+                continue;
+            }
+
+            auto shape_compatible = [&](size_t elements,
+                                        const ggml_tensor* first) {
+                return elements == static_cast<size_t>(ggml_nelements(model_tensor)) ||
+                       (ggml_n_dims(model_tensor) == 2 &&
+                        first != nullptr &&
+                        first->ne[0] == model_tensor->ne[0] &&
+                        elements < static_cast<size_t>(
+                                      ggml_nelements(model_tensor)));
+            };
+
+            for (int index = 0;; ++index) {
+                const std::string indexed =
+                    index == 0 ? prefix : prefix + "." + std::to_string(index);
+                auto down = lora_tensors.find(indexed + ".lora_down");
+                auto up   = lora_tensors.find(indexed + ".lora_up");
+                auto hada_1_down =
+                    lora_tensors.find(indexed + ".hada_w1_b");
+                auto hada_1_up =
+                    lora_tensors.find(indexed + ".hada_w1_a");
+                auto hada_2_down =
+                    lora_tensors.find(indexed + ".hada_w2_b");
+                auto hada_2_up =
+                    lora_tensors.find(indexed + ".hada_w2_a");
+                auto lokr_w1 = lora_tensors.find(indexed + ".lokr_w1");
+                auto lokr_w2 = lora_tensors.find(indexed + ".lokr_w2");
+                auto lokr_w1_a =
+                    lora_tensors.find(indexed + ".lokr_w1_a");
+                auto lokr_w1_b =
+                    lora_tensors.find(indexed + ".lokr_w1_b");
+                auto lokr_w2_a =
+                    lora_tensors.find(indexed + ".lokr_w2_a");
+                auto lokr_w2_b =
+                    lora_tensors.find(indexed + ".lokr_w2_b");
+
+                const bool has_lora =
+                    down != lora_tensors.end() ||
+                    up != lora_tensors.end();
+                const bool has_loha =
+                    hada_1_down != lora_tensors.end() ||
+                    hada_1_up != lora_tensors.end() ||
+                    hada_2_down != lora_tensors.end() ||
+                    hada_2_up != lora_tensors.end();
+                const bool has_lokr =
+                    lokr_w1 != lora_tensors.end() ||
+                    lokr_w2 != lora_tensors.end() ||
+                    lokr_w1_a != lora_tensors.end() ||
+                    lokr_w1_b != lora_tensors.end() ||
+                    lokr_w2_a != lora_tensors.end() ||
+                    lokr_w2_b != lora_tensors.end();
+                if (!has_lora && !has_loha && !has_lokr) {
+                    break;
+                }
+
+                if (down != lora_tensors.end() &&
+                    up != lora_tensors.end()) {
+                    auto mid                   = lora_tensors.find(indexed + ".lora_mid");
+                    const auto merged_elements = merged_lora_elements(
+                        down->second,
+                        up->second,
+                        mid == lora_tensors.end() ? nullptr : mid->second);
+                    if (merged_elements.has_value() &&
+                        shape_compatible(*merged_elements, down->second)) {
+                        ++compatible;
+                        break;
+                    }
+                }
+
+                const auto hada_1_mid =
+                    lora_tensors.find(indexed + ".hada_t1");
+                const auto hada_2_mid =
+                    lora_tensors.find(indexed + ".hada_t2");
+                if (hada_1_down != lora_tensors.end() &&
+                    hada_1_up != lora_tensors.end() &&
+                    hada_2_down != lora_tensors.end() &&
+                    hada_2_up != lora_tensors.end()) {
+                    const auto merged_1 = merged_lora_elements(
+                        hada_1_down->second,
+                        hada_1_up->second,
+                        hada_1_mid == lora_tensors.end()
+                            ? nullptr
+                            : hada_1_mid->second);
+                    const auto merged_2 = merged_lora_elements(
+                        hada_2_down->second,
+                        hada_2_up->second,
+                        hada_2_mid == lora_tensors.end()
+                            ? nullptr
+                            : hada_2_mid->second);
+                    if (merged_1.has_value() && merged_2.has_value() &&
+                        *merged_1 == *merged_2 &&
+                        shape_compatible(*merged_1,
+                                         hada_1_down->second)) {
+                        ++compatible;
+                        break;
+                    }
+                }
+
+                const auto effective_lokr_elements =
+                    [&](const auto& full,
+                        const auto& factor_a,
+                        const auto& factor_b) -> std::optional<size_t> {
+                    if (full != lora_tensors.end()) {
+                        return static_cast<size_t>(
+                            ggml_nelements(full->second));
+                    }
+                    if (factor_a == lora_tensors.end() ||
+                        factor_b == lora_tensors.end()) {
+                        return std::nullopt;
+                    }
+                    return merged_lora_elements(factor_b->second,
+                                                factor_a->second);
+                };
+                const auto lokr_1_elements = effective_lokr_elements(
+                    lokr_w1, lokr_w1_a, lokr_w1_b);
+                const auto lokr_2_elements = effective_lokr_elements(
+                    lokr_w2, lokr_w2_a, lokr_w2_b);
+                if (lokr_1_elements.has_value() &&
+                    lokr_2_elements.has_value()) {
+                    const auto merged_elements =
+                        safe_product(*lokr_1_elements, *lokr_2_elements);
+                    const ggml_tensor* first =
+                        lokr_w1 != lora_tensors.end()
+                            ? lokr_w1->second
+                            : lokr_w1_a != lora_tensors.end()
+                                  ? lokr_w1_a->second
+                                  : nullptr;
+                    if (merged_elements.has_value() &&
+                        shape_compatible(*merged_elements, first)) {
+                        ++compatible;
+                        break;
+                    }
+                }
+
+                continue;
+            }
+        }
+        return compatible;
     }
 
     ggml_tensor* get_lora_weight_diff(const std::string& model_tensor_name, ggml_context* ctx, ggml_backend_t backend) {
@@ -793,11 +1022,17 @@ struct LoraModel : public GGMLRunner {
         return gf;
     }
 
-    void apply(std::map<std::string, ggml_tensor*> model_tensors, SDVersion version, int n_threads) {
+    bool apply(std::map<std::string, ggml_tensor*> model_tensors,
+               SDVersion version,
+               int n_threads) {
         auto get_graph = [&]() -> ggml_cgraph* {
             return build_lora_graph(model_tensors, version);
         };
-        GGMLRunner::compute<float>(get_graph, n_threads, false, true);
+        auto output =
+            GGMLRunner::compute<float>(get_graph, n_threads, false, true);
+        if (!output.has_value()) {
+            return false;
+        }
         stat();
         for (auto item : original_tensor_to_final_tensor) {
             ggml_tensor* original_tensor = item.first;
@@ -807,6 +1042,7 @@ struct LoraModel : public GGMLRunner {
         }
         original_tensor_to_final_tensor.clear();
         GGMLRunner::free_compute_buffer();
+        return !applied_lora_tensors.empty();
     }
 
     void stat(bool at_runntime = false) {

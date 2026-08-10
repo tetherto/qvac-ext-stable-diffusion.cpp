@@ -44,6 +44,7 @@ bool UpscalerGGML::load_from_file(const std::string& esrgan_path,
                               false,
                               false,
                               false,
+                              false,
                               &error)) {
         LOG_ERROR("upscaler backend config failed: %s", error.c_str());
         return false;

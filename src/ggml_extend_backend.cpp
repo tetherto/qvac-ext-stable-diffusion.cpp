@@ -483,6 +483,10 @@ bool SDBackendAssignment::empty() const {
     return default_name.empty() && module_names.empty();
 }
 
+bool SDBackendAssignment::has_explicit(SDBackendModule module) const {
+    return !default_name.empty() || module_names.find(module) != module_names.end();
+}
+
 std::string SDBackendAssignment::get(SDBackendModule module) const {
     return module_assignment_name(*this, module);
 }
@@ -493,6 +497,28 @@ void SDBackendAssignment::set_default(const std::string& name) {
 
 void SDBackendAssignment::set_module(SDBackendModule module, const std::string& name) {
     module_names[module] = trim_copy(name);
+}
+
+bool SDBackendAssignment::set_module_if_unassigned(SDBackendModule module, const std::string& name) {
+    if (has_explicit(module)) {
+        return false;
+    }
+    set_module(module, name);
+    return true;
+}
+
+void SDBackendAssignment::apply_keep_cpu_overrides(bool keep_clip_on_cpu,
+                                                   bool keep_vae_on_cpu,
+                                                   bool keep_control_net_on_cpu) {
+    if (keep_clip_on_cpu) {
+        set_module(SDBackendModule::TE, "cpu");
+    }
+    if (keep_vae_on_cpu) {
+        set_module(SDBackendModule::VAE, "cpu");
+    }
+    if (keep_control_net_on_cpu) {
+        set_module(SDBackendModule::CONTROL_NET, "cpu");
+    }
 }
 
 void SDBackendHandleDeleter::operator()(ggml_backend_t backend) const {
@@ -552,6 +578,7 @@ bool SDBackendManager::init(const char* backend_spec,
                             bool keep_clip_on_cpu,
                             bool keep_vae_on_cpu,
                             bool keep_control_net_on_cpu,
+                            bool vae_auto_cpu_fallback,
                             std::string* error) {
     reset();
 
@@ -562,20 +589,18 @@ bool SDBackendManager::init(const char* backend_spec,
         return false;
     }
 
-    if (runtime_assignment_.empty()) {
-        if (keep_clip_on_cpu) {
-            runtime_assignment_.set_module(SDBackendModule::TE, "cpu");
-        }
-        if (keep_vae_on_cpu) {
-            runtime_assignment_.set_module(SDBackendModule::VAE, "cpu");
-        }
-        if (keep_control_net_on_cpu) {
-            runtime_assignment_.set_module(SDBackendModule::CONTROL_NET, "cpu");
-        }
-    }
+    // Keep-on-CPU flags are explicit module overrides. In particular, a
+    // caller-selected Vulkan default must not silently defeat vae_on_cpu.
+    runtime_assignment_.apply_keep_cpu_overrides(keep_clip_on_cpu,
+                                                 keep_vae_on_cpu,
+                                                 keep_control_net_on_cpu);
 
     if (params_assignment_.empty() && offload_params_to_cpu) {
         params_assignment_.set_default("cpu");
+    }
+    if (vae_auto_cpu_fallback &&
+        params_assignment_.set_module_if_unassigned(SDBackendModule::VAE, "cpu")) {
+        LOG_INFO("VAE automatic CPU fallback: retaining VAE parameters on CPU");
     }
 
     return validate(error);

@@ -83,7 +83,7 @@ endif()
 #
 
 # general
-#option(SD_BUILD_TESTS                "sd: build tests"    ${SD_STANDALONE})
+option(SD_BUILD_TESTS                "sd: build tests"    OFF)
 option(SD_BUILD_EXAMPLES             "sd: build examples" ${SD_STANDALONE})
 option(SD_WEBP                       "sd: enable WebP image I/O support" ${SD_WEBP_DEFAULT})
 option(SD_USE_SYSTEM_WEBP            "sd: link against system libwebp" OFF)
@@ -335,9 +335,45 @@ target_include_directories(${SD_LIB} PUBLIC . src include)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)
 target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
 
+# GGML's logical-buffer capacity query is append-only, but this branch also
+# builds against the older bundled submodule. Detect the declaration in the
+# selected GGML headers and compile the exact API call only when available.
+set(SD_GGML_BACKEND_HEADER "")
+if(NOT SD_USE_SYSTEM_GGML AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ggml/include/ggml-backend.h")
+    set(SD_GGML_BACKEND_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/ggml/include/ggml-backend.h")
+else()
+    get_target_property(SD_GGML_INCLUDE_DIRS ggml INTERFACE_INCLUDE_DIRECTORIES)
+    foreach(SD_GGML_INCLUDE_DIR IN LISTS SD_GGML_INCLUDE_DIRS)
+        string(REGEX REPLACE "^\\$<BUILD_INTERFACE:(.*)>$" "\\1" SD_GGML_INCLUDE_DIR "${SD_GGML_INCLUDE_DIR}")
+        if(EXISTS "${SD_GGML_INCLUDE_DIR}/ggml-backend.h")
+            set(SD_GGML_BACKEND_HEADER "${SD_GGML_INCLUDE_DIR}/ggml-backend.h")
+            break()
+        endif()
+    endforeach()
+endif()
+if(SD_GGML_BACKEND_HEADER)
+    file(STRINGS "${SD_GGML_BACKEND_HEADER}" SD_GGML_CAPACITY_API_DECL
+         REGEX "ggml_backend_get_max_buffer_capacity")
+    if(SD_GGML_CAPACITY_API_DECL)
+        # ggml_extend.hpp uses this feature check in inline methods. Propagate it
+        # to consumers to keep every translation unit on the same API path.
+        target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_BUFFER_CAPACITY_API=1)
+    else()
+        message(WARNING
+            "Selected GGML does not expose ggml_backend_get_max_buffer_capacity; "
+            "the fixed single-buffer VAE preflight bound is unavailable. "
+            "Update the GGML pin before relying on Vulkan capacity routing.")
+    endif()
+endif()
+
 
 if (SD_BUILD_EXAMPLES)
     add_subdirectory(examples)
+endif()
+
+if (SD_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
 
 set(SD_PUBLIC_HEADERS include/stable-diffusion.h)
