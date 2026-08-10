@@ -1704,7 +1704,7 @@ std::vector<std::shared_ptr<LoraModel>> StableDiffusionGGML::load_runtime_loras_
             return entry.model != nullptr && entry.module == module && entry.matches(lora_spec);
         });
         auto lora   = cached == runtime_lora_models.end() ? load_lora_model(lora_spec, module, module_filter)
-                                                          : std::move(cached->model);
+                                                          : cached->model;
         if (lora == nullptr) {
             if (lora_spec.required) {
                 LOG_ERROR("required lora load failed: %s", lora_spec.path.c_str());
@@ -1717,7 +1717,6 @@ std::vector<std::shared_ptr<LoraModel>> StableDiffusionGGML::load_runtime_loras_
         }
 
         lora->preprocess_lora_tensors(model_tensor_names);
-        lora->multiplier = lora_spec.multiplier;
         next_models.push_back({lora_spec, module, lora});
         module_lora_models.push_back(std::move(lora));
     }
@@ -1744,17 +1743,17 @@ bool StableDiffusionGGML::apply_loras_immediately(const std::vector<ModelManager
 }
 
 bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager::LoraSpec>& loras) {
-    if (model_manager != nullptr) {
-        if (!model_manager->set_loras({}, version))
-            return false;
-    }
-    clear_lora_adapters();
     if (loras.empty()) {
+        if (model_manager && !model_manager->set_loras({}, version)) return false;
+        clear_lora_adapters();
         runtime_lora_models.clear();
         return true;
     }
 
     bool success = true;
+    std::vector<std::shared_ptr<LoraModel>> cond_stage_lora_models;
+    std::vector<std::shared_ptr<LoraModel>> diffusion_lora_models;
+    std::vector<std::shared_ptr<LoraModel>> first_stage_lora_models;
     std::vector<RuntimeLora> next_models;
     std::set<std::string> model_tensor_names;
     if (model_manager != nullptr) {
@@ -1769,7 +1768,7 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
             }
             return false;
         };
-        auto cond_stage_lora_models =
+        cond_stage_lora_models =
             load_runtime_loras_for_module(loras,
                                           model_tensor_names,
                                           SDBackendModule::TE,
@@ -1777,10 +1776,7 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
         // Only attach the adapter when there are LoRAs targeting the cond_stage model.
         // An empty MultiLoraAdapter still routes every linear/conv through
         // forward_with_lora() instead of the direct kernel path — slower for no benefit.
-        if (!cond_stage_lora_models.empty()) {
-            auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(cond_stage_lora_models);
-            cond_stage_model->set_weight_adapter(multi_lora_adapter);
-        }
+
     }
     if (diffusion_model) {
         auto lora_tensor_filter = [&](const std::string& tensor_name) {
@@ -1789,19 +1785,12 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
             }
             return false;
         };
-        auto diffusion_lora_models =
+        diffusion_lora_models =
             load_runtime_loras_for_module(loras,
                                           model_tensor_names,
                                           SDBackendModule::DIFFUSION,
                                           lora_tensor_filter, success, next_models);
-        if (!diffusion_lora_models.empty()) {
-            last_lora_apply_result.diffusion_lora_applied = true;
-            auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(diffusion_lora_models);
-            diffusion_model->set_weight_adapter(multi_lora_adapter);
-            if (high_noise_diffusion_model) {
-                high_noise_diffusion_model->set_weight_adapter(multi_lora_adapter);
-            }
-        }
+
     }
 
     if (first_stage_model) {
@@ -1811,15 +1800,12 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
             }
             return false;
         };
-        auto first_stage_lora_models =
+        first_stage_lora_models =
             load_runtime_loras_for_module(loras,
                                           model_tensor_names,
                                           SDBackendModule::VAE,
                                           lora_tensor_filter, success, next_models);
-        if (!first_stage_lora_models.empty()) {
-            auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(first_stage_lora_models);
-            first_stage_model->set_weight_adapter(multi_lora_adapter);
-        }
+
     }
     std::set<std::string> loaded_lora_ids;
     for (const auto& entry : next_models) loaded_lora_ids.insert(entry.model->lora_id);
@@ -1828,7 +1814,25 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
             last_lora_apply_result.all_requested_applied = false;
         }
     }
+    if (!success || !last_lora_apply_result.all_requested_applied) {
+        last_lora_apply_result.diffusion_lora_applied = false;
+        LOG_ERROR("one or more requested LoRAs failed validation; preserving existing adapters");
+        return false;
+    }
+    if (model_manager && !model_manager->set_loras({}, version)) return false;
+    clear_lora_adapters();
+    for (auto& entry : next_models) entry.model->multiplier = entry.spec.multiplier;
     runtime_lora_models = std::move(next_models);
+    if (!cond_stage_lora_models.empty())
+        cond_stage_model->set_weight_adapter(std::make_shared<MultiLoraAdapter>(cond_stage_lora_models));
+    if (!diffusion_lora_models.empty()) {
+        auto adapter = std::make_shared<MultiLoraAdapter>(diffusion_lora_models);
+        diffusion_model->set_weight_adapter(adapter);
+        if (high_noise_diffusion_model) high_noise_diffusion_model->set_weight_adapter(adapter);
+    }
+    if (!first_stage_lora_models.empty())
+        first_stage_model->set_weight_adapter(std::make_shared<MultiLoraAdapter>(first_stage_lora_models));
+    last_lora_apply_result.diffusion_lora_applied = !diffusion_lora_models.empty();
     return success;
 }
 
@@ -1851,6 +1855,7 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
         lora_spec.path          = lora_id;
         lora_spec.multiplier    = loras[i].multiplier;
         lora_spec.is_high_noise = loras[i].is_high_noise;
+        lora_spec.required = true;
         all_loras.push_back(std::move(lora_spec));
         if (loras[i].is_high_noise) {
             lora_id = "|high_noise|" + lora_id;
@@ -1864,7 +1869,6 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
 
     int64_t t0 = ggml_time_ms();
     end_runners();
-    clear_lora_adapters();
     if (!model_manager->prepare_lora_sources(all_loras)) {
         conditioning_cache_->clear();
         return false;
@@ -1878,19 +1882,11 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
                     })) {
         conditioning_cache_->clear();
     }
-    runtime_lora_models.erase(std::remove_if(runtime_lora_models.begin(), runtime_lora_models.end(), [&](const RuntimeLora& entry) {
-                                  return std::none_of(all_loras.begin(), all_loras.end(), [&](const ModelManager::LoraSpec& spec) {
-                                      return entry.matches(spec);
-                                  });
-                              }),
-                              runtime_lora_models.end());
     const bool success = apply_lora_immediately ? apply_loras_immediately(all_loras)
                                                 : apply_loras_at_runtime(all_loras);
     if (!success) {
         conditioning_cache_->clear();
-        clear_lora_adapters();
-        runtime_lora_models.clear();
-        return false;
+            return false;
     }
     runner_state_.catalog_revision = model_manager->loader().revision();
     int64_t t1                     = ggml_time_ms();
