@@ -121,6 +121,34 @@ int main() {
     GGML_ASSERT(pending_params_exceed_free_memory.pending_runtime_param_bytes ==
                 3500 * MIB);
 
+    sd::VaeFallbackCapacity pending_boundary_capacity = four_gib;
+    pending_boundary_capacity.free_memory_bytes = 16ull * 1024ull * MIB;
+    const auto pending_params_at_single_buffer_limit =
+        sd::select_vae_graph_route(
+            1,
+            pending_boundary_capacity,
+            true,
+            false,
+            true,
+            false,
+            pending_boundary_capacity.max_buffer_bytes);
+    GGML_ASSERT(!pending_params_at_single_buffer_limit.use_cpu_fallback());
+    GGML_ASSERT(pending_params_at_single_buffer_limit.reason ==
+                sd::VaeGraphRouteReason::WITHIN_CAPACITY);
+
+    const auto pending_params_exceed_single_buffer_limit =
+        sd::select_vae_graph_route(
+            1,
+            pending_boundary_capacity,
+            true,
+            false,
+            true,
+            false,
+            pending_boundary_capacity.max_buffer_bytes + 1);
+    GGML_ASSERT(pending_params_exceed_single_buffer_limit.use_cpu_fallback());
+    GGML_ASSERT(pending_params_exceed_single_buffer_limit.reason ==
+                sd::VaeGraphRouteReason::EXCEEDS_CAPACITY);
+
     sd::VaeFallbackCapacity single_buffer_limited = four_gib;
     single_buffer_limited.free_memory_bytes       = 16ull * 1024ull * MIB;
     const auto single_buffer_exceeded             = sd::select_vae_graph_route(

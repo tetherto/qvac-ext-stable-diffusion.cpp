@@ -334,6 +334,32 @@ int main() {
     const Values second_run     = run_partitioned(repeated_input, {2, 2, 2, 3});
     assert_close(first_run, second_run);
 
+    // A later stateful chunk failure must discard the partial stream and
+    // retry the unchanged original input through the complete graph.
+    const Values failure_input       = make_input(5);
+    const Values failure_input_copy   = failure_input;
+    ToyDecoder injected_failure;
+    ToyDecoder complete_restart;
+    const Values failure_expected = complete_restart.run(failure_input, true);
+    const Values failure_recovered =
+        LTXVAE::decode_stateful_or_complete<Values>(
+            [&]() {
+                Values first_chunk(failure_input.begin(),
+                                   failure_input.begin() + 2);
+                (void)injected_failure.run(std::move(first_chunk), false);
+                Values later_chunk(failure_input.begin() + 2,
+                                   failure_input.end());
+                (void)injected_failure.run(std::move(later_chunk), false);
+                injected_failure = ToyDecoder{};
+                return Values{};
+            },
+            [&]() {
+                return injected_failure.run(failure_input, true);
+            });
+    assert_close(failure_expected, failure_recovered);
+    GGML_ASSERT(failure_input == failure_input_copy);
+    GGML_ASSERT(injected_failure.clean());
+
     // Capacity preflight checks every graph class and rejects before state if
     // compute, cache, writer, or replacement peak exceeds the limit.
     constexpr size_t MIB                               = 1024ull * 1024ull;
@@ -352,6 +378,26 @@ int main() {
     GGML_ASSERT(fits.fits);
     GGML_ASSERT(fits.max_compute_bytes == 2300 * MIB);
     GGML_ASSERT(fits.max_cache_bytes == 280 * MIB);
+
+    // Cache replacement owns both the old and new cache at the boundary.
+    // This would incorrectly pass if preflight counted only one cache.
+    const std::vector<LTXVAE::DecoderCapacitySample> replacement_boundary = {
+        {LTXVAE::DecoderGraphPhase::STEADY, 1, 3},
+    };
+    GGML_ASSERT(LTXVAE::make_decoder_capacity_plan(
+                    replacement_boundary,
+                    1,
+                    1,
+                    8,
+                    8)
+                    .fits);
+    GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
+                     replacement_boundary,
+                     1,
+                     1,
+                     8,
+                     7)
+                     .fits);
 
     samples.back().compute_bytes = 4096 * MIB + 1;
     GGML_ASSERT(!LTXVAE::make_decoder_capacity_plan(
