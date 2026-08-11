@@ -1771,6 +1771,7 @@ protected:
     std::vector<ggml_backend_t> extra_runtime_backends;  // borrowed (SDBackendManager-owned)
     ggml_backend_sched_t sched             = nullptr;    // owned
     ggml_backend_t cpu_fallback_backend    = nullptr;    // owned, sched requires a trailing CPU backend
+    ggml_backend_t vae_fallback_backend    = nullptr;    // borrowed (SDBackendManager-owned)
     bool multi_device_eval_callback_warned = false;
     bool vae_auto_cpu_fallback_enabled       = false;
     float vae_auto_cpu_fallback_memory_ratio = 0.9f;
@@ -2211,7 +2212,8 @@ protected:
     }
 
     size_t get_pending_runtime_params_size() const {
-        if (params_ctx == nullptr || params_backend == runtime_backend) {
+        if (params_ctx == nullptr || vae_fallback_backend == nullptr ||
+            vae_fallback_backend == runtime_backend) {
             return 0;
         }
         size_t bytes = 0;
@@ -3235,7 +3237,8 @@ public:
             [&](const char* failure) -> std::optional<sd::Tensor<T>> {
             if (!vae_auto_cpu_fallback_enabled ||
                 sd_backend_is_cpu(runtime_backend) ||
-                !sd_backend_is_cpu(params_backend) ||
+                vae_fallback_backend == nullptr ||
+                !sd_backend_is_cpu(vae_fallback_backend) ||
                 has_stateful_cache) {
                 return std::nullopt;
             }
@@ -3246,7 +3249,7 @@ public:
                      get_desc().c_str(),
                      failure,
                      previous_backend_name.c_str());
-            switch_runtime_backend(params_backend);
+            switch_runtime_backend(vae_fallback_backend);
             try {
                 auto output = compute<T>(get_graph,
                                          n_threads,
@@ -3264,7 +3267,8 @@ public:
 
         if (vae_auto_cpu_fallback_enabled &&
             !sd_backend_is_cpu(runtime_backend) &&
-            sd_backend_is_cpu(params_backend)) {
+            vae_fallback_backend != nullptr &&
+            sd_backend_is_cpu(vae_fallback_backend)) {
             const size_t required_bytes = measure_compute_buffer_size(gf);
             const size_t pending_runtime_param_bytes =
                 get_pending_runtime_params_size();
@@ -3293,7 +3297,7 @@ public:
             if (decision.use_cpu_fallback()) {
                 ggml_backend_t previous_backend         = runtime_backend;
                 const std::string previous_backend_name = ggml_backend_name(previous_backend);
-                const std::string cpu_backend_name      = ggml_backend_name(params_backend);
+                const std::string cpu_backend_name      = ggml_backend_name(vae_fallback_backend);
 
                 LOG_WARN(
                     "%s VAE graph exceeds preflight capacity; routing only this graph to CPU: "
@@ -3311,7 +3315,7 @@ public:
                     previous_backend_name.c_str(),
                     cpu_backend_name.c_str());
 
-                switch_runtime_backend(params_backend);
+                switch_runtime_backend(vae_fallback_backend);
                 try {
                     auto output = compute<T>(get_graph,
                                              n_threads,
@@ -3412,8 +3416,11 @@ public:
         }
     }
 
-    void set_vae_auto_cpu_fallback(bool enabled, float memory_ratio = 0.9f) {
+    void set_vae_auto_cpu_fallback(bool enabled,
+                                   float memory_ratio = 0.9f,
+                                   ggml_backend_t fallback_backend = nullptr) {
         vae_auto_cpu_fallback_enabled = enabled;
+        vae_fallback_backend          = fallback_backend;
         if (memory_ratio > 0.0f && memory_ratio <= 1.0f) {
             vae_auto_cpu_fallback_memory_ratio = memory_ratio;
         } else {
@@ -3432,13 +3439,16 @@ public:
         if (sd_backend_is_cpu(runtime_backend)) {
             LOG_INFO("%s VAE runtime is explicitly CPU; automatic fallback is not needed",
                      get_desc().c_str());
-        } else if (!sd_backend_is_cpu(params_backend)) {
+        } else if (vae_fallback_backend == nullptr ||
+                   !sd_backend_is_cpu(vae_fallback_backend)) {
             vae_auto_cpu_fallback_enabled = false;
             LOG_WARN(
                 "%s VAE automatic CPU fallback requires CPU-resident VAE parameters; "
                 "explicit params backend %s is preserved and fallback is disabled",
                 get_desc().c_str(),
-                ggml_backend_name(params_backend));
+                vae_fallback_backend != nullptr
+                    ? ggml_backend_name(vae_fallback_backend)
+                    : "(none)");
         } else {
             LOG_INFO("%s VAE automatic CPU fallback enabled: preflight ratio=%.3f, runtime=%s",
                      get_desc().c_str(),

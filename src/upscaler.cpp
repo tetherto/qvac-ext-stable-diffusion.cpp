@@ -227,7 +227,13 @@ upscaler_ctx_t* new_upscaler_ctx_with_device(const char* esrgan_path_c_str,
                                              sd_upscaler_device_t device,
                                              sd_backend_preference_t gpu_backend_pref) {
     const char* backend_spec = upscaler_pref_to_backend_spec(device, gpu_backend_pref);
-    return new_upscaler_ctx(esrgan_path_c_str, offload_params_to_cpu, direct, n_threads, tile_size, backend_spec, nullptr);
+    const char* params_backend_spec = offload_params_to_cpu ? "cpu" : nullptr;
+    return new_upscaler_ctx(esrgan_path_c_str,
+                            direct,
+                            n_threads,
+                            tile_size,
+                            backend_spec,
+                            params_backend_spec);
 }
 
 int get_upscaler_backend_device(const upscaler_ctx_t* upscaler_ctx) {

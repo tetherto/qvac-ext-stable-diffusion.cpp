@@ -1553,7 +1553,8 @@ public:
                 if (model) {
                     model->set_vae_auto_cpu_fallback(
                         sd_ctx_params->vae_auto_cpu_fallback,
-                        sd_ctx_params->vae_auto_cpu_fallback_memory_ratio);
+                        sd_ctx_params->vae_auto_cpu_fallback_memory_ratio,
+                        params_backend_for(SDBackendModule::VAE));
                 }
             };
             configure_vae_fallback(first_stage_model);
@@ -4520,32 +4521,6 @@ struct ImageGenerationLatents {
     int audio_length                       = 0;
 };
 
-static float ltxv_latent_corner_to_pixel_frame(int64_t corner_index,
-                                               int temporal_scale,
-                                               bool causal_temporal_positioning) {
-    float pixel_t = static_cast<float>(corner_index * temporal_scale);
-    if (causal_temporal_positioning) {
-        pixel_t = std::max(0.f, pixel_t + 1.f - static_cast<float>(temporal_scale));
-    }
-    return pixel_t;
-}
-
-static void set_ltxv_video_position(sd::Tensor<float>* positions,
-                                    int64_t token,
-                                    float t_start,
-                                    float t_end,
-                                    float h_start,
-                                    float h_end,
-                                    float w_start,
-                                    float w_end) {
-    positions->index(0, 0, token, 0) = t_start;
-    positions->index(1, 0, token, 0) = t_end;
-    positions->index(0, 1, token, 0) = h_start;
-    positions->index(1, 1, token, 0) = h_end;
-    positions->index(0, 2, token, 0) = w_start;
-    positions->index(1, 2, token, 0) = w_end;
-}
-
 static sd::Tensor<float> build_ltxv_video_positions(int64_t width,
                                                     int64_t height,
                                                     int64_t target_latent_frames,
@@ -4557,49 +4532,17 @@ static sd::Tensor<float> build_ltxv_video_positions(int64_t width,
                                                     int temporal_scale,
                                                     bool causal_temporal_positioning,
                                                     bool keyframe_first = false) {
-    GGML_ASSERT(width > 0 && height > 0 && target_latent_frames > 0);
-    GGML_ASSERT(keyframe_latent_frames > 0);
-    GGML_ASSERT(fps > 0);
-
-    int64_t total_tokens = width * height * (target_latent_frames + keyframe_latent_frames);
-    sd::Tensor<float> positions({2, 3, total_tokens, 1});
-    int64_t token = 0;
-
-    auto append_positions = [&](bool keyframe) {
-        const int64_t frame_count = keyframe ? keyframe_latent_frames : target_latent_frames;
-        for (int64_t t = 0; t < frame_count; t++) {
-            const int64_t start_corner = (keyframe ? keyframe_frame_idx : 0) + t;
-            const int64_t end_corner   = start_corner + 1;
-            float t_start              = ltxv_latent_corner_to_pixel_frame(
-                start_corner, temporal_scale, causal_temporal_positioning);
-            float t_end = ltxv_latent_corner_to_pixel_frame(
-                end_corner, temporal_scale, causal_temporal_positioning);
-            if (keyframe && keyframe_pixel_frames == 1) {
-                t_end = t_start + 1.f;
-            }
-            t_start /= static_cast<float>(fps);
-            t_end /= static_cast<float>(fps);
-            for (int64_t h = 0; h < height; h++) {
-                float h_start = static_cast<float>(h * spatial_scale);
-                float h_end   = static_cast<float>((h + 1) * spatial_scale);
-                for (int64_t w = 0; w < width; w++) {
-                    float w_start = static_cast<float>(w * spatial_scale);
-                    float w_end   = static_cast<float>((w + 1) * spatial_scale);
-                    set_ltxv_video_position(&positions, token++, t_start, t_end, h_start, h_end, w_start, w_end);
-                }
-            }
-        }
-    };
-
-    if (keyframe_first) {
-        append_positions(true);
-        append_positions(false);
-    } else {
-        append_positions(false);
-        append_positions(true);
-    }
-
-    return positions;
+    return sd::build_ltxv_video_positions(width,
+                                          height,
+                                          target_latent_frames,
+                                          keyframe_latent_frames,
+                                          keyframe_frame_idx,
+                                          keyframe_pixel_frames,
+                                          fps,
+                                          spatial_scale,
+                                          temporal_scale,
+                                          causal_temporal_positioning,
+                                          keyframe_first);
 }
 
 static sd::Tensor<float> pack_ltxav_audio_and_video_latents(const sd::Tensor<float>& video_latent,
@@ -5751,7 +5694,7 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
     sd_ctx->sd->vae_tiling_params = sd_img_gen_params->vae_tiling_params;
     GenerationRequest request(sd_ctx, sd_img_gen_params);
     if (!request.valid) {
-        return nullptr;
+        return false;
     }
     LOG_INFO("generate_image %dx%d", request.width, request.height);
 

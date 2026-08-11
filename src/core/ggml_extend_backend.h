@@ -77,14 +77,17 @@ public:
               bool keep_vae_on_cpu,
               bool keep_control_net_on_cpu,
               std::string* error) {
-        return init(backend_spec,
-                    params_backend_spec,
-                    offload_params_to_cpu,
-                    keep_clip_on_cpu,
-                    keep_vae_on_cpu,
-                    keep_control_net_on_cpu,
-                    false,
-                    error);
+        if (!init(backend_spec, params_backend_spec, nullptr, false, error)) {
+            return false;
+        }
+        if (offload_params_to_cpu) {
+            params_assignment_.set_default("cpu");
+        }
+        runtime_assignment_.apply_keep_cpu_overrides(
+            keep_clip_on_cpu, keep_vae_on_cpu, keep_control_net_on_cpu);
+        params_assignment_.apply_keep_cpu_overrides(
+            keep_clip_on_cpu, keep_vae_on_cpu, keep_control_net_on_cpu);
+        return validate(error);
     }
     void reset();
 

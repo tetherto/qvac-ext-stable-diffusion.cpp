@@ -251,7 +251,7 @@ struct LoraModel : public GGMLRunner {
 
     size_t count_compatible_model_tensors(
         const std::map<std::string, ggml_tensor*>& model_tensors) {
-        preprocess_lora_tensors(model_tensors);
+        preprocess_lora_tensors(tensor_names(model_tensors));
         size_t compatible = 0;
         auto safe_product = [](size_t first, size_t second) {
             if (first != 0 &&
