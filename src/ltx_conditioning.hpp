@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdint>
 
-#include "tensor.hpp"
+#include "core/tensor.hpp"
 
 namespace sd {
 
@@ -14,7 +14,22 @@ namespace sd {
         ATTENTION_STRENGTH_OUT_OF_RANGE,
         NONFINITE_DOWNSCALE_FACTOR,
         UNSUPPORTED_DOWNSCALE_FACTOR,
+        INVALID_REFERENCE_COUNT,
+        MISSING_REFERENCE_IMAGES,
     };
+
+    template <typename Image>
+    inline LtxReferenceValidation validate_ltx_reference_inputs(
+        const Image* images,
+        int image_count) {
+        if (image_count < 0) {
+            return LtxReferenceValidation::INVALID_REFERENCE_COUNT;
+        }
+        if (image_count > 0 && images == nullptr) {
+            return LtxReferenceValidation::MISSING_REFERENCE_IMAGES;
+        }
+        return LtxReferenceValidation::VALID;
+    }
 
     inline LtxReferenceValidation validate_ltx_reference_parameters(
         float attention_strength,

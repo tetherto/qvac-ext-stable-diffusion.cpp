@@ -1,4 +1,4 @@
-#include "lora.hpp"
+#include "model/adapter/lora.hpp"
 
 #include <cstdint>
 #include <cstdio>

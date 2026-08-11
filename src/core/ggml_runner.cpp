@@ -669,7 +669,7 @@ void GGMLRunner::switch_runtime_backend(ggml_backend_t backend) {
 }
 
 void GGMLRunner::set_vae_auto_cpu_fallback(bool enabled, float memory_ratio, ggml_backend_t cpu_backend) {
-    if (cpu_backend != nullptr) vae_cpu_fallback_backend = cpu_backend;
+    vae_cpu_fallback_backend = cpu_backend;
     vae_auto_cpu_fallback_enabled = enabled;
     if (memory_ratio > 0.0f && memory_ratio <= 1.0f) {
         vae_auto_cpu_fallback_memory_ratio = memory_ratio;

@@ -77,12 +77,10 @@ public:
     bool init(const char* backend_spec, const char* params_backend_spec,
               bool offload_params_to_cpu, bool keep_clip_on_cpu,
               bool keep_vae_on_cpu, bool keep_control_net_on_cpu, std::string* error) {
-        const char* params = offload_params_to_cpu &&
-                             (params_backend_spec == nullptr || params_backend_spec[0] == '\0')
-                                 ? "cpu" : params_backend_spec;
-        if (!init(backend_spec, params, nullptr, false, error)) return false;
-        runtime_assignment_.apply_keep_cpu_overrides(keep_clip_on_cpu, keep_vae_on_cpu,
-                                                     keep_control_net_on_cpu);
+        if (!init(backend_spec, params_backend_spec, nullptr, false, error)) return false;
+        if (offload_params_to_cpu) params_assignment_.set_default("cpu");
+        runtime_assignment_.apply_keep_cpu_overrides(keep_clip_on_cpu, keep_vae_on_cpu, keep_control_net_on_cpu);
+        params_assignment_.apply_keep_cpu_overrides(keep_clip_on_cpu, keep_vae_on_cpu, keep_control_net_on_cpu);
         return validate(error);
     }
     void reset();
