@@ -788,6 +788,19 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
     return sd::make_image_generation_result(images, count, infos, result_out);
 }
 
+SD_API int sd_get_effective_video_fps(const sd_ctx_t* sd_ctx,
+                                      const sd_vid_gen_params_t* sd_vid_gen_params) {
+    if (sd_ctx == nullptr || sd_ctx->sd == nullptr || sd_vid_gen_params == nullptr) {
+        return 0;
+    }
+
+    if (sd_version_is_minimax_h3(sd_ctx->sd->version)) {
+        return 24;
+    }
+
+    return std::max(1, sd_vid_gen_params->fps);
+}
+
 SD_API bool generate_video(sd_ctx_t* sd_ctx,
                            const sd_vid_gen_params_t* params,
                            sd_video_generation_result_t** result_out) {

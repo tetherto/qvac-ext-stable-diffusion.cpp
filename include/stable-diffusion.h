@@ -604,6 +604,11 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                            const sd_vid_gen_params_t* sd_vid_gen_params,
                            sd_video_generation_result_t** result_out);
 
+// Returns the frame rate actually used by the selected video model. MiniMax-H3
+// always renders at 24 FPS, regardless of the requested input value.
+SD_API int sd_get_effective_video_fps(const sd_ctx_t* sd_ctx,
+                                      const sd_vid_gen_params_t* sd_vid_gen_params);
+
 typedef struct upscaler_ctx_t upscaler_ctx_t;
 
 enum sd_upscaler_device_t {
