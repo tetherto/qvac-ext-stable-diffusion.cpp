@@ -437,7 +437,8 @@ bool save_results(const SDCliParams& cli_params,
                   const SDGenerationParams& gen_params,
                   sd_image_t* results,
                   int num_results,
-                  const sd_audio_t* generated_audio = nullptr) {
+                  const sd_audio_t* generated_audio = nullptr,
+                  int effective_video_fps = 0) {
     if (results == nullptr || num_results <= 0) {
         return false;
     }
@@ -532,7 +533,8 @@ bool save_results(const SDCliParams& cli_params,
         std::string final_ext_lower = ext.string();
         std::transform(final_ext_lower.begin(), final_ext_lower.end(), final_ext_lower.begin(), ::tolower);
         const bool mux_audio = generated_audio != nullptr && (final_ext_lower == ".avi" || final_ext_lower == ".webm");
-        if (create_video_from_sd_images(video_path.string().c_str(), results, num_results, gen_params.fps, 90, mux_audio ? generated_audio : nullptr) == 0) {
+        const int output_fps = effective_video_fps > 0 ? effective_video_fps : gen_params.fps;
+        if (create_video_from_sd_images(video_path.string().c_str(), results, num_results, output_fps, 90, mux_audio ? generated_audio : nullptr) == 0) {
             LOG_INFO("save result video to '%s'", video_path.string().c_str());
             if (generated_audio != nullptr && !mux_audio) {
                 fs::path wav_path = video_path;
@@ -904,6 +906,7 @@ int main(int argc, const char* argv[]) {
 
     SDImageVec results;
     int num_results             = 0;
+    int effective_video_fps     = 0;
     sd_audio_t* generated_audio = nullptr;
 
     if (cli_params.mode == UPSCALE) {
@@ -950,6 +953,8 @@ int main(int argc, const char* argv[]) {
             sd_image_t* generated_video        = nullptr;
             if (!generate_video(sd_ctx.get(), &vid_gen_params, &generated_video, &num_results, &generated_audio)) {
                 generated_video = nullptr;
+            } else {
+                effective_video_fps = sd_get_effective_video_fps(sd_ctx.get(), &vid_gen_params);
             }
             results.adopt(generated_video, num_results);
         }
@@ -1013,7 +1018,7 @@ int main(int argc, const char* argv[]) {
         }
     }
 
-    if (!save_results(cli_params, ctx_params, gen_params, results.data(), num_results, generated_audio)) {
+    if (!save_results(cli_params, ctx_params, gen_params, results.data(), num_results, generated_audio, effective_video_fps)) {
         free_sd_audio(generated_audio);
         return 1;
     }

@@ -654,7 +654,7 @@ namespace MiniMaxH3VAE {
                 auto decoded = VAE::decode(n_threads,
                                            input,
                                            tiling,
-                                           decode_video,
+                                           false,
                                            circular_x,
                                            circular_y,
                                            silent);
@@ -696,7 +696,7 @@ namespace MiniMaxH3VAE {
                 auto decoded  = VAE::decode(n_threads,
                                             chunk,
                                             tiling,
-                                            true,
+                                            false,
                                             circular_x,
                                             circular_y,
                                             silent);
