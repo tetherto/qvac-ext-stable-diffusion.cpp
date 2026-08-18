@@ -794,11 +794,7 @@ SD_API int sd_get_effective_video_fps(const sd_ctx_t* sd_ctx,
         return 0;
     }
 
-    if (sd_version_is_minimax_h3(sd_ctx->sd->version)) {
-        return 24;
-    }
-
-    return std::max(1, sd_vid_gen_params->fps);
+    return sd::pipeline::effective_video_fps(sd_ctx->sd, sd_vid_gen_params->fps);
 }
 
 SD_API bool generate_video(sd_ctx_t* sd_ctx,
