@@ -677,17 +677,6 @@ int main(int argc, const char* argv[]) {
             cli_params.preview_path = base_path + ".avi";
         }
     }
-    cli_params.preview_fps = gen_params.fps;
-    if (cli_params.preview_method == PREVIEW_PROJ)
-        cli_params.preview_fps /= 4;
-
-    sd_set_preview_callback(step_callback,
-                            cli_params.preview_method,
-                            cli_params.preview_interval,
-                            !cli_params.preview_noisy,
-                            cli_params.preview_noisy,
-                            (void*)&cli_params);
-
     LOG_DEBUG("version: %s", version_string().c_str());
     LOG_DEBUG("%s", sd_get_system_info());
     LOG_DEBUG("%s", cli_params.to_string().c_str());
@@ -927,6 +916,21 @@ int main(int argc, const char* argv[]) {
         if (gen_params.high_noise_sample_params.sample_method == SAMPLE_METHOD_COUNT) {
             gen_params.high_noise_sample_params.sample_method = sd_get_default_sample_method(sd_ctx.get());
         }
+
+        cli_params.preview_fps = gen_params.fps;
+        if (cli_params.mode == VID_GEN) {
+            sd_vid_gen_params_t preview_vid_gen_params = gen_params.to_sd_vid_gen_params_t();
+            cli_params.preview_fps = sd_get_effective_video_fps(sd_ctx.get(), &preview_vid_gen_params);
+        }
+        if (cli_params.preview_method == PREVIEW_PROJ)
+            cli_params.preview_fps /= 4;
+
+        sd_set_preview_callback(step_callback,
+                                cli_params.preview_method,
+                                cli_params.preview_interval,
+                                !cli_params.preview_noisy,
+                                cli_params.preview_noisy,
+                                (void*)&cli_params);
 
         if (gen_params.sample_params.scheduler == SCHEDULER_COUNT) {
             gen_params.sample_params.scheduler = sd_get_default_scheduler(sd_ctx.get(), gen_params.sample_params.sample_method);

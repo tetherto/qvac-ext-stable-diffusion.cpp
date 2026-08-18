@@ -1178,7 +1178,8 @@ HTTP-only output fields:
 | `output_compression` | `integer` |
 
 For `vid_gen`, `output_format` and `output_compression` control container encoding.
-`fps` is request metadata for the generated sequence and is echoed in the completed job result.
+`fps` requests the generated sequence rate. The completed job reports the effective playback
+rate, which may differ when a model enforces its own rate (MiniMax-H3 always uses 24 FPS).
 
 Allowed `output_format` values:
 
