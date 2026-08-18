@@ -650,6 +650,9 @@ namespace MiniMaxH3VAE {
                                  bool silent       = false) override {
             auto input  = ensure_video_shape(x);
             auto tiling = h3_tiling(tiling_params);
+            if (decode_video) {
+                LOG_WARN("MiniMax-H3 ignores decode_video and always uses tiled decoding");
+            }
             if (input.shape()[2] == 1) {
                 auto decoded = VAE::decode(n_threads,
                                            input,

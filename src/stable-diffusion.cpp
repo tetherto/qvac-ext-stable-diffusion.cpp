@@ -4140,14 +4140,6 @@ static bool ideogram4_has_uncond_model(sd_ctx_t* sd_ctx) {
     return ideogram_runner != nullptr && ideogram_runner->has_unconditional_model();
 }
 
-static int get_effective_video_fps(const sd_ctx_t* sd_ctx, int requested_fps) {
-    const int fps = std::max(1, requested_fps);
-    if (sd_ctx != nullptr && sd_ctx->sd != nullptr && sd_version_is_minimax_h3(sd_ctx->sd->version)) {
-        return 24;
-    }
-    return fps;
-}
-
 struct GenerationRequest {
     std::string prompt;
     std::string negative_prompt;
@@ -4213,7 +4205,7 @@ struct GenerationRequest {
         frames           = sd_ctx->sd->align_video_frames(requested_frames);
         clip_skip        = sd_vid_gen_params->clip_skip;
         const int requested_fps = std::max(1, sd_vid_gen_params->fps);
-        fps                     = get_effective_video_fps(sd_ctx, requested_fps);
+        fps                     = sd_get_effective_video_fps(sd_ctx, sd_vid_gen_params);
         if (fps != requested_fps) {
             LOG_WARN("MiniMax-H3 uses %d fps; overriding requested fps %d", fps, requested_fps);
         }
@@ -7015,7 +7007,11 @@ SD_API int sd_get_effective_video_fps(const sd_ctx_t* sd_ctx,
         return 0;
     }
 
-    return get_effective_video_fps(sd_ctx, sd_vid_gen_params->fps);
+    if (sd_version_is_minimax_h3(sd_ctx->sd->version)) {
+        return 24;
+    }
+
+    return std::max(1, sd_vid_gen_params->fps);
 }
 
 SD_API bool generate_video(sd_ctx_t* sd_ctx,
