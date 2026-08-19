@@ -100,6 +100,21 @@ const std::vector<ModelDefinition>& wan_definitions() {
         }
         {
             ModelDefinition definition;
+            definition.version                          = VERSION_ABOT_WORLD;
+            definition.geometry                         = {2, 48, 3};
+            definition.name                             = "ABot-World";
+            definition.traits.is_dit                    = true;
+            definition.traits.supports_video_generation = false;
+            definition.traits.vae_kind                  = ModelVAEKind::WAN;
+            definition.traits.video_tae                 = true;
+            definition.sampling                         = {FLOW_PRED, 5.f};
+            definition.sampling.default_sample_method   = EULER_SAMPLE_METHOD;
+            definition.sampling.default_scheduler       = DISCRETE_SCHEDULER;
+            definition.build                            = build_wan;
+            result.push_back(std::move(definition));
+        }
+        {
+            ModelDefinition definition;
             definition.version                          = VERSION_WAN2_2_S2V;
             definition.geometry                         = {2, 16, 3};
             definition.name                             = "Wan 2.2 S2V";

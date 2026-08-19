@@ -2517,7 +2517,7 @@ sd::Tensor<float> StableDiffusionGGML::sample(const std::shared_ptr<DiffusionMod
             flux3_target_timestep = sd::Tensor<float>::from_vector({sigmas[target_index]});
         }
         sd::Tensor<float> noised_input = x * c_in;
-        if (apply_denoise_mask && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
+        if (apply_denoise_mask && (sd_version_is_wan_ti2v_family(version) || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
             noised_input = noised_input * denoise_mask + sampling_init_latent * (1.0f - denoise_mask);
         }
 
