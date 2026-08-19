@@ -917,6 +917,7 @@ int main(int argc, const char* argv[]) {
             results.push_back(gen_params.init_image.release());
         } else if (cli_params.mode == VID_GEN) {
             sd_vid_gen_params_t vid_gen_params      = gen_params.to_sd_vid_gen_params_t();
+            cli_params.preview_fps = sd_get_effective_video_fps(sd_ctx.get(), &vid_gen_params);
             sd_video_generation_result_t* generated = nullptr;
             if (generate_video(sd_ctx.get(), &vid_gen_params, &generated)) {
                 gen_params.fps = cli_params.preview_fps = generated->fps;

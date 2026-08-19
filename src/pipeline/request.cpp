@@ -14,6 +14,12 @@
 #include "runtime/denoiser.hpp"
 
 namespace sd::pipeline {
+    int effective_video_fps(const StableDiffusionGGML* sd, int requested_fps) {
+        if (sd && sd_version_is_minimax_h3(sd->version)) return 24;
+        if (sd && sd->version == VERSION_WAN2_2_S2V) return 16;
+        return std::max(1, requested_fps);
+    }
+
 
     const char* sampling_methods_str[] = {
         "Euler",
@@ -164,13 +170,10 @@ namespace sd::pipeline {
         requested_frames = std::max(1, sd_vid_gen_params->video_frames);
         frames           = sd->align_video_frames(requested_frames);
         clip_skip        = sd_vid_gen_params->clip_skip;
-        fps              = std::max(1, sd_vid_gen_params->fps);
-        if (sd->version == VERSION_WAN2_2_S2V && sd_vid_gen_params->fps != 16) {
-            LOG_WARN("Wan2.2 S2V uses 16 fps; overriding requested fps %d", sd_vid_gen_params->fps);
-            fps = 16;
-        } else if (sd_version_is_minimax_h3(sd->version) && fps != 24) {
-            LOG_WARN("MiniMax-H3 uses 24 fps; overriding requested fps %d", fps);
-            fps = 24;
+        fps = effective_video_fps(sd, sd_vid_gen_params->fps);
+        if (fps != std::max(1, sd_vid_gen_params->fps)) {
+            LOG_WARN("%s uses %d fps; overriding requested fps %d",
+                     sd_version_name(sd->version), fps, sd_vid_gen_params->fps);
         }
         vae_scale_factor            = sd->get_vae_scale_factor();
         diffusion_model_down_factor = sd->get_diffusion_model_down_factor();

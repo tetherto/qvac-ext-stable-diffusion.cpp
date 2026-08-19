@@ -10,6 +10,8 @@
 class StableDiffusionGGML;
 
 namespace sd::pipeline {
+    int effective_video_fps(const StableDiffusionGGML* sd, int requested_fps);
+
 
     extern const char* sampling_methods_str[];
 
