@@ -321,7 +321,7 @@ public:
     }
 };
 
-ggml_tensor*
+static inline ggml_tensor*
 patchify(ggml_context* ctx,
          ggml_tensor* x,
          int64_t patch_size,
@@ -351,7 +351,7 @@ patchify(ggml_context* ctx,
     return x;
 }
 
-ggml_tensor* unpatchify(ggml_context* ctx,
+static inline ggml_tensor* unpatchify(ggml_context* ctx,
                         ggml_tensor* x,
                         int64_t patch_size,
                         int64_t b = 1) {

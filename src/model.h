@@ -312,7 +312,7 @@ static inline bool sd_version_supports_video_generation(SDVersion version) {
 }
 
 static inline bool sd_version_supports_image_generation(SDVersion version) {
-    return !sd_version_supports_video_generation(version);
+    return !sd_version_is_abot_world(version) && !sd_version_supports_video_generation(version);
 }
 
 static inline bool sd_version_uses_flux_vae(SDVersion version) {
