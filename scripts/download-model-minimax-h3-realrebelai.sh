@@ -3,10 +3,9 @@ set -euo pipefail
 
 # Download MiniMax-H3 GGUF components published by realrebelai.
 #
-# The denoiser is from realrebelai/MiniMax-H3_GGUFs. Its Qwen3-VL GGUFs use
-# ComfyUI-specific tensor layouts, so stable-diffusion.cpp uses the compatible
-# encoder from unsloth/MiniMax-H3-GGUF. MiniMax publish the shared video/audio
-# VAEs separately in Comfy-Org/MiniMax-H3.
+# EXPERIMENTAL: these realrebelai GGUFs use a ComfyUI-specific H3 tensor
+# layout and are not currently loadable by stable-diffusion.cpp. The script is
+# retained for explicit download/interoperability experiments only.
 #
 # Default: FL2VA Q3 + Q2 encoder. This is the prompt-to-video pairing that
 # fits a 32 GB GPU when used with text-encoder CPU placement/offloading.
@@ -21,6 +20,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODELS_DIR="${MODELS_DIR:-$ROOT_DIR/models/minimax-h3-realrebelai}"
 VARIANT="fl2va"
 QUANT="q3"
+ALLOW_UNSUPPORTED_COMFYUI_LAYOUT=false
 HF_REVISION="${HF_REVISION:-main}"
 GGUF_REPO="realrebelai/MiniMax-H3_GGUFs"
 LLM_REPO="unsloth/MiniMax-H3-GGUF"
@@ -28,11 +28,10 @@ VAE_REPO="Comfy-Org/MiniMax-H3"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--variant fl2va|ref2va] [--quant q3|q4] [--models-dir DIR]
+Usage: $(basename "$0") --allow-unsupported-comfyui-layout [--variant fl2va|ref2va] [--quant q3|q4] [--models-dir DIR]
 
-Downloads a realrebelai MiniMax-H3 GGUF denoiser, stable-diffusion.cpp
-compatible Unsloth Qwen3-VL encoder, video VAE, and audio VAE. Default is
-FL2VA Q3 with the Q2 encoder.
+Downloads realrebelai MiniMax-H3 GGUFs for an explicitly unsupported ComfyUI
+layout. These files do not currently run in stable-diffusion.cpp.
 
 Environment:
   MODELS_DIR    destination directory
@@ -55,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             MODELS_DIR="$2"
             shift 2
             ;;
+        --allow-unsupported-comfyui-layout)
+            ALLOW_UNSUPPORTED_COMFYUI_LAYOUT=true
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -66,6 +69,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$ALLOW_UNSUPPORTED_COMFYUI_LAYOUT" != true ]]; then
+    echo "realrebelai MiniMax-H3 GGUFs are currently incompatible with stable-diffusion.cpp." >&2
+    echo "Pass --allow-unsupported-comfyui-layout only to download them for external experiments." >&2
+    exit 2
+fi
 
 case "$VARIANT" in
     fl2va) DENOISER_PREFIX="MiniMax-H3-FL2VA" ;;
