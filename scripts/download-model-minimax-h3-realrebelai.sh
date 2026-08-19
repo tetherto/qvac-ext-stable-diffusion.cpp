@@ -3,8 +3,10 @@ set -euo pipefail
 
 # Download MiniMax-H3 GGUF components published by realrebelai.
 #
-# The denoiser and Qwen3-VL encoder are from realrebelai/MiniMax-H3_GGUFs.
-# MiniMax publish the shared video/audio VAEs separately in Comfy-Org/MiniMax-H3.
+# The denoiser is from realrebelai/MiniMax-H3_GGUFs. Its Qwen3-VL GGUFs use
+# ComfyUI-specific tensor layouts, so stable-diffusion.cpp uses the compatible
+# encoder from unsloth/MiniMax-H3-GGUF. MiniMax publish the shared video/audio
+# VAEs separately in Comfy-Org/MiniMax-H3.
 #
 # Default: FL2VA Q3 + Q2 encoder. This is the prompt-to-video pairing that
 # fits a 32 GB GPU when used with text-encoder CPU placement/offloading.
@@ -21,14 +23,16 @@ VARIANT="fl2va"
 QUANT="q3"
 HF_REVISION="${HF_REVISION:-main}"
 GGUF_REPO="realrebelai/MiniMax-H3_GGUFs"
+LLM_REPO="unsloth/MiniMax-H3-GGUF"
 VAE_REPO="Comfy-Org/MiniMax-H3"
 
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [--variant fl2va|ref2va] [--quant q3|q4] [--models-dir DIR]
 
-Downloads a MiniMax-H3 GGUF denoiser, matching Qwen3-VL encoder, video VAE,
-and audio VAE. Default is FL2VA Q3 with the Q2 encoder.
+Downloads a realrebelai MiniMax-H3 GGUF denoiser, stable-diffusion.cpp
+compatible Unsloth Qwen3-VL encoder, video VAE, and audio VAE. Default is
+FL2VA Q3 with the Q2 encoder.
 
 Environment:
   MODELS_DIR    destination directory
@@ -76,14 +80,14 @@ case "$QUANT" in
     q3)
         DENOISER_FILE="$DENOISER_PREFIX-Q3_K_M.gguf"
         DENOISER_SIZE=15577923360
-        LLM_FILE="qwen3vl-32B-MiniMax-H3-Q2_K.gguf"
-        LLM_SIZE=8487968160
+        LLM_FILE="qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
+        LLM_SIZE=13102161024
         ;;
     q4)
         DENOISER_FILE="$DENOISER_PREFIX-Q4_K_M.gguf"
         DENOISER_SIZE=19864208160
-        LLM_FILE="qwen3vl-32B-MiniMax-H3-Q4_K_M.gguf"
-        LLM_SIZE=14576977888
+        LLM_FILE="qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+        LLM_SIZE=18218065024
         ;;
     *)
         echo "--quant must be q3 or q4 (got: $QUANT)" >&2
@@ -133,7 +137,7 @@ download_verified() {
 }
 
 download_verified "$GGUF_REPO" "$DENOISER_FILE" "$DENOISER_SIZE"
-download_verified "$GGUF_REPO" "$LLM_FILE" "$LLM_SIZE"
+download_verified "$LLM_REPO" "$LLM_FILE" "$LLM_SIZE"
 download_verified "$VAE_REPO" "vae/minimax_h3_video_vae_fp16.safetensors" 5207808496
 download_verified "$VAE_REPO" "vae/minimax_h3_audio_vae_fp32.safetensors" 605254808
 
