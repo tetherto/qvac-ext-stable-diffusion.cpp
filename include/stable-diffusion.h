@@ -596,6 +596,43 @@ SD_API bool adetail_image(adetailer_ctx_t* adetailer_ctx,
                           sd_image_t** images_out,
                           int* num_images_out);
 
+// ABot-World causal interactive session.  ABot models are intentionally not
+// accepted by batch generate_image()/generate_video().
+typedef struct sd_abot_session_t sd_abot_session_t;
+typedef struct {
+    const char* dit_model_path;
+    const char* taehv_path;
+    const char* scene_path;
+    const char* backend;
+    int n_threads;
+    int64_t seed;
+    int num_frame_per_block;
+    int local_attn_size;
+    bool offload_params_to_cpu;
+    bool kv_cache;
+    bool profile;
+} sd_abot_session_params_t;
+SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);
+SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params);
+SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session, uint32_t action_mask, int* num_frames_out);
+SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
+SD_API void sd_abot_session_free(sd_abot_session_t* session);
+
+typedef struct {
+    const char* t5_path;
+    const char* vae_path;
+    const char* prompt;
+    sd_image_t init_image;
+    int width;
+    int height;
+    const char* output_path;
+    const char* backend;
+    int n_threads;
+    bool offload_params_to_cpu;
+} sd_abot_scene_params_t;
+SD_API void sd_abot_scene_params_init(sd_abot_scene_params_t* params);
+SD_API bool sd_abot_scene_create(const sd_abot_scene_params_t* params);
+
 SD_API bool convert(const char* input_path,
                     const char* vae_path,
                     const char* output_path,

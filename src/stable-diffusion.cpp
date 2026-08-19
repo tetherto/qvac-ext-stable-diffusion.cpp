@@ -46,6 +46,7 @@
 #include "model/diffusion/qwen_image.hpp"
 #include "model/diffusion/unet.hpp"
 #include "model/diffusion/wan.hpp"
+#include "abot_world.hpp"
 #include "model/diffusion/z_image.hpp"
 #include "model/upscaler/esrgan.hpp"
 #include "model/upscaler/ltx_latent_upscaler.hpp"
@@ -111,6 +112,7 @@ const char* model_version_to_str[] = {
     "Flux.2 klein",
     "LTXAV",
     "MiniMax-H3",
+    "ABot-World",
     "HiDream O1",
     "Z-Image",
     "Boogu Image",
@@ -2736,7 +2738,7 @@ public:
                 hunyuan_timestep_r_tensor = sd::Tensor<float>::from_vector({sigmas[step + 1]});
             }
             sd::Tensor<float> noised_input = x * c_in;
-            if (!denoise_mask.empty() && (version == VERSION_WAN2_2_TI2V || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
+            if (!denoise_mask.empty() && (sd_version_is_wan_ti2v_family(version) || sd_version_is_ltxav(version) || sd_version_is_lingbot_video(version))) {
                 noised_input = noised_input * denoise_mask + init_latent * (1.0f - denoise_mask);
             }
 
@@ -3030,7 +3032,7 @@ public:
                 latent_channel = 128;
             } else if (sd_version_is_minimax_h3(version)) {
                 latent_channel = 24;
-            } else if (version == VERSION_WAN2_2_TI2V) {
+            } else if (sd_version_is_wan_ti2v_family(version)) {
                 latent_channel = 48;
             } else if (sd_version_is_hunyuan_video(version)) {
                 latent_channel = 32;
@@ -3921,11 +3923,13 @@ struct sd_ctx_t {
 };
 
 static bool sd_version_supports_video_generation(SDVersion version) {
-    return version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_lingbot_video(version) || sd_version_is_ltxav(version) || sd_version_is_minimax_h3(version);
+    return version != VERSION_ABOT_WORLD &&
+           (version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) ||
+            sd_version_is_lingbot_video(version) || sd_version_is_ltxav(version) || sd_version_is_minimax_h3(version));
 }
 
 static bool sd_version_supports_image_generation(SDVersion version) {
-    return !sd_version_supports_video_generation(version);
+    return version != VERSION_ABOT_WORLD && !sd_version_supports_video_generation(version);
 }
 
 sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
@@ -4374,7 +4378,15 @@ struct GenerationRequest {
         valid = false;
     }
 
+    void reject_abot_world_batch_generation(sd_ctx_t* sd_ctx) {
+        if (sd_version_is_abot_world(sd_ctx->sd->version)) {
+            LOG_ERROR("ABot-World models require sd_abot_session_new/step; batch generation is unsupported");
+            valid = false;
+        }
+    }
+
     void resolve(sd_ctx_t* sd_ctx) {
+        reject_abot_world_batch_generation(sd_ctx);
         align_generation_request_size();
         resolve_hires();
         seed = resolve_seed(seed);
@@ -7448,4 +7460,122 @@ SD_API void free_sd_images(sd_image_t* result_images, int num_images) {
     }
 
     free(result_images);
+}
+
+
+struct sd_abot_session_t { SDBackendManager backend_manager; ABOT::AbotWalkSession session; };
+void sd_abot_session_params_init(sd_abot_session_params_t* p) {
+    if (!p) return; *p = {}; p->n_threads = -1; p->seed = 42;
+}
+sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
+    try {
+        if (!p || !p->dit_model_path || !p->taehv_path || !p->scene_path) return nullptr;
+        auto s = std::make_unique<sd_abot_session_t>(); std::string error;
+        if (!s->backend_manager.init(SAFE_STR(p->backend), nullptr, p->offload_params_to_cpu, false, false, false, &error)) {
+            LOG_ERROR("sd_abot_session_new: backend init failed: %s", error.c_str()); return nullptr;
+        }
+        ABOT::AbotWorldConfig cfg;
+        if (p->num_frame_per_block > 0) cfg.num_frame_per_block = p->num_frame_per_block;
+        if (p->local_attn_size > 0) cfg.local_attn_size = p->local_attn_size;
+        cfg.profile = p->profile;
+        cfg.kv_cache = p->kv_cache;
+        const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
+        if (!s->session.load(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
+                             s->backend_manager.params_backend(SDBackendModule::DIFFUSION),
+                             s->backend_manager.runtime_backend(SDBackendModule::VAE),
+                             s->backend_manager.params_backend(SDBackendModule::VAE),
+                             p->dit_model_path, p->taehv_path, p->scene_path, cfg,
+                             static_cast<uint64_t>(p->seed), threads)) return nullptr;
+        return s.release();
+    } catch (const std::exception& e) { LOG_ERROR("sd_abot_session_new: %s", e.what()); return nullptr; }
+}
+sd_image_t* sd_abot_session_step(sd_abot_session_t* s, uint32_t action, int* n) {
+    if (n) *n = 0; if (!s) return nullptr;
+    try { std::vector<std::vector<uint8_t>> frames; int64_t w = 0, h = 0;
+        if (!s->session.step(static_cast<uint8_t>(action), frames, w, h)) return nullptr;
+        auto* out = static_cast<sd_image_t*>(calloc(frames.size(), sizeof(sd_image_t))); if (!out) return nullptr;
+        for (size_t i=0;i<frames.size();++i) { out[i] = {static_cast<uint32_t>(w), static_cast<uint32_t>(h), 3, static_cast<uint8_t*>(malloc(frames[i].size()))}; if (!out[i].data) { sd_abot_session_frames_free(out, static_cast<int>(i)); return nullptr; } memcpy(out[i].data, frames[i].data(), frames[i].size()); }
+        if (n) *n = static_cast<int>(frames.size()); return out;
+    } catch (const std::exception& e) { LOG_ERROR("sd_abot_session_step: %s", e.what()); s->session.fail_session("exception during step"); return nullptr; }
+}
+void sd_abot_session_frames_free(sd_image_t* frames, int n) { if (!frames) return; for (int i=0;i<n;++i) free(frames[i].data); free(frames); }
+void sd_abot_session_free(sd_abot_session_t* s) { delete s; }
+void sd_abot_scene_params_init(sd_abot_scene_params_t* p) { if (!p) return; *p = {}; p->width = 832; p->height = 480; p->n_threads = -1; }
+namespace {
+struct AbotT5Runner : T5Runner { using T5Runner::T5Runner; };
+struct AbotWanVAE : WAN::WanVAERunner { using WAN::WanVAERunner::WanVAERunner; };
+}
+bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
+    try {
+        const bool has_image = p && p->init_image.data;
+        if (!p || !p->t5_path || !p->prompt || !p->output_path || (has_image && !p->vae_path) ||
+            p->width <= 0 || p->height <= 0 || p->width % 32 || p->height % 32) {
+            LOG_ERROR("sd_abot_scene_create: t5, prompt, output and dimensions divisible by 32 are required (VAE for image scenes)"); return false;
+        }
+        SDBackendManager backends; std::string error;
+        if (!backends.init(SAFE_STR(p->backend), nullptr, p->offload_params_to_cpu, false, false, false, &error)) {
+            LOG_ERROR("sd_abot_scene_create: backend init failed: %s", error.c_str()); return false;
+        }
+        const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
+        auto model_manager = std::make_shared<ModelManager>();
+        model_manager->set_n_threads(threads);
+        ModelLoader& model_loader = model_manager->loader();
+        if (!model_loader.init_from_file(p->t5_path, "text_encoders.t5xxl.transformer.")) return false;
+        auto t5 = std::make_shared<AbotT5Runner>(backends.runtime_backend(SDBackendModule::TE),
+                                                   model_loader.get_tensor_storage_map(),
+                                                   "text_encoders.t5xxl.transformer",
+                                                   true,
+                                                   model_manager);
+        std::shared_ptr<AbotWanVAE> vae;
+        if (has_image) {
+            if (!model_loader.init_from_file(p->vae_path, "first_stage_model.")) return false;
+            vae = std::make_shared<AbotWanVAE>(backends.runtime_backend(SDBackendModule::VAE),
+                                                model_loader.get_tensor_storage_map(),
+                                                "first_stage_model",
+                                                false,
+                                                VERSION_ABOT_WORLD,
+                                                model_manager);
+        }
+        if (!model_manager->register_runner_params("ABot scene T5",
+                                                    *t5,
+                                                    "text_encoders.t5xxl.transformer",
+                                                    ModelManager::ResidencyMode::ParamBackend,
+                                                    backends.runtime_backend(SDBackendModule::TE),
+                                                    backends.params_backend(SDBackendModule::TE)) ||
+            (has_image && !model_manager->register_runner_params("ABot scene VAE",
+                                                                   *vae,
+                                                                   ModelManager::ResidencyMode::ParamBackend,
+                                                                   backends.runtime_backend(SDBackendModule::VAE),
+                                                                   backends.params_backend(SDBackendModule::VAE))) ||
+            !model_manager->validate_registered_tensors() ||
+            !model_manager->load_all_params_eagerly()) {
+            LOG_ERROR("sd_abot_scene_create: model parameter registration or loading failed");
+            return false;
+        }
+        T5Embedder tokenizer_helper(backends.runtime_backend(SDBackendModule::TE), {}, "", true);
+        auto tokens = tokenizer_helper.tokenize(p->prompt, 512, true);
+        sd::Tensor<float> prompt = t5->compute(threads,
+            sd::Tensor<int32_t>::from_vector(std::get<0>(tokens)),
+            sd::Tensor<float>::from_vector(std::get<2>(tokens)));
+        if (prompt.empty()) { LOG_ERROR("sd_abot_scene_create: prompt encoding failed"); return false; }
+        if (prompt.shape().size() == 2) prompt = prompt.unsqueeze(2);
+        sd::Tensor<float> first;
+        if (has_image) {
+            auto image = sd_image_to_tensor(p->init_image, p->width, p->height);
+            auto encoded = vae->encode(threads, image, {}, true);
+            first = vae->vae_to_diffusion_latents(vae->vae_output_to_latents(encoded, nullptr));
+            if (first.empty()) return false;
+        } else { first.resize({p->width / 16, p->height / 16, 48, 1}); std::fill_n(first.data(), first.numel(), 0.f); }
+        const int64_t w = first.shape()[0], h = first.shape()[1], c = first.numel() / (w * h);
+        if (c != 48) { LOG_ERROR("sd_abot_scene_create: expected 48-channel Wan2.2 latent"); return false; }
+        ABOT::AbotSceneCreateConfig cfg; const int64_t k = cfg.ref_slots, g = cfg.ref_grid;
+        std::vector<float> refs(static_cast<size_t>(k * 48 * g * g), 0.f), mask(static_cast<size_t>(k), 0.f);
+        float first_mask = has_image ? 1.f : 0.f;
+        std::vector<ABOT::AbotSceneWriter::Entry> entries = {
+            {"prompt_embeds", {1, 512, 4096}, prompt.data(), prompt.numel()},
+            {"first_frame_latents", {1, 1, 48, h, w}, first.data(), first.numel()},
+            {"ref_latents", {1, k, 48, 1, g, g}, refs.data(), static_cast<int64_t>(refs.size())},
+            {"ref_mask", {1, k}, mask.data(), k}, {"first_frame_mask", {1, 1}, &first_mask, 1}};
+        return ABOT::AbotSceneWriter::write(p->output_path, entries);
+    } catch (const std::exception& e) { LOG_ERROR("sd_abot_scene_create: %s", e.what()); return false; }
 }
