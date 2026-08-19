@@ -45,6 +45,7 @@
 
 #include "core/ggml_extend.hpp"
 #include "model.h"
+#include "model_manager.h"
 #include "model/common/rope.hpp"
 #include "model/vae/vae.hpp"  // must precede tae.hpp (TinyVideoAutoEncoder's base)
 #include "model/vae/tae.hpp"
@@ -385,10 +386,32 @@ public:
         // ── transformer ──
         for (int i = 0; i < config.num_layers; i++) {
             auto block = std::dynamic_pointer_cast<WAN::WanAttentionBlock>(blocks["blocks." + std::to_string(i)]);
-            // August Wan uses the same masked attention path for causal walks.
-            // The public kv_cache flag is rejected at session creation until persistent
-            // cache tensors are forward-ported to this runner API.
-            x = block->forward(ctx, x, e0_tok, pe, c, 0, attn_mask);
+            if (kv_ctx_provider == nullptr && kv_capture_sink == nullptr) {
+                x = block->forward(ctx, x, e0_tok, pe, c, 0, attn_mask);
+                continue;
+            }
+
+            ggml_tensor* k_ctx = nullptr;
+            ggml_tensor* v_ctx = nullptr;
+            if (kv_ctx_provider != nullptr) {
+                kv_ctx_provider(i, &k_ctx, &v_ctx);
+            }
+            ggml_tensor* k_cur = nullptr;
+            ggml_tensor* v_cur = nullptr;
+            x = block->forward_cached(ctx,
+                                      x,
+                                      e0_tok,
+                                      pe,
+                                      c,
+                                      0,
+                                      attn_mask,
+                                      k_ctx,
+                                      v_ctx,
+                                      kv_capture_sink != nullptr ? &k_cur : nullptr,
+                                      kv_capture_sink != nullptr ? &v_cur : nullptr);
+            if (kv_capture_sink != nullptr) {
+                kv_capture_sink(i, k_cur, v_cur);
+            }
         }
 
         // ── head over the trailing block tokens only ──
@@ -405,7 +428,6 @@ public:
 // Runner: owns the AbotWan blocks + walk state, builds one graph per denoise
 // forward, and runs the host-side 4-step block loop.
 struct AbotWorldRunner : public GGMLRunner {
-    void prepare_params() { alloc_params_ctx(); }
     AbotWorldConfig cfg;
     WAN::WanConfig wan_params;
     AbotWan wan;
@@ -421,8 +443,9 @@ struct AbotWorldRunner : public GGMLRunner {
                     ggml_backend_t params_backend,
                     const String2TensorStorage& tensor_storage_map,
                     const std::string prefix,
-                    const AbotWorldConfig& config = {})
-        : GGMLRunner(backend), cfg(config) {
+                    const AbotWorldConfig& config = {},
+                    std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+        : GGMLRunner(backend, weight_manager), cfg(config) {
         wan_params.model_type = "t2v";
         wan_params.dim        = 3072;
         wan_params.eps        = 1e-06f;
@@ -938,7 +961,6 @@ struct AbotRng {
 // the object behind the public sd_abot_session_* C API.
 struct AbotTinyVideoAutoEncoder : public TinyVideoAutoEncoder {
     using TinyVideoAutoEncoder::TinyVideoAutoEncoder;
-    void prepare_params() { alloc_params_ctx(); }
 };
 
 class AbotWalkSession {
@@ -952,6 +974,7 @@ public:
     // return false to fall back to the RNG.
     std::function<bool(int block, int step, float* dst, size_t n)> noise_override;
 
+    std::shared_ptr<ModelManager> model_manager;
     std::unique_ptr<AbotWorldRunner> runner;
     std::shared_ptr<AbotTinyVideoAutoEncoder> tae;
 
@@ -1041,14 +1064,20 @@ public:
         rng       = AbotRng(seed);
         n_threads = threads;
 
-        ModelLoader ml;
-        if (!ml.init_from_file(dit_path, "model.diffusion_model.")) {
+        model_manager = std::make_shared<ModelManager>();
+        model_manager->set_n_threads(n_threads);
+        ModelLoader& model_loader = model_manager->loader();
+        if (!model_loader.init_from_file(dit_path, "model.diffusion_model.")) {
             LOG_ERROR("abot session: cannot open DiT '%s'", dit_path.c_str());
             return false;
         }
-        runner = std::make_unique<AbotWorldRunner>(runtime_backend, params_backend,
-                                                   ml.get_tensor_storage_map(),
-                                                   "model.diffusion_model", cfg);  // no trailing dot: GGMLBlock::init appends its own
+        runner = std::make_unique<AbotWorldRunner>(runtime_backend,
+                                                    params_backend,
+                                                    model_loader.get_tensor_storage_map(),
+                                                    "model.diffusion_model",
+                                                    cfg,
+                                                    model_manager);  // no trailing dot: GGMLBlock::init appends its own
+
 #ifdef SD_ABOT_FLASH_ATTN_DEBUG
         // Debug-only flash attention for the walk graph (ABOT_FLASH_ATTN=1 in
         // a build compiled with SD_ABOT_FLASH_ATTN_DEBUG). The masked
@@ -1086,11 +1115,30 @@ public:
                      AbotWorldRunner::kv_ring_slots,
                      kv_decode_overlap_safe ? "on" : "off: shared DiT/taehv backend");
         }
-        runner->prepare_params();
-        std::map<std::string, ggml_tensor*> tensors;
-        runner->get_param_tensors(tensors, "model.diffusion_model");
-        if (!ml.load_tensors(tensors, {}, n_threads)) {
-            LOG_ERROR("abot session: DiT tensor load failed");
+        if (!model_loader.init_from_file(taehv_path, "tae.")) {  // same prefixing as new_sd_ctx's taesd path
+            LOG_ERROR("abot session: cannot open taehv '%s'", taehv_path.c_str());
+            return false;
+        }
+        tae = std::make_shared<AbotTinyVideoAutoEncoder>(vae_backend,
+                                                          model_loader.get_tensor_storage_map(),
+                                                          "decoder",
+                                                          true,
+                                                          VERSION_ABOT_WORLD,
+                                                          model_manager);
+        if (!model_manager->register_runner_params("ABot-World DiT",
+                                                    *runner,
+                                                    "model.diffusion_model",
+                                                    ModelManager::ResidencyMode::ParamBackend,
+                                                    runtime_backend,
+                                                    params_backend) ||
+            !model_manager->register_runner_params("ABot-World TAE",
+                                                    *tae,
+                                                    ModelManager::ResidencyMode::ParamBackend,
+                                                    vae_backend,
+                                                    vae_params_backend) ||
+            !model_manager->validate_registered_tensors() ||
+            !model_manager->load_all_params_eagerly()) {
+            LOG_ERROR("abot session: model parameter registration or loading failed");
             return false;
         }
         if (!runner->scene.load(scene_path)) {
@@ -1100,21 +1148,6 @@ public:
         runner->lat_w = ffl[0];
         runner->lat_h = ffl[1];
         runner->lat_c = ffl.size() > 2 ? ffl[2] : 1;
-
-        ModelLoader tl;
-        if (!tl.init_from_file(taehv_path, "tae.")) {  // same prefixing as new_sd_ctx's taesd path
-            LOG_ERROR("abot session: cannot open taehv '%s'", taehv_path.c_str());
-            return false;
-        }
-        tae = std::make_shared<AbotTinyVideoAutoEncoder>(vae_backend, tl.get_tensor_storage_map(),
-                                                     "decoder", true, VERSION_ABOT_WORLD);
-        tae->prepare_params();
-        std::map<std::string, ggml_tensor*> tae_tensors;
-        tae->get_param_tensors(tae_tensors);
-        if (!tl.load_tensors(tae_tensors, {}, n_threads)) {
-            LOG_ERROR("abot session: taehv tensor load failed");
-            return false;
-        }
         LOG_INFO("abot session ready: latent %dx%dx%d, ref slots %d, window %d",
                  (int)runner->lat_w, (int)runner->lat_h, (int)runner->lat_c,
                  runner->scene.ref_slots, cfg.local_attn_size);

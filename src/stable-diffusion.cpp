@@ -3923,11 +3923,13 @@ struct sd_ctx_t {
 };
 
 static bool sd_version_supports_video_generation(SDVersion version) {
-    return version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_lingbot_video(version) || sd_version_is_ltxav(version) || sd_version_is_minimax_h3(version);
+    return version != VERSION_ABOT_WORLD &&
+           (version == VERSION_SVD || sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) ||
+            sd_version_is_lingbot_video(version) || sd_version_is_ltxav(version) || sd_version_is_minimax_h3(version));
 }
 
 static bool sd_version_supports_image_generation(SDVersion version) {
-    return !sd_version_supports_video_generation(version);
+    return version != VERSION_ABOT_WORLD && !sd_version_supports_video_generation(version);
 }
 
 sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
@@ -7468,7 +7470,6 @@ void sd_abot_session_params_init(sd_abot_session_params_t* p) {
 sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
     try {
         if (!p || !p->dit_model_path || !p->taehv_path || !p->scene_path) return nullptr;
-        if (p->kv_cache) { LOG_ERROR("ABot KV cache is not supported by the August runner backend"); return nullptr; }
         auto s = std::make_unique<sd_abot_session_t>(); std::string error;
         if (!s->backend_manager.init(SAFE_STR(p->backend), nullptr, p->offload_params_to_cpu, false, false, false, &error)) {
             LOG_ERROR("sd_abot_session_new: backend init failed: %s", error.c_str()); return nullptr;
@@ -7477,6 +7478,7 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
         if (p->num_frame_per_block > 0) cfg.num_frame_per_block = p->num_frame_per_block;
         if (p->local_attn_size > 0) cfg.local_attn_size = p->local_attn_size;
         cfg.profile = p->profile;
+        cfg.kv_cache = p->kv_cache;
         const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
         if (!s->session.load(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
                              s->backend_manager.params_backend(SDBackendModule::DIFFUSION),
@@ -7500,8 +7502,8 @@ void sd_abot_session_frames_free(sd_image_t* frames, int n) { if (!frames) retur
 void sd_abot_session_free(sd_abot_session_t* s) { delete s; }
 void sd_abot_scene_params_init(sd_abot_scene_params_t* p) { if (!p) return; *p = {}; p->width = 832; p->height = 480; p->n_threads = -1; }
 namespace {
-struct AbotT5Runner : T5Runner { using T5Runner::T5Runner; void prepare_params() { alloc_params_ctx(); } };
-struct AbotWanVAE : WAN::WanVAERunner { using WAN::WanVAERunner::WanVAERunner; void prepare_params() { alloc_params_ctx(); } };
+struct AbotT5Runner : T5Runner { using T5Runner::T5Runner; };
+struct AbotWanVAE : WAN::WanVAERunner { using WAN::WanVAERunner::WanVAERunner; };
 }
 bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
     try {
@@ -7515,13 +7517,41 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
             LOG_ERROR("sd_abot_scene_create: backend init failed: %s", error.c_str()); return false;
         }
         const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
-        ModelLoader t5_loader; t5_loader.set_n_threads(threads);
-        if (!t5_loader.init_from_file(p->t5_path, "text_encoders.t5xxl.transformer.")) return false;
+        auto model_manager = std::make_shared<ModelManager>();
+        model_manager->set_n_threads(threads);
+        ModelLoader& model_loader = model_manager->loader();
+        if (!model_loader.init_from_file(p->t5_path, "text_encoders.t5xxl.transformer.")) return false;
         auto t5 = std::make_shared<AbotT5Runner>(backends.runtime_backend(SDBackendModule::TE),
-                                                  t5_loader.get_tensor_storage_map(), "text_encoders.t5xxl.transformer", true);
-        t5->prepare_params(); std::map<std::string, ggml_tensor*> t5_tensors;
-        t5->get_param_tensors(t5_tensors, "text_encoders.t5xxl.transformer");
-        if (!t5_loader.load_tensors(t5_tensors)) return false;
+                                                   model_loader.get_tensor_storage_map(),
+                                                   "text_encoders.t5xxl.transformer",
+                                                   true,
+                                                   model_manager);
+        std::shared_ptr<AbotWanVAE> vae;
+        if (has_image) {
+            if (!model_loader.init_from_file(p->vae_path, "first_stage_model.")) return false;
+            vae = std::make_shared<AbotWanVAE>(backends.runtime_backend(SDBackendModule::VAE),
+                                                model_loader.get_tensor_storage_map(),
+                                                "first_stage_model",
+                                                false,
+                                                VERSION_ABOT_WORLD,
+                                                model_manager);
+        }
+        if (!model_manager->register_runner_params("ABot scene T5",
+                                                    *t5,
+                                                    "text_encoders.t5xxl.transformer",
+                                                    ModelManager::ResidencyMode::ParamBackend,
+                                                    backends.runtime_backend(SDBackendModule::TE),
+                                                    backends.params_backend(SDBackendModule::TE)) ||
+            (has_image && !model_manager->register_runner_params("ABot scene VAE",
+                                                                   *vae,
+                                                                   ModelManager::ResidencyMode::ParamBackend,
+                                                                   backends.runtime_backend(SDBackendModule::VAE),
+                                                                   backends.params_backend(SDBackendModule::VAE))) ||
+            !model_manager->validate_registered_tensors() ||
+            !model_manager->load_all_params_eagerly()) {
+            LOG_ERROR("sd_abot_scene_create: model parameter registration or loading failed");
+            return false;
+        }
         T5Embedder tokenizer_helper(backends.runtime_backend(SDBackendModule::TE), {}, "", true);
         auto tokens = tokenizer_helper.tokenize(p->prompt, 512, true);
         sd::Tensor<float> prompt = t5->compute(threads,
@@ -7531,11 +7561,6 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
         if (prompt.shape().size() == 2) prompt = prompt.unsqueeze(2);
         sd::Tensor<float> first;
         if (has_image) {
-            ModelLoader vae_loader; vae_loader.set_n_threads(threads);
-            if (!vae_loader.init_from_file(p->vae_path, "first_stage_model.")) return false;
-            auto vae = std::make_shared<AbotWanVAE>(backends.runtime_backend(SDBackendModule::VAE), vae_loader.get_tensor_storage_map(), "first_stage_model", false, VERSION_ABOT_WORLD);
-            vae->prepare_params(); std::map<std::string, ggml_tensor*> vae_tensors; vae->get_param_tensors(vae_tensors);
-            if (!vae_loader.load_tensors(vae_tensors)) return false;
             auto image = sd_image_to_tensor(p->init_image, p->width, p->height);
             auto encoded = vae->encode(threads, image, {}, true);
             first = vae->vae_to_diffusion_latents(vae->vae_output_to_latents(encoded, nullptr));
