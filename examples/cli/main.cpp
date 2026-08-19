@@ -437,7 +437,8 @@ bool save_results(const SDCliParams& cli_params,
                   const SDGenerationParams& gen_params,
                   sd_image_t* results,
                   int num_results,
-                  const sd_audio_t* generated_audio = nullptr) {
+                  const sd_audio_t* generated_audio = nullptr,
+                  int effective_video_fps = 0) {
     if (results == nullptr || num_results <= 0) {
         return false;
     }
@@ -532,7 +533,8 @@ bool save_results(const SDCliParams& cli_params,
         std::string final_ext_lower = ext.string();
         std::transform(final_ext_lower.begin(), final_ext_lower.end(), final_ext_lower.begin(), ::tolower);
         const bool mux_audio = generated_audio != nullptr && (final_ext_lower == ".avi" || final_ext_lower == ".webm");
-        if (create_video_from_sd_images(video_path.string().c_str(), results, num_results, gen_params.fps, 90, mux_audio ? generated_audio : nullptr) == 0) {
+        const int output_fps = effective_video_fps > 0 ? effective_video_fps : gen_params.fps;
+        if (create_video_from_sd_images(video_path.string().c_str(), results, num_results, output_fps, 90, mux_audio ? generated_audio : nullptr) == 0) {
             LOG_INFO("save result video to '%s'", video_path.string().c_str());
             if (generated_audio != nullptr && !mux_audio) {
                 fs::path wav_path = video_path;
@@ -675,17 +677,6 @@ int main(int argc, const char* argv[]) {
             cli_params.preview_path = base_path + ".avi";
         }
     }
-    cli_params.preview_fps = gen_params.fps;
-    if (cli_params.preview_method == PREVIEW_PROJ)
-        cli_params.preview_fps /= 4;
-
-    sd_set_preview_callback(step_callback,
-                            cli_params.preview_method,
-                            cli_params.preview_interval,
-                            !cli_params.preview_noisy,
-                            cli_params.preview_noisy,
-                            (void*)&cli_params);
-
     LOG_DEBUG("version: %s", version_string().c_str());
     LOG_DEBUG("%s", sd_get_system_info());
     LOG_DEBUG("%s", cli_params.to_string().c_str());
@@ -904,6 +895,7 @@ int main(int argc, const char* argv[]) {
 
     SDImageVec results;
     int num_results             = 0;
+    int effective_video_fps     = 0;
     sd_audio_t* generated_audio = nullptr;
 
     if (cli_params.mode == UPSCALE) {
@@ -924,6 +916,21 @@ int main(int argc, const char* argv[]) {
         if (gen_params.high_noise_sample_params.sample_method == SAMPLE_METHOD_COUNT) {
             gen_params.high_noise_sample_params.sample_method = sd_get_default_sample_method(sd_ctx.get());
         }
+
+        cli_params.preview_fps = gen_params.fps;
+        if (cli_params.mode == VID_GEN) {
+            sd_vid_gen_params_t preview_vid_gen_params = gen_params.to_sd_vid_gen_params_t();
+            cli_params.preview_fps = sd_get_effective_video_fps(sd_ctx.get(), &preview_vid_gen_params);
+        }
+        if (cli_params.preview_method == PREVIEW_PROJ)
+            cli_params.preview_fps /= 4;
+
+        sd_set_preview_callback(step_callback,
+                                cli_params.preview_method,
+                                cli_params.preview_interval,
+                                !cli_params.preview_noisy,
+                                cli_params.preview_noisy,
+                                (void*)&cli_params);
 
         if (gen_params.sample_params.scheduler == SCHEDULER_COUNT) {
             gen_params.sample_params.scheduler = sd_get_default_scheduler(sd_ctx.get(), gen_params.sample_params.sample_method);
@@ -950,6 +957,8 @@ int main(int argc, const char* argv[]) {
             sd_image_t* generated_video        = nullptr;
             if (!generate_video(sd_ctx.get(), &vid_gen_params, &generated_video, &num_results, &generated_audio)) {
                 generated_video = nullptr;
+            } else {
+                effective_video_fps = sd_get_effective_video_fps(sd_ctx.get(), &vid_gen_params);
             }
             results.adopt(generated_video, num_results);
         }
@@ -1013,7 +1022,7 @@ int main(int argc, const char* argv[]) {
         }
     }
 
-    if (!save_results(cli_params, ctx_params, gen_params, results.data(), num_results, generated_audio)) {
+    if (!save_results(cli_params, ctx_params, gen_params, results.data(), num_results, generated_audio, effective_video_fps)) {
         free_sd_audio(generated_audio);
         return 1;
     }

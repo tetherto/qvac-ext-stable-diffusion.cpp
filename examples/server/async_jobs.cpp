@@ -247,6 +247,8 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
         sd_image_t* raw_results = nullptr;
         if (!generate_video(runtime.sd_ctx, &params, &raw_results, &num_results, &generated_audio)) {
             raw_results = nullptr;
+        } else {
+            output_fps = sd_get_effective_video_fps(runtime.sd_ctx, &params);
         }
         results.adopt(raw_results, num_results);
     }
@@ -261,7 +263,7 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
     std::vector<uint8_t> video_bytes = create_video_from_sd_images_to_vector(job.vid_gen.output_format,
                                                                              results.data(),
                                                                              num_results,
-                                                                             job.vid_gen.gen_params.fps,
+                                                                             output_fps,
                                                                              job.vid_gen.output_compression,
                                                                              generated_audio);
     free_sd_audio(generated_audio);
@@ -273,7 +275,6 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
     output_media_b64       = base64_encode(video_bytes);
     output_media_mime_type = video_mime_type(job.vid_gen.output_format);
     output_frame_count     = num_results;
-    output_fps             = job.vid_gen.gen_params.fps;
     return true;
 }
 
