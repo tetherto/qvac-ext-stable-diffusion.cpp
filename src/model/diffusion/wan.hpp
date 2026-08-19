@@ -27,6 +27,9 @@ namespace WAN {
         int64_t out_dim                        = 16;
         int64_t num_heads                      = 16;
         int num_layers                         = 32;
+        bool abot_world                         = false;
+        int64_t act_in_dim                      = 32;
+        int act_downscale_factor                = 16;
         int vace_layers                        = 0;
         int64_t vace_in_dim                    = 96;
         std::map<int, int> vace_layers_mapping = {};
@@ -333,7 +336,8 @@ namespace WAN {
                                      ggml_tensor* e,
                                      ggml_tensor* pe,
                                      ggml_tensor* context,
-                                     int64_t context_img_len = 257) {
+                                     int64_t context_img_len = 257,
+                                     ggml_tensor* attn_mask = nullptr) {
             // x: [N, n_token, dim]
             // e: [N, 6, dim] or [N, T, 6, dim]
             // context: [N, context_img_len + context_txt_len, dim]
@@ -355,7 +359,7 @@ namespace WAN {
             auto y = norm1->forward(ctx, x);
             y      = ggml_add(ctx->ggml_ctx, y, modulate_mul(ctx->ggml_ctx, y, es[1]));
             y      = modulate_add(ctx->ggml_ctx, y, es[0]);
-            y      = self_attn->forward(ctx, y, pe);
+            y      = self_attn->forward(ctx, y, pe, attn_mask);
 
             x = ggml_add(ctx->ggml_ctx, x, modulate_mul(ctx->ggml_ctx, y, es[2]));
 
@@ -525,6 +529,29 @@ namespace WAN {
         }
     };
 
+    // ABot-World keyboard action-conditioning adapter.  The caller supplies
+    // pixel-unshuffled action planes; its convolution lands on Wan token cells.
+    class ActControlAdapter : public GGMLBlock {
+    public:
+        ActControlAdapter(int64_t act_in_dim, int64_t dim, int downscale_factor) {
+            int64_t unshuffled_dim = act_in_dim * downscale_factor * downscale_factor;
+            blocks["conv"] = std::shared_ptr<GGMLBlock>(new Conv2d(unshuffled_dim, dim, {2, 2}, {2, 2}));
+            blocks["residual_blocks.0.conv1"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+            blocks["residual_blocks.0.conv2"] = std::shared_ptr<GGMLBlock>(new Conv2d(dim, dim, {3, 3}, {1, 1}, {1, 1}));
+        }
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
+            auto conv = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
+            auto conv1 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv1"]);
+            auto conv2 = std::dynamic_pointer_cast<Conv2d>(blocks["residual_blocks.0.conv2"]);
+            x = conv->forward(ctx, x);
+            auto residual = x;
+            x = conv1->forward(ctx, x);
+            x = ggml_relu_inplace(ctx->ggml_ctx, x);
+            x = conv2->forward(ctx, x);
+            return ggml_add(ctx->ggml_ctx, x, residual);
+        }
+    };
+
     class Wan : public GGMLBlock {
     protected:
         WanConfig config;
@@ -567,6 +594,10 @@ namespace WAN {
             // img_emb
             if (config.model_type == "i2v") {
                 blocks["img_emb"] = std::shared_ptr<GGMLBlock>(new MLPProj(1280, config.dim, config.flf_pos_embed_token_number));
+            }
+
+            if (config.abot_world) {
+                blocks["act_control_adapter"] = std::shared_ptr<GGMLBlock>(new ActControlAdapter(config.act_in_dim, config.dim, config.act_downscale_factor));
             }
 
             // vace
@@ -806,8 +837,13 @@ namespace WAN {
             : DiffusionModelRunner(backend, prefix, weight_manager),
               config(WanConfig::detect_from_weights(tensor_storage_map, prefix)) {
             if (config.num_layers == 30) {
-                if (version == VERSION_WAN2_2_TI2V) {
-                    desc             = "Wan2.2-TI2V-5B";
+                if (sd_version_is_wan_ti2v_family(version)) {
+                    if (sd_version_is_abot_world(version)) {
+                        desc = "ABot-World-5B";
+                        config.abot_world = true;
+                    } else {
+                        desc = "Wan2.2-TI2V-5B";
+                    }
                     config.dim       = 3072;
                     config.eps       = 1e-06f;
                     config.ffn_dim   = 14336;

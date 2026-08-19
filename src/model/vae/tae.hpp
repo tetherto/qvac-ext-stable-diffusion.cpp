@@ -525,7 +525,7 @@ public:
     TAEHV(bool decode_only = true, SDVersion version = VERSION_WAN2, bool is_wide = false)
         : decode_only(decode_only), version(version), is_wide(is_wide) {
         int patch = 1;
-        if (version == VERSION_WAN2_2_TI2V) {
+        if (sd_version_is_wan_ti2v_family(version)) {
             z_channels = 48;
             patch      = 2;
         } else if (sd_version_is_hunyuan_video(version)) {

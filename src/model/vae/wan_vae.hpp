@@ -1039,7 +1039,7 @@ namespace WAN {
     public:
         WanVAE(bool decode_only = true, SDVersion version = VERSION_WAN2, bool is_2D = false)
             : decode_only(decode_only),
-              wan2_2(version == VERSION_WAN2_2_TI2V),
+              wan2_2(sd_version_is_wan_ti2v_family(version)),
               is_2D(is_2D) {
             // attn_scales is always []
             if (wan2_2) {
