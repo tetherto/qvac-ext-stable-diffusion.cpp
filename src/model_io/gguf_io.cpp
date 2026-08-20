@@ -18,6 +18,42 @@ static void set_error(std::string* error, const std::string& message) {
     }
 }
 
+// ComfyUI-GGUF may reshape a quantized tensor to satisfy the quantizer's
+// block-size requirement.  The original PyTorch dimensions are preserved in
+// comfy.gguf.orig_shape.<tensor-name>; TensorStorage uses GGML's reversed
+// dimension order, so restore that logical shape before model detection and
+// loading while retaining the physical byte layout in the file.
+static bool apply_comfy_original_shape(const gguf_context* ctx,
+                                       const std::string& tensor_name,
+                                       int64_t* ne,
+                                       int* n_dims) {
+    const std::string key = "comfy.gguf.orig_shape." + tensor_name;
+    const int64_t key_id  = gguf_find_key(ctx, key.c_str());
+    if (key_id < 0 ||
+        gguf_get_kv_type(ctx, key_id) != GGUF_TYPE_ARRAY ||
+        gguf_get_arr_type(ctx, key_id) != GGUF_TYPE_INT32) {
+        return false;
+    }
+
+    const size_t shape_size = gguf_get_arr_n(ctx, key_id);
+    if (shape_size == 0 || shape_size > GGML_MAX_DIMS) {
+        return false;
+    }
+
+    const int32_t* shape = static_cast<const int32_t*>(gguf_get_arr_data(ctx, key_id));
+    for (size_t i = 0; i < shape_size; ++i) {
+        if (shape[i] <= 0) {
+            return false;
+        }
+        ne[i] = shape[shape_size - 1 - i];
+    }
+    for (size_t i = shape_size; i < GGML_MAX_DIMS; ++i) {
+        ne[i] = 1;
+    }
+    *n_dims = static_cast<int>(shape_size);
+    return true;
+}
+
 bool is_gguf_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
@@ -79,7 +115,31 @@ bool read_gguf_file(const std::string& file_path,
         ggml_tensor* dummy = ggml_get_tensor(ctx_meta_, name.c_str());
         size_t offset      = data_offset + gguf_get_tensor_offset(ctx_gguf_, i);
 
-        TensorStorage tensor_storage(name, dummy->type, dummy->ne, ggml_n_dims(dummy), 0, offset);
+        int64_t logical_ne[GGML_MAX_DIMS];
+        for (int dim = 0; dim < GGML_MAX_DIMS; ++dim) {
+            logical_ne[dim] = dummy->ne[dim];
+        }
+        int logical_n_dims       = ggml_n_dims(dummy);
+        bool restored_comfy_shape = apply_comfy_original_shape(ctx_gguf_, name, logical_ne, &logical_n_dims);
+
+        TensorStorage tensor_storage(name,
+                                     dummy->type,
+                                     logical_ne,
+                                     logical_n_dims,
+                                     0,
+                                     offset);
+
+        // ComfyUI packs quantized tensors using a physical row width that is
+        // compatible with the source quant block, then records the original
+        // logical shape in metadata. If the logical matrix row is not valid
+        // for that source type, transcode it once to Q4_0 (32-value blocks)
+        // instead of expanding the entire matrix to F32 at runtime.
+        if (restored_comfy_shape &&
+            ggml_is_quantized(dummy->type) &&
+            logical_ne[0] % ggml_blck_size(dummy->type) != 0 &&
+            logical_ne[0] % ggml_blck_size(GGML_TYPE_Q4_0) == 0) {
+            tensor_storage.expected_type = GGML_TYPE_Q4_0;
+        }
 
         if (ggml_nbytes(dummy) != tensor_storage.nbytes()) {
             gguf_free(ctx_gguf_);

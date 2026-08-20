@@ -75,6 +75,10 @@ namespace MiniMaxH3 {
             }
             if (const auto* weight = find("audio_patch_proj.weight")) {
                 config.audio_latent_channels = weight->ne[0];
+                // ComfyUI GGUF exports can store video_patch_proj transposed,
+                // so derive the transformer width from the unambiguous audio
+                // projection when it is wider than the video-derived value.
+                config.hidden_size = std::max(config.hidden_size, weight->ne[1]);
             }
             config.num_layers               = count_blocks(tensors, prefix + ".blocks.");
             config.token_refiner_num_layers = count_blocks(tensors, prefix + ".token_refiner.blocks.");
@@ -294,6 +298,7 @@ namespace MiniMaxH3 {
             blocks["linear"] = std::make_shared<Linear>(time_dim,
                                                         hidden_size * expand * modalities,
                                                         true,
+                                                        false,
                                                         force_f32);
         }
 

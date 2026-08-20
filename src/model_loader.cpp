@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <mutex>
+#include <numeric>
 #include <regex>
 #include <set>
 #include <string>
@@ -190,16 +191,41 @@ void convert_tensor(void* src,
             throw std::runtime_error(sd_format("type %s unsupported for integer quantization: no dequantization available",
                                                ggml_type_name(src_type)));
         }
-        std::vector<char> buf;
-        buf.resize(sizeof(float) * n);
-        char* src_data_f32 = buf.data();
-        qtype->to_float(src, (float*)src_data_f32, n);
-        if (dst_type == GGML_TYPE_F16) {
-            ggml_fp32_to_fp16_row((float*)src_data_f32, (ggml_fp16_t*)dst, n);
-        } else {
+        // Convert in block-aligned row groups. ComfyUI may flatten a
+        // logical row width that is not divisible by the source quant block;
+        // dequantizing the full tensor would require multi-GB scratch buffers.
+        const int src_block = ggml_blck_size(src_type);
+        int rows_per_group  = src_block / std::gcd(src_block, n_per_row);
+        int target_rows     = std::max(rows_per_group, (1 << 20) / std::max(1, n_per_row));
+        rows_per_group      = ((target_rows + rows_per_group - 1) / rows_per_group) * rows_per_group;
+        rows_per_group      = std::min(rows_per_group, nrows);
+
+        std::vector<float> buf(static_cast<size_t>(rows_per_group) * n_per_row);
+        if (dst_type != GGML_TYPE_F16) {
             imatrix.resize(n_per_row, 1.0f);
-            const float* im = imatrix.data();
-            ggml_quantize_chunk(dst_type, (float*)src_data_f32, dst, 0, nrows, n_per_row, im);
+        }
+        const float* im          = imatrix.empty() ? nullptr : imatrix.data();
+        const size_t src_type_size = ggml_type_size(src_type);
+        const size_t dst_type_size = ggml_type_size(dst_type);
+        const int dst_block        = ggml_blck_size(dst_type);
+
+        for (int row = 0; row < nrows; row += rows_per_group) {
+            int group_rows     = std::min(rows_per_group, nrows - row);
+            int group_elements = group_rows * n_per_row;
+            GGML_ASSERT(group_elements % src_block == 0);
+            const char* src_group = static_cast<const char*>(src) +
+                                    static_cast<size_t>(row) * n_per_row / src_block * src_type_size;
+            qtype->to_float(src_group, buf.data(), group_elements);
+
+            if (dst_type == GGML_TYPE_F16) {
+                auto* dst_group = static_cast<ggml_fp16_t*>(dst) + static_cast<size_t>(row) * n_per_row;
+                ggml_fp32_to_fp16_row(buf.data(), dst_group, group_elements);
+            } else {
+                GGML_ASSERT(n_per_row % dst_block == 0);
+                char* dst_group = static_cast<char*>(dst) +
+                                  static_cast<size_t>(row) * n_per_row / dst_block * dst_type_size;
+                ggml_quantize_chunk(dst_type, buf.data(), dst_group, 0, group_rows, n_per_row, im);
+            }
         }
     }
 }
