@@ -118,6 +118,29 @@ jobs:
           path: |
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
+  ubuntu-latest-static-abot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential
+
+      - name: Build static ABot harnesses
+        run: |
+          cmake -S . -B build-static-abot \
+            -DSD_BUILD_SHARED_LIBS=OFF \
+            -DSD_BUILD_EXAMPLES=ON \
+            -DSD_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF
+          cmake --build build-static-abot --target sd-abot-parity sd-abot-walk sd-abot-session --parallel 2
+
   ubuntu-latest-cmake-vulkan:
     runs-on: ubuntu-latest
 

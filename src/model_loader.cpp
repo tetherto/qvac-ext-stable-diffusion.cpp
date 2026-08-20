@@ -484,6 +484,7 @@ SDVersion ModelLoader::get_sd_version() {
     bool is_flux2                    = false;
     bool has_single_block_47         = false;
     bool is_wan                      = false;
+    bool has_act_control_adapter      = false;
     int64_t patch_embedding_channels = 0;
     bool has_img_emb                 = false;
     bool has_middle_block_1          = false;
@@ -570,6 +571,9 @@ SDVersion ModelLoader::get_sd_version() {
         if (tensor_storage.name.find("model.diffusion_model.blocks.0.cross_attn.norm_k.weight") != std::string::npos) {
             is_wan = true;
         }
+        if (tensor_storage.name.find("model.diffusion_model.act_control_adapter.conv.weight") != std::string::npos) {
+            has_act_control_adapter = true;
+        }
         if (tensor_storage.name.find("model.diffusion_model.patch_embedder.weight") != std::string::npos) {
             return VERSION_LINGBOT_VIDEO;
         }
@@ -633,6 +637,9 @@ SDVersion ModelLoader::get_sd_version() {
     }
     if (is_wan) {
         LOG_DEBUG("patch_embedding_channels %d", patch_embedding_channels);
+        if (has_act_control_adapter) {
+            return VERSION_ABOT_WORLD;
+        }
         if (patch_embedding_channels == 184320 && !has_img_emb) {
             return VERSION_WAN2_2_I2V;
         }

@@ -44,6 +44,7 @@ enum SDVersion {
     VERSION_FLUX2_KLEIN,
     VERSION_LTXAV,
     VERSION_MINIMAX_H3,
+    VERSION_ABOT_WORLD,
     VERSION_HIDREAM_O1,
     VERSION_Z_IMAGE,
     VERSION_BOOGU_IMAGE,
@@ -124,12 +125,20 @@ static inline bool sd_version_is_ltxav(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_abot_world(SDVersion version) {
+    return version == VERSION_ABOT_WORLD;
+}
+
+static inline bool sd_version_is_wan_ti2v_family(SDVersion version) {
+    return version == VERSION_WAN2_2_TI2V || sd_version_is_abot_world(version);
+}
+
 static inline bool sd_version_is_minimax_h3(SDVersion version) {
     return version == VERSION_MINIMAX_H3;
 }
 
 static inline bool sd_version_is_wan(SDVersion version) {
-    if (version == VERSION_WAN2 || version == VERSION_WAN2_2_I2V || version == VERSION_WAN2_2_TI2V) {
+    if (version == VERSION_WAN2 || version == VERSION_WAN2_2_I2V || version == VERSION_WAN2_2_TI2V || sd_version_is_abot_world(version)) {
         return true;
     }
     return false;
