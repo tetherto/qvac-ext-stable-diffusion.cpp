@@ -342,6 +342,10 @@ namespace sd::pipeline {
     }
 
     void GenerationRequest::resolve(StableDiffusionGGML* sd) {
+        if (sd_version_is_abot_world(sd->version)) {
+            LOG_ERROR("ABot-World models require sd_abot_session_new/step; batch generation is unsupported");
+            valid = false;
+        }
         if (sd->config_) {
             models = sd->config_->models;
             if (!use_high_noise)

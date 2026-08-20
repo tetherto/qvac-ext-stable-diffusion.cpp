@@ -488,6 +488,7 @@ SDVersion ModelLoader::get_sd_version() const {
     bool has_single_block_47         = false;
     bool is_wan                      = false;
     bool is_s2v                      = false;
+    bool has_act_control_adapter      = false;
     int64_t patch_embedding_channels = 0;
     bool has_img_emb                 = false;
     bool has_middle_block_1          = false;
@@ -609,6 +610,9 @@ SDVersion ModelLoader::get_sd_version() const {
         if (tensor_storage.name.find("model.diffusion_model.blocks.0.cross_attn.norm_k.weight") != std::string::npos) {
             is_wan = true;
         }
+        if (tensor_storage.name.find("model.diffusion_model.act_control_adapter.conv.weight") != std::string::npos) {
+            has_act_control_adapter = true;
+        }
         if (tensor_storage.name.find("casual_audio_encoder.weights") != std::string::npos ||
             tensor_storage.name.find("audio_injector.injector.0.q.weight") != std::string::npos) {
             // S2V and T2V-14B share patch_embedding shapes.
@@ -688,6 +692,9 @@ SDVersion ModelLoader::get_sd_version() const {
     }
     if (is_wan) {
         LOG_DEBUG("patch_embedding_channels %d", patch_embedding_channels);
+        if (has_act_control_adapter) {
+            return VERSION_ABOT_WORLD;
+        }
         if (is_s2v) {
             return VERSION_WAN2_2_S2V;
         }
