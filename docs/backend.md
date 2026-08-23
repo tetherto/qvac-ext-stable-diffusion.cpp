@@ -142,6 +142,34 @@ GPUs with the layer/row split mechanism (`--split-mode` selects which, layer
 by default). Components that fit nowhere fall back to the CPU. If a VAE decode
 still runs out of memory, tiling is enabled and the decode retried once.
 
+## Measured fitting (`sd-fit-params`)
+
+`sd-fit-params` is a standalone tool that derives the same kind of placement,
+but from *measured* memory instead of auto-fit's fixed compute reserves. It
+runs the real generation pipeline in a metadata-only dry run: every module's
+compute graphs are built for the requested width/height/frames and their
+compute buffer sizes are measured without allocating anything or reading any
+weight data, so a fit takes seconds even for very large models. Because
+compute memory depends on the generation parameters, they are inputs to the
+tool, and the printed arguments are valid for workloads up to that size.
+
+Logs go to stderr, the fitted arguments go to stdout:
+
+```shell
+sd-fit-params -m model.gguf -W 1024 -H 1024 | tee args.txt
+cat args.txt | xargs sd-cli -m model.gguf -p "a cat" -W 1024 -H 1024
+```
+
+`--fit-print` prints the measured per-device / per-module memory table instead
+of arguments. Budgets reuse `--max-vram` with the same semantics as auto-fit.
+If the current parameters already fit, nothing needs to change and the tool
+prints an empty line. If `--backend` / `--params-backend` are already set and
+changes would be needed, the tool fails instead of overriding them.
+
+The same measurement is available to library users through `sd_fit_params()`
+in `stable-diffusion.h`, which takes the context params plus an
+`sd_fit_workload_t` and returns the derived specs and a report.
+
 ## Modules
 
 | Module | Purpose | Accepted names |

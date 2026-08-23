@@ -1747,6 +1747,15 @@ struct GGMLRunnerContext {
 };
 
 struct GGMLRunner {
+    struct graph_memory_measurement {
+        std::string desc;
+        const GGMLRunner* runner = nullptr;
+        ggml_backend_t backend   = nullptr;
+        size_t compute_bytes     = 0;
+        size_t params_bytes      = 0;
+        bool valid               = false;
+    };
+
 protected:
     typedef std::function<ggml_cgraph*()> get_graph_cb_t;
     using GraphCutSegment = sd::ggml_graph_cut::Segment;
@@ -1782,6 +1791,12 @@ protected:
     std::vector<ggml_tensor*> runner_param_tensors;
     std::unordered_set<const ggml_tensor*> runner_param_tensor_set;
     bool params_tensor_set_dirty_ = true;
+
+    // static so nested runners (e.g. text encoders inside a conditioner) are also
+    // intercepted; measurement is single-threaded like the rest of param fitting
+    static inline bool measure_mode_                                          = false;
+    static inline std::vector<graph_memory_measurement>* measure_collector_   = nullptr;
+    graph_memory_measurement last_measurement_;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -2268,6 +2283,60 @@ protected:
                   compute_buffer_size / 1024.0 / 1024.0,
                   sd_backend_is_cpu(runtime_backend) ? "RAM" : "VRAM");
         return true;
+    }
+
+    // measure the compute buffer size and used param bytes of a built graph without
+    // allocating anything: params are temporarily marked as externally owned so
+    // gallocr does not reserve them (same trick as measure_segment_compute_buffer)
+    void measure_graph_memory(ggml_cgraph* gf) {
+        last_measurement_ = {};
+
+        struct TensorRuntimeBinding {
+            ggml_backend_buffer_t buffer = nullptr;
+            void* data                   = nullptr;
+            void* extra                  = nullptr;
+        };
+        std::unordered_map<ggml_tensor*, TensorRuntimeBinding> saved_bindings;
+        auto mark_external = [&](ggml_tensor* t) {
+            if (t == nullptr || saved_bindings.find(t) != saved_bindings.end()) {
+                return;
+            }
+            saved_bindings[t] = {t->buffer, t->data, t->extra};
+            t->data           = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        };
+
+        std::vector<ggml_tensor*> used_params = collect_used_param_tensors(gf);
+        for (ggml_tensor* param : used_params) {
+            last_measurement_.params_bytes += ggml_nbytes(param);
+        }
+        const int n_leafs = sd::ggml_graph_cut::leaf_count(gf);
+        for (int i = 0; i < n_leafs; ++i) {
+            ggml_tensor* leaf = sd::ggml_graph_cut::leaf_tensor(gf, i);
+            if (canonical_param_tensor(leaf) == nullptr) {
+                continue;
+            }
+            mark_external(leaf);
+            mark_external(leaf->view_src);
+        }
+
+        ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_backend));
+        size_t sizes[1]       = {0};
+        ggml_gallocr_reserve_n_size(allocr, gf, nullptr, nullptr, sizes);
+        last_measurement_.compute_bytes = sizes[0];
+        ggml_gallocr_free(allocr);
+
+        for (const auto& kv : saved_bindings) {
+            kv.first->buffer = kv.second.buffer;
+            kv.first->data   = kv.second.data;
+            kv.first->extra  = kv.second.extra;
+        }
+        last_measurement_.valid   = true;
+        last_measurement_.desc    = get_desc();
+        last_measurement_.runner  = this;
+        last_measurement_.backend = runtime_backend;
+        if (measure_collector_ != nullptr) {
+            measure_collector_->push_back(last_measurement_);
+        }
     }
 
     void free_cache_buffer() {
@@ -3227,6 +3296,19 @@ public:
         GGML_ASSERT(gf != nullptr);
         rebuild_params_tensor_set();
 
+        if (measure_mode_) {
+            measure_graph_memory(gf);
+            // return a correctly shaped zero tensor so downstream host-side code
+            // (condition assembly, samplers) keeps working without weight data
+            std::optional<sd::Tensor<T>> result = sd::Tensor<T>();
+            if (!no_return && ggml_graph_n_nodes(gf) > 0) {
+                ggml_tensor* out = ggml_graph_node(gf, -1);
+                result           = sd::zeros<T>({out->ne[0], out->ne[1], out->ne[2], out->ne[3]});
+            }
+            free_compute_ctx();
+            return result;
+        }
+
         if (!assign_graph_cut_layer_split_backends(gf)) {
             free_compute_ctx();
             return std::nullopt;
@@ -3396,6 +3478,21 @@ public:
 
     void set_max_graph_vram_bytes(size_t max_vram_bytes) {
         max_graph_vram_bytes = max_vram_bytes;
+    }
+
+    // in measure mode compute() builds the graph, records memory requirements and
+    // returns a shaped zero tensor without loading weights or allocating buffers
+    static void set_measure_mode(bool enabled, std::vector<graph_memory_measurement>* collector = nullptr) {
+        measure_mode_      = enabled;
+        measure_collector_ = enabled ? collector : nullptr;
+    }
+
+    static bool measure_mode_enabled() {
+        return measure_mode_;
+    }
+
+    graph_memory_measurement get_last_measurement() const {
+        return last_measurement_;
     }
 
     void set_stream_layers_enabled(bool enabled) {

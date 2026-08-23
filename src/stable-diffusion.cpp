@@ -21,6 +21,7 @@
 
 #include "conditioning/conditioner.hpp"
 #include "core/backend_fit.h"
+#include "core/fit_params.h"
 #include "extensions/generation_extension.h"
 #include "model/adapter/ip_adapter.hpp"
 #include "model/adapter/lora.hpp"
@@ -267,6 +268,8 @@ public:
     std::string split_mode_spec;
     bool auto_fit_enabled = false;
     bool vae_auto_cpu_fallback_enabled = false;
+    bool fit_dry_run      = false;  // metadata-only init for memory measurement, never reads weight data
+    std::map<SDBackendModule, size_t> fit_module_params_bytes;
 
     bool diffusion_conv_direct = false;
 
@@ -347,6 +350,11 @@ public:
         model->get_param_tensors(group_tensors);
         if constexpr (std::is_base_of_v<Conditioner, T>) {
             model->get_param_tensor_ops(tensor_ops);
+        }
+        for (const auto& kv : group_tensors) {
+            if (kv.second != nullptr) {
+                fit_module_params_bytes[module] += ggml_nbytes(kv.second);
+            }
         }
         if (model_manager == nullptr) {
             return true;
@@ -901,6 +909,10 @@ public:
                 }
             }
         }
+        if (fit_dry_run) {
+            enable_mmap = false;
+            eager_load  = false;
+        }
         max_vram_assignment.reset(0.f);
         {
             std::string error;
@@ -1031,7 +1043,9 @@ public:
             LOG_WARN("in mode 'immediately', LoRAs will cause extra memory usage with mmap");
         }
         model_loader.process_model_files(enable_mmap, needs_writable_mmap);
-        load_alphas_cumprod(model_loader);
+        if (!fit_dry_run) {
+            load_alphas_cumprod(model_loader);
+        }
 
         diffusion_conv_direct = sd_ctx_params->diffusion_conv_direct;
 
@@ -1798,7 +1812,8 @@ public:
 
             if (pred_type == PREDICTION_COUNT) {
                 if (sd_version_is_sd2(version)) {
-                    pred_type = is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
+                    // the v-pred probe runs a real compute with loaded weights; irrelevant for memory measurement
+                    pred_type = !fit_dry_run && is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
                 } else if (sd_version_is_sdxl(version)) {
                     if (tensor_storage_map.find("edm_vpred.sigma_max") != tensor_storage_map.end()) {
                         // CosXL models
@@ -3968,6 +3983,207 @@ SD_API void sd_cancel_generation(sd_ctx_t* sd_ctx, enum sd_cancel_mode_t mode) {
         }
         sd_ctx->sd->set_cancel_flag(mode);
     }
+}
+
+void sd_fit_workload_init(sd_fit_workload_t* workload) {
+    if (workload == nullptr) {
+        return;
+    }
+    *workload                   = {};
+    workload->width             = 512;
+    workload->height            = 512;
+    workload->video_frames      = 1;
+    workload->vae_tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
+}
+
+enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
+                                   const sd_fit_workload_t* workload,
+                                   sd_fit_result_t* result) {
+    if (sd_ctx_params == nullptr || workload == nullptr || result == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    *result = {};
+
+    int64_t t0 = ggml_time_ms();
+
+    sd_ctx_params_t dry_params = *sd_ctx_params;
+    dry_params.auto_fit        = false;
+    dry_params.eager_load      = false;
+
+    sd_ctx_t sd_ctx_storage{};
+    sd_ctx_t* sd_ctx        = &sd_ctx_storage;
+    sd_ctx->sd              = new StableDiffusionGGML();
+    sd_ctx->sd->fit_dry_run = true;
+    if (!sd_ctx->sd->init(&dry_params)) {
+        LOG_ERROR("fit-params: dry-run model init failed");
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+
+    const char* prompt = workload->prompt != nullptr && workload->prompt[0] != '\0'
+                             ? workload->prompt
+                             : "a photo of an astronaut riding a horse on the moon";
+    const bool video   = sd_version_supports_video_generation(sd_ctx->sd->version);
+
+    // silence step progress during measurement, it would pollute stdout
+    sd_progress_cb_t saved_progress_cb = sd_get_progress_callback();
+    void* saved_progress_data          = sd_get_progress_callback_data();
+    sd_set_progress_callback([](int, int, float, void*) {}, nullptr);
+
+    // run the real generation pipeline in measure mode: every runner builds its graphs,
+    // records memory requirements and returns shaped zero tensors, no weights are read
+    auto measure = [&](const sd_tiling_params_t& tiling,
+                       std::vector<GGMLRunner::graph_memory_measurement>& records) -> bool {
+        records.clear();
+        GGMLRunner::set_measure_mode(true, &records);
+        bool ok            = false;
+        sd_image_t* images = nullptr;
+        int num_images     = 0;
+        if (video) {
+            sd_vid_gen_params_t gen;
+            sd_vid_gen_params_init(&gen);
+            gen.prompt                     = prompt;
+            gen.width                      = workload->width;
+            gen.height                     = workload->height;
+            gen.video_frames               = std::max(workload->video_frames, 1);
+            gen.sample_params.sample_steps = 1;
+            gen.vae_tiling_params          = tiling;
+            sd_audio_t* audio              = nullptr;
+            ok                             = generate_video(sd_ctx, &gen, &images, &num_images, &audio);
+            free_sd_audio(audio);
+        } else {
+            sd_img_gen_params_t gen;
+            sd_img_gen_params_init(&gen);
+            gen.prompt                     = prompt;
+            gen.width                      = workload->width;
+            gen.height                     = workload->height;
+            gen.sample_params.sample_steps = 1;
+            gen.batch_count                = 1;
+            gen.vae_tiling_params          = tiling;
+            ok                             = generate_image(sd_ctx, &gen, &images, &num_images);
+        }
+        GGMLRunner::set_measure_mode(false);
+        if (images != nullptr) {
+            for (int i = 0; i < num_images; i++) {
+                free(images[i].data);
+            }
+            free(images);
+        }
+        return ok;
+    };
+
+    std::vector<GGMLRunner::graph_memory_measurement> records;
+    if (!measure(workload->vae_tiling_params, records) || records.empty()) {
+        LOG_ERROR("fit-params: measurement dry run failed");
+        sd_set_progress_callback(saved_progress_cb, saved_progress_data);
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+
+    auto module_for_runner = [&](const GGMLRunner* runner) -> SDBackendModule {
+        StableDiffusionGGML* sd = sd_ctx->sd;
+        if (runner == static_cast<const GGMLRunner*>(sd->diffusion_model.get()) ||
+            runner == static_cast<const GGMLRunner*>(sd->high_noise_diffusion_model.get())) {
+            return SDBackendModule::DIFFUSION;
+        }
+        if (runner == static_cast<const GGMLRunner*>(sd->first_stage_model.get()) ||
+            runner == static_cast<const GGMLRunner*>(sd->preview_vae.get())) {
+            return SDBackendModule::VAE;
+        }
+        if (runner == static_cast<const GGMLRunner*>(sd->control_net.get())) {
+            return SDBackendModule::CONTROL_NET;
+        }
+        if (runner == static_cast<const GGMLRunner*>(sd->clip_vision.get())) {
+            return SDBackendModule::CLIP_VISION;
+        }
+        return SDBackendModule::TE;
+    };
+
+    std::map<SDBackendModule, sd::fit_params::ModuleMemory> module_map;
+    for (const auto& kv : sd_ctx->sd->fit_module_params_bytes) {
+        auto& m        = module_map[kv.first];
+        m.module       = kv.first;
+        m.params_bytes = kv.second;
+    }
+    for (const auto& record : records) {
+        SDBackendModule module = module_for_runner(record.runner);
+        auto& m                = module_map[module];
+        m.module               = module;
+        m.compute_bytes        = std::max(m.compute_bytes, record.compute_bytes);
+    }
+    for (auto module : {SDBackendModule::DIFFUSION, SDBackendModule::TE}) {
+        auto it = module_map.find(module);
+        if (it != module_map.end()) {
+            it->second.splittable = true;
+        }
+    }
+
+    // price VAE tiling so the planner can fall back to it when full-resolution decode does not fit
+    {
+        auto it = module_map.find(SDBackendModule::VAE);
+        if (it != module_map.end() && !workload->vae_tiling_params.enabled) {
+            sd_tiling_params_t tiled = workload->vae_tiling_params;
+            tiled.enabled            = true;
+            std::vector<GGMLRunner::graph_memory_measurement> tiled_records;
+            if (measure(tiled, tiled_records)) {
+                for (const auto& record : tiled_records) {
+                    if (module_for_runner(record.runner) == SDBackendModule::VAE) {
+                        it->second.compute_bytes_tiled = std::max(it->second.compute_bytes_tiled, record.compute_bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    sd_set_progress_callback(saved_progress_cb, saved_progress_data);
+
+    const bool user_set_placement = strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
+                                    strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0;
+
+    std::vector<sd::fit_params::ModuleMemory> modules;
+    for (const auto& kv : module_map) {
+        modules.push_back(kv.second);
+    }
+    sd::fit_params::FitPlan plan;
+    bool planned = sd::fit_params::plan_placement(modules, sd_ctx->sd->max_vram_assignment, &plan);
+
+    delete sd_ctx->sd;
+    sd_ctx->sd = nullptr;
+
+    if (!planned || !plan.valid) {
+        return SD_FIT_FAILURE;
+    }
+
+    result->report     = strdup(plan.report.c_str());
+    result->vae_tiling = plan.vae_tiling;
+    if (plan.changed && user_set_placement) {
+        LOG_WARN("fit-params: changes needed but --backend/--params-backend already set by user, abort");
+        return SD_FIT_FAILURE;
+    } else if (plan.changed) {
+        result->changed = true;
+        if (!plan.runtime_spec.empty()) {
+            result->backend = strdup(plan.runtime_spec.c_str());
+        }
+        if (!plan.params_spec.empty()) {
+            result->params_backend = strdup(plan.params_spec.c_str());
+        }
+    }
+
+    int64_t t1 = ggml_time_ms();
+    LOG_INFO("fit-params: fitting params to free memory took %.2fs", (t1 - t0) * 1.0f / 1000);
+    return SD_FIT_SUCCESS;
+}
+
+void sd_fit_result_free(sd_fit_result_t* result) {
+    if (result == nullptr) {
+        return;
+    }
+    free(result->backend);
+    free(result->params_backend);
+    free(result->report);
+    *result = {};
 }
 
 static sd_audio_t* waveform_to_sd_audio(const StableDiffusionGGML* sd,
