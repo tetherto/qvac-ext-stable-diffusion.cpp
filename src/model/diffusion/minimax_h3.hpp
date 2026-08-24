@@ -34,6 +34,7 @@ namespace MiniMaxH3 {
         int64_t time_embed_dim           = 2688;
         int64_t rope_inv_freq_len        = 16;
         int64_t adaln_curve_grid         = 0;
+        bool is_comfyui_layout           = false;
         int patch_t                      = 1;
         int patch_h                      = 2;
         int patch_w                      = 2;
@@ -75,6 +76,10 @@ namespace MiniMaxH3 {
             }
             if (const auto* weight = find("audio_patch_proj.weight")) {
                 config.audio_latent_channels = weight->ne[0];
+                // ComfyUI GGUF exports can store video_patch_proj transposed,
+                // so derive the transformer width from the unambiguous audio
+                // projection when it is wider than the video-derived value.
+                config.hidden_size = std::max(config.hidden_size, weight->ne[1]);
             }
             config.num_layers               = count_blocks(tensors, prefix + ".blocks.");
             config.token_refiner_num_layers = count_blocks(tensors, prefix + ".token_refiner.blocks.");
@@ -105,15 +110,19 @@ namespace MiniMaxH3 {
             if (const auto* inv_freq = find("rope.inv_freq")) {
                 config.rope_inv_freq_len = inv_freq->ne[0];
             }
+            const auto* adaln = find("blocks.0.adaln_proj.linear.weight");
+            config.is_comfyui_layout = adaln != nullptr && adaln->has_comfy_original_shape;
 
             LOG_DEBUG("minimax_h3: layers=%" PRId64 ", hidden=%" PRId64 ", heads=%" PRId64
-                      ", head_dim=%" PRId64 ", ffn=%" PRId64 ", adaln_curve=%" PRId64,
+                      ", head_dim=%" PRId64 ", ffn=%" PRId64 ", adaln_curve=%" PRId64
+                      ", comfyui_layout=%d",
                       config.num_layers,
                       config.hidden_size,
                       config.num_attention_heads,
                       config.attention_head_dim,
                       config.ffn_hidden_size,
-                      config.adaln_curve_grid);
+                      config.adaln_curve_grid,
+                      config.is_comfyui_layout);
             return config;
         }
     };
@@ -286,7 +295,8 @@ namespace MiniMaxH3 {
                                int expand,
                                int modalities,
                                bool apply_silu,
-                               bool force_f32)
+                               bool force_f32,
+                               bool force_prec_f32)
             : hidden_size(hidden_size),
               expand(expand),
               modalities(modalities),
@@ -294,7 +304,8 @@ namespace MiniMaxH3 {
             blocks["linear"] = std::make_shared<Linear>(time_dim,
                                                         hidden_size * expand * modalities,
                                                         true,
-                                                        force_f32);
+                                                        force_f32,
+                                                        force_prec_f32);
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* t_emb) {
@@ -403,7 +414,10 @@ namespace MiniMaxH3 {
                                                                             6,
                                                                             3,
                                                                             !config.uses_adaln_curves(),
-                                                                            config.uses_adaln_curves());
+                                                                            config.uses_adaln_curves() &&
+                                                                                !config.is_comfyui_layout,
+                                                                            config.uses_adaln_curves() &&
+                                                                                config.is_comfyui_layout);
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
@@ -465,7 +479,10 @@ namespace MiniMaxH3 {
                                                                             2,
                                                                             1,
                                                                             !config.uses_adaln_curves(),
-                                                                            config.uses_adaln_curves());
+                                                                            config.uses_adaln_curves() &&
+                                                                                !config.is_comfyui_layout,
+                                                                            config.uses_adaln_curves() &&
+                                                                                config.is_comfyui_layout);
             blocks["video_out"]  = std::make_shared<Linear>(config.hidden_size, video_dim, true, true);
             blocks["audio_out"]  = std::make_shared<Linear>(config.hidden_size, config.audio_latent_channels, true, true);
         }

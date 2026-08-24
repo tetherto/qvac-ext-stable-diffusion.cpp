@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <mutex>
+#include <numeric>
 #include <regex>
 #include <set>
 #include <string>
@@ -156,12 +158,29 @@ void convert_tensor(void* src,
                     ggml_type src_type,
                     void* dst,
                     ggml_type dst_type,
-                    int nrows,
-                    int n_per_row,
+                    int64_t nrows,
+                    int64_t n_per_row,
                     std::vector<float> imatrix = {}) {
-    int n = nrows * n_per_row;
+    if (nrows <= 0 || n_per_row <= 0 ||
+        nrows > std::numeric_limits<int64_t>::max() / n_per_row) {
+        throw std::runtime_error("tensor conversion dimensions overflow");
+    }
+    const int64_t n = nrows * n_per_row;
+    if (ggml_is_quantized(src_type) && n % ggml_blck_size(src_type) != 0) {
+        throw std::runtime_error(sd_format("tensor conversion element count is not aligned for source type %s",
+                                           ggml_type_name(src_type)));
+    }
+    if (ggml_is_quantized(dst_type) && n % ggml_blck_size(dst_type) != 0) {
+        throw std::runtime_error(sd_format("tensor conversion element count is not aligned for destination type %s",
+                                           ggml_type_name(dst_type)));
+    }
     if (src_type == dst_type) {
-        size_t nbytes = n * ggml_type_size(src_type) / ggml_blck_size(src_type);
+        const int64_t block = ggml_blck_size(src_type);
+        if (n % block != 0) {
+            throw std::runtime_error(sd_format("tensor conversion element count is not aligned for type %s",
+                                               ggml_type_name(src_type)));
+        }
+        size_t nbytes = static_cast<size_t>(n / block) * ggml_type_size(src_type);
         memcpy(((char*)dst), ((char*)src), nbytes);
     } else if (src_type == GGML_TYPE_F32) {
         if (dst_type == GGML_TYPE_F16) {
@@ -190,16 +209,54 @@ void convert_tensor(void* src,
             throw std::runtime_error(sd_format("type %s unsupported for integer quantization: no dequantization available",
                                                ggml_type_name(src_type)));
         }
-        std::vector<char> buf;
-        buf.resize(sizeof(float) * n);
-        char* src_data_f32 = buf.data();
-        qtype->to_float(src, (float*)src_data_f32, n);
-        if (dst_type == GGML_TYPE_F16) {
-            ggml_fp32_to_fp16_row((float*)src_data_f32, (ggml_fp16_t*)dst, n);
-        } else {
+        // Convert in block-aligned row groups. ComfyUI may flatten a
+        // logical row width that is not divisible by the source quant block;
+        // dequantizing the full tensor would require multi-GB scratch buffers.
+        const int64_t src_block = ggml_blck_size(src_type);
+        int64_t rows_per_group  = src_block / std::gcd(src_block, n_per_row);
+        int64_t target_rows     = std::max<int64_t>(rows_per_group,
+                                                   (1 << 20) / std::max<int64_t>(1, n_per_row));
+        if (target_rows > std::numeric_limits<int64_t>::max() - rows_per_group + 1) {
+            throw std::runtime_error("tensor conversion row group overflows");
+        }
+        rows_per_group = ((target_rows + rows_per_group - 1) / rows_per_group) * rows_per_group;
+        rows_per_group = std::min(rows_per_group, nrows);
+
+        std::vector<float> buf(static_cast<size_t>(rows_per_group) * n_per_row);
+        if (dst_type != GGML_TYPE_F16) {
             imatrix.resize(n_per_row, 1.0f);
-            const float* im = imatrix.data();
-            ggml_quantize_chunk(dst_type, (float*)src_data_f32, dst, 0, nrows, n_per_row, im);
+        }
+        const float* im          = imatrix.empty() ? nullptr : imatrix.data();
+        const size_t src_type_size = ggml_type_size(src_type);
+        const size_t dst_type_size = ggml_type_size(dst_type);
+        const int64_t dst_block     = ggml_blck_size(dst_type);
+
+        for (int64_t row = 0; row < nrows; row += rows_per_group) {
+            const int64_t group_rows     = std::min(rows_per_group, nrows - row);
+            if (group_rows > std::numeric_limits<int64_t>::max() / n_per_row) {
+                throw std::runtime_error("tensor conversion group dimensions overflow");
+            }
+            const int64_t group_elements = group_rows * n_per_row;
+            if (group_elements % src_block != 0) {
+                throw std::runtime_error(sd_format("tensor conversion source group is not aligned for type %s",
+                                                   ggml_type_name(src_type)));
+            }
+            const char* src_group = static_cast<const char*>(src) +
+                                    static_cast<size_t>(row) * n_per_row / src_block * src_type_size;
+            qtype->to_float(src_group, buf.data(), group_elements);
+
+            if (dst_type == GGML_TYPE_F16) {
+                auto* dst_group = static_cast<ggml_fp16_t*>(dst) + static_cast<size_t>(row) * n_per_row;
+                ggml_fp32_to_fp16_row(buf.data(), dst_group, group_elements);
+            } else {
+                if (n_per_row % dst_block != 0) {
+                    throw std::runtime_error(sd_format("tensor conversion destination row is not aligned for type %s",
+                                                       ggml_type_name(dst_type)));
+                }
+                char* dst_group = static_cast<char*>(dst) +
+                                  static_cast<size_t>(row) * n_per_row / dst_block * dst_type_size;
+                ggml_quantize_chunk(dst_type, buf.data(), dst_group, 0, group_rows, n_per_row, im);
+            }
         }
     }
 }
@@ -1243,8 +1300,8 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                                        tensor_storage.type,
                                        convert_buf,
                                        dst_tensor->type,
-                                       (int)tensor_storage.nelements() / (int)tensor_storage.ne[0],
-                                       (int)tensor_storage.ne[0],
+                                       tensor_storage.nelements() / tensor_storage.ne[0],
+                                       tensor_storage.ne[0],
                                        std::move(imatrix));
                     } else {
                         convert_buf = read_buf;
