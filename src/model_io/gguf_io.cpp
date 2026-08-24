@@ -61,10 +61,8 @@ static ComfyShapeResult apply_comfy_shape_values(const int64_t* shape,
         return ComfyShapeResult::INVALID;
     }
 
-    int64_t restored_ne[GGML_MAX_DIMS] = {};
-    std::fill(restored_ne, restored_ne + GGML_MAX_DIMS, 1);
-    std::reverse_copy(shape, shape + shape_size, restored_ne);
-    std::copy(restored_ne, restored_ne + GGML_MAX_DIMS, ne);
+    std::fill(ne, ne + GGML_MAX_DIMS, 1);
+    std::reverse_copy(shape, shape + shape_size, ne);
     *n_dims = static_cast<int>(shape_size);
     return ComfyShapeResult::RESTORED;
 }
