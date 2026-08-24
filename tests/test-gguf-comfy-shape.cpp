@@ -85,8 +85,8 @@ int main() {
     assert(tensors[0].ne[0] == 6);
     assert(tensors[0].ne[1] == 2);
 
-    // Qwen's vision patch embedding is five-dimensional in PyTorch, but
-    // GGML's physical four-dimensional shape is already sufficient.
+    // Qwen's vision patch embedding is five-dimensional in PyTorch, so its
+    // leading dimensions are collapsed into GGML's four-dimensional shape.
     write_gguf(path,
                {1152, 3, 2, 16, 16},
                GGML_TYPE_F16,
@@ -95,12 +95,12 @@ int main() {
     error.clear();
     assert(read_gguf_file(path.string(), tensors, &error));
     assert(tensors.size() == 1);
-    assert(!tensors[0].has_comfy_original_shape);
+    assert(tensors[0].has_comfy_original_shape);
     assert(tensors[0].n_dims == 4);
     assert(tensors[0].ne[0] == 16);
     assert(tensors[0].ne[1] == 16);
-    assert(tensors[0].ne[2] == 6);
-    assert(tensors[0].ne[3] == 1152);
+    assert(tensors[0].ne[2] == 2);
+    assert(tensors[0].ne[3] == 3456);
 
     write_gguf(path,
                {256, 96},

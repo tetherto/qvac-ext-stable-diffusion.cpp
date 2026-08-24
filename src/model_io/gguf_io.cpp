@@ -22,7 +22,6 @@ static void set_error(std::string* error, const std::string& message) {
 enum class ComfyShapeResult {
     NOT_FOUND,
     RESTORED,
-    UNREPRESENTABLE,
     INVALID,
 };
 
@@ -62,15 +61,28 @@ static ComfyShapeResult apply_comfy_shape_values(const int64_t* shape,
         return ComfyShapeResult::INVALID;
     }
 
-    // GGML cannot represent the five-dimensional Qwen vision patch embedding.
-    // Its already-valid physical shape is sufficient for model loading.
-    if (shape_size > GGML_MAX_DIMS) {
-        return ComfyShapeResult::UNREPRESENTABLE;
+    const size_t collapsed_dims = shape_size > GGML_MAX_DIMS
+                                      ? shape_size - GGML_MAX_DIMS + 1
+                                      : 0;
+    uint64_t collapsed_dimension = 1;
+    for (size_t i = 0; i < collapsed_dims; ++i) {
+        const uint64_t dim = static_cast<uint64_t>(shape[i]);
+        if (dim > std::numeric_limits<uint64_t>::max() / collapsed_dimension) {
+            return ComfyShapeResult::INVALID;
+        }
+        collapsed_dimension *= dim;
     }
-
+    if (collapsed_dimension > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return ComfyShapeResult::INVALID;
+    }
     std::fill(ne, ne + GGML_MAX_DIMS, 1);
-    std::reverse_copy(shape, shape + shape_size, ne);
-    *n_dims = static_cast<int>(shape_size);
+    std::reverse_copy(shape + collapsed_dims, shape + shape_size, ne);
+    if (collapsed_dims > 0) {
+        ne[GGML_MAX_DIMS - 1] = static_cast<int64_t>(collapsed_dimension);
+        *n_dims = GGML_MAX_DIMS;
+    } else {
+        *n_dims = static_cast<int>(shape_size);
+    }
     return ComfyShapeResult::RESTORED;
 }
 
