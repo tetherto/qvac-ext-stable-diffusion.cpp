@@ -1789,8 +1789,9 @@ public:
 
             size_t total_params_size = total_params_ram_size + total_params_vram_size;
             LOG_INFO(
-                "total params memory size = %.2fMB (VRAM %.2fMB, RAM %.2fMB): "
+                "%stotal params memory size = %.2fMB (VRAM %.2fMB, RAM %.2fMB): "
                 "text_encoders %.2fMB(%s), diffusion_model %.2fMB(%s), vae %.2fMB(%s), controlnet %.2fMB(%s), extensions %.2fMB(%s)",
+                fit_dry_run ? "projected " : "",  // in a fit dry run nothing is allocated
                 total_params_size / 1024.0 / 1024.0,
                 total_params_vram_size / 1024.0 / 1024.0,
                 total_params_ram_size / 1024.0 / 1024.0,
@@ -4033,6 +4034,15 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
 
     // run the real generation pipeline in measure mode: every runner builds its graphs,
     // records memory requirements and returns shaped zero tensors, no weights are read
+    // models with a vision tower condition on an input image; feed a dummy one so
+    // the clip_vision and VAE encode graphs are built and measured too
+    std::vector<uint8_t> dummy_image_data;
+    sd_image_t dummy_init_image = {0, 0, 3, nullptr};
+    if (sd_ctx->sd->clip_vision != nullptr) {
+        dummy_image_data.assign((size_t)workload->width * workload->height * 3, 128);
+        dummy_init_image = {(uint32_t)workload->width, (uint32_t)workload->height, 3, dummy_image_data.data()};
+    }
+
     auto measure = [&](const sd_tiling_params_t& tiling,
                        std::vector<GGMLRunner::graph_memory_measurement>& records) -> bool {
         records.clear();
@@ -4049,6 +4059,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
             gen.video_frames               = std::max(workload->video_frames, 1);
             gen.sample_params.sample_steps = 1;
             gen.vae_tiling_params          = tiling;
+            gen.init_image                 = dummy_init_image;
             sd_audio_t* audio              = nullptr;
             ok                             = generate_video(sd_ctx, &gen, &images, &num_images, &audio);
             free_sd_audio(audio);
@@ -4061,6 +4072,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
             gen.sample_params.sample_steps = 1;
             gen.batch_count                = 1;
             gen.vae_tiling_params          = tiling;
+            gen.ip_adapter_image           = dummy_init_image;  // image models have clip_vision only for ip-adapter
             ok                             = generate_image(sd_ctx, &gen, &images, &num_images);
         }
         GGMLRunner::set_measure_mode(false);

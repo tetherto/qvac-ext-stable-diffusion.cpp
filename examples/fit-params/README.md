@@ -51,3 +51,12 @@ them.
 
 See `docs/backend.md` for the placement spec syntax and the heuristic
 `--auto-fit` alternative built into `sd-cli`.
+
+## Debugging the planner
+
+Set `SD_FIT_DEBUG_DEVICES` to plan against simulated devices instead of the
+real ones, e.g. `SD_FIT_DEBUG_DEVICES="CUDA0:24,CUDA1:16"` (`name:free_gib`).
+Measurement still runs on the real machine; only device enumeration is
+replaced. Useful to preview placements for other hardware and to exercise
+multi-device planning paths. Debug only: the emitted specs reference the
+simulated device names.

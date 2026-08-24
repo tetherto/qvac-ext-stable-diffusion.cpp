@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 #include "core/util.h"
 #include "ggml-backend.h"
@@ -30,7 +31,58 @@ namespace sd::fit_params {
             std::vector<size_t> device_idxs;
         };
 
+        void apply_device_budget(Device& d, sd::ggml_graph_cut::MaxVramAssignment& budgets) {
+            float gib = budgets.default_gib;
+            {
+                std::string budget_key = d.name;
+                std::transform(budget_key.begin(), budget_key.end(), budget_key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                auto it = budgets.backend_gib.find(budget_key);
+                if (it != budgets.backend_gib.end()) {
+                    gib = it->second;
+                }
+            }
+            if (gib > 0.f) {
+                d.budget_bytes = std::min<int64_t>((int64_t)(gib * 1024.0 * 1024.0 * 1024.0), d.free_bytes);
+            } else if (gib < 0.f) {
+                d.budget_bytes = d.free_bytes + (int64_t)(gib * 1024.0 * 1024.0 * 1024.0);
+            } else {
+                d.budget_bytes = d.free_bytes - 512 * MiB;
+            }
+            d.budget_bytes = std::max<int64_t>(d.budget_bytes, 0);
+        }
+
+        // debug override to exercise multi-device planning on any machine,
+        // e.g. SD_FIT_DEBUG_DEVICES="CUDA0:24,CUDA1:16" (name:free_gib)
+        std::vector<Device> simulated_devices(const char* spec, sd::ggml_graph_cut::MaxVramAssignment& budgets) {
+            std::vector<Device> out;
+            std::string s = spec;
+            size_t pos    = 0;
+            while (pos < s.size()) {
+                size_t comma      = s.find(',', pos);
+                std::string entry = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                pos               = comma == std::string::npos ? s.size() : comma + 1;
+                size_t colon      = entry.find(':');
+                if (colon == std::string::npos) {
+                    continue;
+                }
+                Device d;
+                d.name        = entry.substr(0, colon);
+                d.description = "simulated device";
+                d.free_bytes  = (int64_t)(std::stof(entry.substr(colon + 1)) * 1024.0 * 1024.0 * 1024.0);
+                d.total_bytes = d.free_bytes;
+                apply_device_budget(d, budgets);
+                out.push_back(d);
+            }
+            return out;
+        }
+
         std::vector<Device> enumerate_gpu_devices(sd::ggml_graph_cut::MaxVramAssignment& budgets) {
+            const char* debug_devices = getenv("SD_FIT_DEBUG_DEVICES");
+            if (debug_devices != nullptr && debug_devices[0] != '\0') {
+                LOG_WARN("fit-params: planning against simulated devices (SD_FIT_DEBUG_DEVICES)");
+                return simulated_devices(debug_devices, budgets);
+            }
+
             std::vector<Device> out;
             for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
                 ggml_backend_dev_t dev = ggml_backend_dev_get(i);
@@ -45,26 +97,7 @@ namespace sd::fit_params {
                 ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
                 d.free_bytes  = (int64_t)free_bytes;
                 d.total_bytes = (int64_t)total_bytes;
-
-                ggml_backend_t backend = nullptr;  // bytes_for_backend needs a backend, resolve via name instead
-                (void)backend;
-                float gib = budgets.default_gib;
-                {
-                    std::string budget_key = d.name;
-                    std::transform(budget_key.begin(), budget_key.end(), budget_key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-                    auto it = budgets.backend_gib.find(budget_key);
-                    if (it != budgets.backend_gib.end()) {
-                        gib = it->second;
-                    }
-                }
-                if (gib > 0.f) {
-                    d.budget_bytes = std::min<int64_t>((int64_t)(gib * 1024.0 * 1024.0 * 1024.0), d.free_bytes);
-                } else if (gib < 0.f) {
-                    d.budget_bytes = d.free_bytes + (int64_t)(gib * 1024.0 * 1024.0 * 1024.0);
-                } else {
-                    d.budget_bytes = d.free_bytes - 512 * MiB;
-                }
-                d.budget_bytes = std::max<int64_t>(d.budget_bytes, 0);
+                apply_device_budget(d, budgets);
                 out.push_back(d);
             }
             return out;
