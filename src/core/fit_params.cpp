@@ -215,21 +215,36 @@ namespace sd::fit_params {
         {
             std::vector<int64_t> params_sum(devices.size(), 0);
             std::vector<int64_t> max_compute(devices.size(), 0);
-            bool ok = true;
+            bool ok         = true;
+            bool vae_tiling = false;
             std::vector<Decision> resident(modules.size());
+            auto find_device = [&](const ModuleMemory& m, int64_t compute) -> int {
+                int best = -1;
+                for (size_t di = 0; di < devices.size(); di++) {
+                    int64_t need = params_sum[di] + (int64_t)m.params_bytes +
+                                   std::max<int64_t>(max_compute[di], compute);
+                    if (need <= devices[di].budget_bytes &&
+                        (best < 0 || devices[di].budget_bytes - params_sum[di] > devices[best].budget_bytes - params_sum[best])) {
+                        best = (int)di;
+                    }
+                }
+                return best;
+            };
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     resident[mi].placed = true;
                     continue;
                 }
-                int best = -1;
-                for (size_t di = 0; di < devices.size(); di++) {
-                    int64_t need = params_sum[di] + (int64_t)m.params_bytes +
-                                   std::max<int64_t>(max_compute[di], (int64_t)m.compute_bytes);
-                    if (need <= devices[di].budget_bytes &&
-                        (best < 0 || devices[di].budget_bytes - params_sum[di] > devices[best].budget_bytes - params_sum[best])) {
-                        best = (int)di;
+                int64_t compute = (int64_t)m.compute_bytes;
+                int best        = find_device(m, compute);
+                if (best < 0 && m.compute_bytes_tiled > 0 && m.compute_bytes_tiled < m.compute_bytes) {
+                    // full-resolution decode does not fit anywhere, tiling may keep the module resident
+                    compute = (int64_t)m.compute_bytes_tiled;
+                    best    = find_device(m, compute);
+                    if (best >= 0) {
+                        resident[mi].tiled = true;
+                        vae_tiling         = true;
                     }
                 }
                 if (best < 0) {
@@ -237,12 +252,13 @@ namespace sd::fit_params {
                     break;
                 }
                 params_sum[best] += (int64_t)m.params_bytes;
-                max_compute[best] = std::max<int64_t>(max_compute[best], (int64_t)m.compute_bytes);
+                max_compute[best] = std::max<int64_t>(max_compute[best], compute);
                 resident[mi].placed = true;
                 resident[mi].device_idxs.push_back((size_t)best);
             }
             if (ok) {
-                decisions = std::move(resident);
+                decisions        = std::move(resident);
+                plan->vae_tiling = vae_tiling;
             } else {
                 time_share = true;
             }
