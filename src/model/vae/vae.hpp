@@ -118,9 +118,8 @@ public:
     virtual sd::Tensor<float> encode(int n_threads,
                                      const sd::Tensor<float>& x,
                                      sd_tiling_params_t tiling_params,
-                                     bool encode_video = false,
-                                     bool circular_x   = false,
-                                     bool circular_y   = false) {
+                                     bool circular_x = false,
+                                     bool circular_y = false) {
         int64_t t0              = ggml_time_ms();
         sd::Tensor<float> input = x;
         sd::Tensor<float> output;
@@ -129,9 +128,7 @@ public:
             scale_tensor_to_minus1_1(&input);
         }
 
-        // Video VAEs produce 4D/5D tensors that the 2D spatial tiling path cannot
-        // handle correctly; bypass spatial tiling for video encode.
-        if (tiling_params.enabled && !encode_video) {
+        if (tiling_params.enabled) {
             const int scale_factor = get_scale_factor();
             int64_t W              = input.shape()[0] / scale_factor;
             int64_t H              = input.shape()[1] / scale_factor;
@@ -183,9 +180,7 @@ public:
         sd::Tensor<float> output;
         set_tiling_params(tiling_params);
 
-        // Video VAEs produce 4D/5D tensors that the 2D spatial tiling path cannot
-        // handle correctly; bypass spatial tiling for video decode.
-        if (tiling_params.enabled && !decode_video) {
+        if (tiling_params.enabled) {
             const int scale_factor = get_scale_factor();
             int64_t W              = input.shape()[0] * scale_factor;
             int64_t H              = input.shape()[1] * scale_factor;
