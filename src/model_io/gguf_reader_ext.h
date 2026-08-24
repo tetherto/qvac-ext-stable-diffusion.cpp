@@ -149,7 +149,7 @@ private:
             constexpr const char* prefix = "comfy.gguf.orig_shape.";
             if (key.compare(0, std::char_traits<char>::length(prefix), prefix) == 0) {
                 if (type != static_cast<uint32_t>(GGUFMetadataType::INT32) ||
-                    count == 0 || count > GGML_MAX_DIMS) {
+                    count == 0 || count > SD_MAX_DIMS) {
                     return false;
                 }
 
