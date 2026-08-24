@@ -26,6 +26,7 @@ struct TensorStorage {
     int int8_convrot_group_size = 0;
     int64_t ne[SD_MAX_DIMS]     = {1, 1, 1, 1, 1};
     int n_dims                  = 0;
+    bool has_comfy_original_shape = false;
 
     std::string storage_key;
     size_t file_index      = 0;
