@@ -22,6 +22,7 @@ static void set_error(std::string* error, const std::string& message) {
 enum class ComfyShapeResult {
     NOT_FOUND,
     RESTORED,
+    UNREPRESENTABLE,
     INVALID,
 };
 
@@ -44,7 +45,7 @@ static ComfyShapeResult apply_comfy_shape_values(const int64_t* shape,
                                                  uint64_t physical_element_count,
                                                  int64_t* ne,
                                                  int* n_dims) {
-    if (shape_size == 0 || shape_size > GGML_MAX_DIMS ||
+    if (shape_size == 0 || shape_size > GGML_MAX_DIMS + 1 ||
         !std::all_of(shape, shape + shape_size, [](int64_t dim) { return dim > 0; })) {
         return ComfyShapeResult::INVALID;
     }
@@ -59,6 +60,12 @@ static ComfyShapeResult apply_comfy_shape_values(const int64_t* shape,
     }
     if (logical_element_count != physical_element_count) {
         return ComfyShapeResult::INVALID;
+    }
+
+    // GGML cannot represent the five-dimensional Qwen vision patch embedding.
+    // Its already-valid physical shape is sufficient for model loading.
+    if (shape_size > GGML_MAX_DIMS) {
+        return ComfyShapeResult::UNREPRESENTABLE;
     }
 
     std::fill(ne, ne + GGML_MAX_DIMS, 1);
@@ -152,15 +159,15 @@ static bool checked_physical_element_count(const int64_t* ne,
     return false;
 }
 
-static bool apply_fallback_comfy_shape(const GGUFReader& reader,
-                                       const GGUFTensorInfo& tensor_info,
-                                       uint64_t physical_element_count,
-                                       int64_t* logical_ne,
-                                       int* logical_n_dims,
-                                       std::string* error) {
+static ComfyShapeResult apply_fallback_comfy_shape(const GGUFReader& reader,
+                                                   const GGUFTensorInfo& tensor_info,
+                                                   uint64_t physical_element_count,
+                                                   int64_t* logical_ne,
+                                                   int* logical_n_dims,
+                                                   std::string* error) {
     const auto* shape = reader.comfy_original_shape(tensor_info.name);
     if (shape == nullptr) {
-        return true;
+        return ComfyShapeResult::NOT_FOUND;
     }
     const ComfyShapeResult result = apply_comfy_shape_values(shape->data(),
                                                               shape->size(),
@@ -168,10 +175,11 @@ static bool apply_fallback_comfy_shape(const GGUFReader& reader,
                                                               logical_ne,
                                                               logical_n_dims);
     if (result != ComfyShapeResult::RESTORED) {
-        set_error(error, "invalid comfy.gguf.orig_shape for tensor '" + tensor_info.name + "'");
-        return false;
+        if (result == ComfyShapeResult::INVALID) {
+            set_error(error, "invalid comfy.gguf.orig_shape for tensor '" + tensor_info.name + "'");
+        }
     }
-    return true;
+    return result;
 }
 
 static void initialize_logical_shape(const std::vector<int64_t>& physical_shape,
@@ -234,12 +242,14 @@ bool read_gguf_file(const std::string& file_path,
             int64_t logical_ne[GGML_MAX_DIMS];
             int logical_n_dims = 0;
             initialize_logical_shape(gguf_tensor_info.shape, logical_ne, &logical_n_dims);
-            if (!apply_fallback_comfy_shape(gguf_reader,
-                                             gguf_tensor_info,
-                                             physical_element_count,
-                                             logical_ne,
-                                             &logical_n_dims,
-                                             error)) {
+            const ComfyShapeResult shape_result =
+                apply_fallback_comfy_shape(gguf_reader,
+                                           gguf_tensor_info,
+                                           physical_element_count,
+                                           logical_ne,
+                                           &logical_n_dims,
+                                           error);
+            if (shape_result == ComfyShapeResult::INVALID) {
                 return false;
             }
 
@@ -252,7 +262,7 @@ bool read_gguf_file(const std::string& file_path,
                 data_offset + gguf_tensor_info.offset);
 
             apply_comfy_expected_type(tensor_storage,
-                                      gguf_reader.comfy_original_shape(gguf_tensor_info.name) != nullptr,
+                                      shape_result == ComfyShapeResult::RESTORED,
                                       &remapped_tensors);
             tensor_storages.push_back(tensor_storage);
         }
