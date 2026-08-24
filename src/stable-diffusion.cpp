@@ -7517,16 +7517,23 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
             LOG_ERROR("sd_abot_scene_create: backend init failed: %s", error.c_str()); return false;
         }
         const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
+        // The runners below own the ggml tensors that ~ModelManager's
+        // storage-block teardown writes through (state->tensor->buffer =
+        // nullptr), and they hold only weak_ptr refs to the manager. Declare
+        // them BEFORE the manager so reverse local destruction runs
+        // ~ModelManager first, while every registered tensor is still alive
+        // (mirrors the member ordering in StableDiffusionGGML).
+        std::shared_ptr<AbotT5Runner> t5;
+        std::shared_ptr<AbotWanVAE> vae;
         auto model_manager = std::make_shared<ModelManager>();
         model_manager->set_n_threads(threads);
         ModelLoader& model_loader = model_manager->loader();
         if (!model_loader.init_from_file(p->t5_path, "text_encoders.t5xxl.transformer.")) return false;
-        auto t5 = std::make_shared<AbotT5Runner>(backends.runtime_backend(SDBackendModule::TE),
-                                                   model_loader.get_tensor_storage_map(),
-                                                   "text_encoders.t5xxl.transformer",
-                                                   true,
-                                                   model_manager);
-        std::shared_ptr<AbotWanVAE> vae;
+        t5 = std::make_shared<AbotT5Runner>(backends.runtime_backend(SDBackendModule::TE),
+                                              model_loader.get_tensor_storage_map(),
+                                              "text_encoders.t5xxl.transformer",
+                                              true,
+                                              model_manager);
         if (has_image) {
             if (!model_loader.init_from_file(p->vae_path, "first_stage_model.")) return false;
             vae = std::make_shared<AbotWanVAE>(backends.runtime_backend(SDBackendModule::VAE),
