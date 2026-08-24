@@ -1,7 +1,8 @@
+#include "ggml.h"
+#include "model/diffusion/minimax_h3.hpp"
 #include "model_io/gguf_io.h"
 #include "model_io/gguf_reader_ext.h"
 
-#include <cassert>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -20,7 +21,7 @@ void write_gguf(const std::filesystem::path& path,
                 ggml_type type = GGML_TYPE_F32,
                 const std::vector<uint64_t>& physical_shape = {6, 2}) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
-    assert(file.is_open());
+    GGML_ASSERT(file.is_open());
 
     file.write("GGUF", 4);
     write_value<uint32_t>(file, 3);
@@ -71,19 +72,19 @@ int main() {
     write_gguf(path, {2, 6});
 
     GGUFReader fallback_reader;
-    assert(fallback_reader.load(path.string()));
+    GGML_ASSERT(fallback_reader.load(path.string()));
     const auto* fallback_shape = fallback_reader.comfy_original_shape("foo");
-    assert(fallback_shape != nullptr);
-    assert(*fallback_shape == std::vector<int64_t>({2, 6}));
+    GGML_ASSERT(fallback_shape != nullptr);
+    GGML_ASSERT(*fallback_shape == std::vector<int64_t>({2, 6}));
 
     std::vector<TensorStorage> tensors;
     std::string error;
-    assert(read_gguf_file(path.string(), tensors, &error));
-    assert(tensors.size() == 1);
-    assert(tensors[0].has_comfy_original_shape);
-    assert(tensors[0].n_dims == 2);
-    assert(tensors[0].ne[0] == 6);
-    assert(tensors[0].ne[1] == 2);
+    GGML_ASSERT(read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(tensors.size() == 1);
+    GGML_ASSERT(tensors[0].has_comfy_original_shape);
+    GGML_ASSERT(tensors[0].n_dims == 2);
+    GGML_ASSERT(tensors[0].ne[0] == 6);
+    GGML_ASSERT(tensors[0].ne[1] == 2);
 
     // Qwen's vision patch embedding is five-dimensional in PyTorch, so its
     // leading dimensions are collapsed into GGML's four-dimensional shape.
@@ -93,14 +94,14 @@ int main() {
                {16, 16, 6, 1152});
     tensors.clear();
     error.clear();
-    assert(read_gguf_file(path.string(), tensors, &error));
-    assert(tensors.size() == 1);
-    assert(tensors[0].has_comfy_original_shape);
-    assert(tensors[0].n_dims == 4);
-    assert(tensors[0].ne[0] == 16);
-    assert(tensors[0].ne[1] == 16);
-    assert(tensors[0].ne[2] == 2);
-    assert(tensors[0].ne[3] == 3456);
+    GGML_ASSERT(read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(tensors.size() == 1);
+    GGML_ASSERT(tensors[0].has_comfy_original_shape);
+    GGML_ASSERT(tensors[0].n_dims == 4);
+    GGML_ASSERT(tensors[0].ne[0] == 16);
+    GGML_ASSERT(tensors[0].ne[1] == 16);
+    GGML_ASSERT(tensors[0].ne[2] == 2);
+    GGML_ASSERT(tensors[0].ne[3] == 3456);
 
     write_gguf(path,
                {256, 96},
@@ -108,24 +109,70 @@ int main() {
                {256, 96});
     tensors.clear();
     error.clear();
-    assert(read_gguf_file(path.string(), tensors, &error));
-    assert(tensors.size() == 1);
-    assert(tensors[0].has_comfy_original_shape);
-    assert(tensors[0].expected_type == GGML_TYPE_Q4_0);
-    assert(tensors[0].ne[0] == 96);
-    assert(tensors[0].ne[1] == 256);
+    GGML_ASSERT(read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(tensors.size() == 1);
+    GGML_ASSERT(tensors[0].has_comfy_original_shape);
+    GGML_ASSERT(tensors[0].expected_type == GGML_TYPE_Q4_0);
+    GGML_ASSERT(tensors[0].ne[0] == 96);
+    GGML_ASSERT(tensors[0].ne[1] == 256);
 
     write_gguf(path, {-2, 6});
     tensors.clear();
     error.clear();
-    assert(!read_gguf_file(path.string(), tensors, &error));
-    assert(error.find("invalid comfy.gguf.orig_shape") != std::string::npos);
+    GGML_ASSERT(!read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(error.find("invalid comfy.gguf.orig_shape") != std::string::npos);
 
     write_gguf(path, {INT32_MAX, INT32_MAX});
     tensors.clear();
     error.clear();
-    assert(!read_gguf_file(path.string(), tensors, &error));
-    assert(error.find("invalid comfy.gguf.orig_shape") != std::string::npos);
+    GGML_ASSERT(!read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(error.find("invalid comfy.gguf.orig_shape") != std::string::npos);
+
+    write_gguf(path,
+               {256, 96},
+               GGML_TYPE_IQ4_XS,
+               {256, 96});
+    tensors.clear();
+    error.clear();
+    GGML_ASSERT(read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(tensors.size() == 1);
+    GGML_ASSERT(tensors[0].has_comfy_original_shape);
+    GGML_ASSERT(tensors[0].expected_type == GGML_TYPE_Q4_0);
+    GGML_ASSERT(tensors[0].ne[0] == 96);
+    GGML_ASSERT(tensors[0].ne[1] == 256);
+
+    // An unsupported or misaligned source must remain on the explicit F32 fallback
+    // path and emit the named loader warning rather than being silently remapped.
+    write_gguf(path,
+               {256, 100},
+               GGML_TYPE_IQ4_XS,
+               {256, 100});
+    tensors.clear();
+    error.clear();
+    GGML_ASSERT(read_gguf_file(path.string(), tensors, &error));
+    GGML_ASSERT(tensors.size() == 1);
+    GGML_ASSERT(tensors[0].has_comfy_original_shape);
+    GGML_ASSERT(tensors[0].expected_type == GGML_TYPE_COUNT);
+    GGML_ASSERT(tensors[0].ne[0] == 100);
+    GGML_ASSERT(tensors[0].ne[1] == 256);
+
+    const std::string adaln_name = "diffusion_model.blocks.0.adaln_proj.linear.weight";
+    int64_t adaln_ne[2] = {32, 32};
+    String2TensorStorage mixed_tensors;
+    mixed_tensors.emplace(adaln_name,
+                          TensorStorage(adaln_name, GGML_TYPE_F32, adaln_ne, 2, 0));
+    int64_t unrelated_ne[2] = {32, 32};
+    TensorStorage unrelated("vae.encoder.weight", GGML_TYPE_F32, unrelated_ne, 2, 0);
+    unrelated.has_comfy_original_shape = true;
+    mixed_tensors.emplace(unrelated.name, unrelated);
+
+    auto config = MiniMaxH3::Config::detect_from_weights(mixed_tensors, "diffusion_model");
+    GGML_ASSERT(!config.is_comfyui_layout);
+    auto adaln = mixed_tensors.find(adaln_name);
+    GGML_ASSERT(adaln != mixed_tensors.end());
+    adaln->second.has_comfy_original_shape = true;
+    config = MiniMaxH3::Config::detect_from_weights(mixed_tensors, "diffusion_model");
+    GGML_ASSERT(config.is_comfyui_layout);
 
     std::filesystem::remove(path);
     return 0;

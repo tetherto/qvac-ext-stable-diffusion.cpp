@@ -110,10 +110,8 @@ namespace MiniMaxH3 {
             if (const auto* inv_freq = find("rope.inv_freq")) {
                 config.rope_inv_freq_len = inv_freq->ne[0];
             }
-            config.is_comfyui_layout = std::any_of(
-                tensors.begin(),
-                tensors.end(),
-                [](const auto& entry) { return entry.second.has_comfy_original_shape; });
+            const auto* adaln = find("blocks.0.adaln_proj.linear.weight");
+            config.is_comfyui_layout = adaln != nullptr && adaln->has_comfy_original_shape;
 
             LOG_DEBUG("minimax_h3: layers=%" PRId64 ", hidden=%" PRId64 ", heads=%" PRId64
                       ", head_dim=%" PRId64 ", ffn=%" PRId64 ", adaln_curve=%" PRId64

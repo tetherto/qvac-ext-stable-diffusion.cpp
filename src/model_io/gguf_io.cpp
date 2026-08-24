@@ -1,6 +1,7 @@
 #include "gguf_io.h"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -134,6 +135,16 @@ static ggml_type comfy_expected_type(ggml_type source_type, int64_t logical_row_
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:
+        case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ1_M:
+        case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_S:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ4_XS:
+        case GGML_TYPE_TQ1_0:
+        case GGML_TYPE_TQ2_0:
             return GGML_TYPE_Q4_0;
         case GGML_TYPE_Q5_K:
         case GGML_TYPE_Q6_K:
@@ -156,6 +167,12 @@ static void apply_comfy_expected_type(TensorStorage& tensor_storage,
     if (expected_type != GGML_TYPE_COUNT) {
         tensor_storage.expected_type = expected_type;
         ++*remapped_tensors;
+    } else if (ggml_is_quantized(tensor_storage.type) &&
+               tensor_storage.ne[0] % ggml_blck_size(tensor_storage.type) != 0) {
+        LOG_WARN("ComfyUI GGUF: no quantized remap for tensor %s (source type %s, logical row %" PRId64 "); falling back to F32",
+                 tensor_storage.name.c_str(),
+                 ggml_type_name(tensor_storage.type),
+                 tensor_storage.ne[0]);
     }
 }
 
