@@ -1,3 +1,5 @@
+#include <limits>
+#include <map>
 #ifndef __SD_MODEL_IO_GGUF_READER_EXT_H__
 #define __SD_MODEL_IO_GGUF_READER_EXT_H__
 
@@ -36,6 +38,7 @@ enum class GGUFMetadataType : uint32_t {
 class GGUFReader {
 private:
     std::vector<GGUFTensorInfo> tensors_;
+    std::map<std::string, std::vector<int64_t>> comfy_original_shapes_;
     bool has_wide_tensors_    = false;
     uint64_t remaining_bytes_ = 0;
     size_t data_offset_;
@@ -125,7 +128,7 @@ private:
         if (!safe_read(fin, type))
             return false;
 
-        if (key == "general.alignment") {
+        if (key == "general.alignment" && type == static_cast<uint32_t>(GGUFMetadataType::UINT32)) {
             uint32_t align_val = 0;
             if (!safe_read(fin, align_val))
                 return false;
@@ -143,6 +146,27 @@ private:
         if (type == static_cast<uint32_t>(GGUFMetadataType::ARRAY)) {
             if (!safe_read(fin, type) || !safe_read(fin, count))
                 return false;
+            constexpr const char* prefix = "comfy.gguf.orig_shape.";
+            if (key.compare(0, std::char_traits<char>::length(prefix), prefix) == 0) {
+                if (type != static_cast<uint32_t>(GGUFMetadataType::INT32) ||
+                    count == 0 || count > SD_MAX_DIMS) {
+                    return false;
+                }
+
+                std::vector<int64_t> shape;
+                shape.reserve(static_cast<size_t>(count));
+                for (uint64_t i = 0; i < count; ++i) {
+                    int32_t dim = 0;
+                    if (!safe_read(fin, dim)) {
+                        return false;
+                    }
+                    shape.push_back(dim);
+                }
+                comfy_original_shapes_[key.substr(std::char_traits<char>::length(prefix))] =
+                    std::move(shape);
+                return true;
+            }
+
         }
         return skip_metadata_values(fin, static_cast<GGUFMetadataType>(type), count);
     }
@@ -171,6 +195,12 @@ private:
         if (n_dims > GGML_MAX_DIMS) {
             has_wide_tensors_ = true;
             for (uint32_t i = GGML_MAX_DIMS; i < n_dims; i++) {
+                if (info.shape[GGML_MAX_DIMS - 1] <= 0 ||
+                    info.shape[i] <= 0 ||
+                    info.shape[GGML_MAX_DIMS - 1] >
+                        std::numeric_limits<int64_t>::max() / info.shape[i]) {
+                    throw std::runtime_error("tensor shape overflows int64");
+                }
                 info.shape[GGML_MAX_DIMS - 1] *= info.shape[i];  // stack to last dim;
             }
             info.shape.resize(GGML_MAX_DIMS);
@@ -224,6 +254,7 @@ public:
         LOG_VERBOSE("GGUF v%u, tensor_count=%llu, metadata_kv_count=%llu",
                     version, (unsigned long long)tensor_count, (unsigned long long)metadata_kv_count);
 
+        comfy_original_shapes_.clear();
         // --- Read Metadata ---
         for (uint64_t i = 0; i < metadata_kv_count; i++) {
             if (!read_metadata(fin)) {
@@ -249,6 +280,11 @@ public:
         }
         fin.close();
         return true;
+    }
+
+    const std::vector<int64_t>* comfy_original_shape(const std::string& tensor_name) const {
+        auto it = comfy_original_shapes_.find(tensor_name);
+        return it == comfy_original_shapes_.end() ? nullptr : &it->second;
     }
 
     const std::vector<GGUFTensorInfo>& tensors() const { return tensors_; }

@@ -17,8 +17,8 @@ void convert_tensor(void* src,
                     ggml_type src_type,
                     void* dst,
                     ggml_type dst_type,
-                    int nrows,
-                    int n_per_row,
+                    int64_t nrows,
+                    int64_t n_per_row,
                     std::vector<float> imatrix = {});
 
 class MmapWrapper;

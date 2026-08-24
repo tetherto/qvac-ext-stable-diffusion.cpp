@@ -36,3 +36,9 @@ target_include_directories(test-common-json PRIVATE
 target_link_libraries(test-common-json
     PRIVATE stable-diffusion zip ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-common-json COMMAND test-common-json)
+
+add_executable(test-gguf-comfy-shape test-gguf-comfy-shape.cpp)
+target_include_directories(test-gguf-comfy-shape PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-gguf-comfy-shape PRIVATE stable-diffusion)
+add_test(NAME test-gguf-comfy-shape COMMAND test-gguf-comfy-shape)
