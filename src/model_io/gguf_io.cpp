@@ -47,10 +47,25 @@ bool read_gguf_file(const std::string& file_path,
     gguf_context* ctx_gguf_ = nullptr;
     ggml_context* ctx_meta_ = nullptr;
 
+    // ggml's reader rejects tensors with more than GGML_MAX_DIMS dimensions (e.g.
+    // the 5-D Wan patch_embedding.weight) that the GGUFReader fallback handles,
+    // so silence its log during the probe to avoid spurious error messages
+    ggml_log_callback saved_log_cb = nullptr;
+    void* saved_log_data           = nullptr;
+    ggml_log_get(&saved_log_cb, &saved_log_data);
+    ggml_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
     ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
+    ggml_log_set(saved_log_cb, saved_log_data);
+
     if (!ctx_gguf_) {
         GGUFReader gguf_reader;
         if (!gguf_reader.load(file_path)) {
+            // re-run the ggml reader with logging restored so its diagnostics are printed
+            ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
+            if (ctx_gguf_) {
+                gguf_free(ctx_gguf_);
+                ggml_free(ctx_meta_);
+            }
             set_error(error, "failed to open '" + file_path + "' with GGUFReader");
             return false;
         }
