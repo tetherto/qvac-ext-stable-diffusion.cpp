@@ -95,7 +95,7 @@ static ComfyShapeResult apply_comfy_original_shape(const gguf_context* ctx,
     }
 
     const size_t shape_size = gguf_get_arr_n(ctx, key_id);
-    if (shape_size == 0 || shape_size > GGML_MAX_DIMS) {
+    if (shape_size == 0 || shape_size > GGML_MAX_DIMS + 1) {
         return ComfyShapeResult::INVALID;
     }
 
