@@ -17,6 +17,7 @@ struct TensorStorage {
     std::string name;
     ggml_type type          = GGML_TYPE_F32;
     ggml_type expected_type = GGML_TYPE_COUNT;
+    bool has_comfy_original_shape = false;
     bool is_f8_e4m3         = false;
     bool is_f8_e5m2         = false;
     bool is_f64             = false;
