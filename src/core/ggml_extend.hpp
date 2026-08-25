@@ -2071,7 +2071,12 @@ protected:
         if (cpu_fallback_backend == nullptr && !sd_backend_is_cpu(runtime_backend)) {
             cpu_fallback_backend = sd_backend_cpu_init();
         }
-        if (cpu_fallback_backend != nullptr) {
+        // The internal CPU fallback backend is only needed as the
+        // scheduler's trailing fallback while the primary runtime is
+        // non-CPU. When a VAE graph is retried on its explicit CPU backend,
+        // adding a second CPU backend creates an ambiguous scheduler route.
+        if (cpu_fallback_backend != nullptr &&
+            !sd_backend_is_cpu(runtime_backend)) {
             backends.push_back(cpu_fallback_backend);
         }
 
