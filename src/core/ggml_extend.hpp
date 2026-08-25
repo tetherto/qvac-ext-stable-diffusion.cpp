@@ -2232,6 +2232,36 @@ protected:
         return bytes;
     }
 
+    bool assign_graph_params_compute_backend(const std::vector<ggml_tensor*>& graph_params,
+                                             ggml_backend_t backend,
+                                             const char* action) {
+        GGML_ASSERT(backend != nullptr);
+        auto manager = weight_manager.lock();
+        if (manager == nullptr) {
+            if (graph_params.empty()) {
+                return true;
+            }
+            LOG_ERROR("%s VAE CPU fallback cannot %s graph params without a weight manager",
+                      get_desc().c_str(),
+                      action);
+            return false;
+        }
+        if (!manager->assign_compute_backend(graph_params, backend)) {
+            LOG_ERROR("%s VAE CPU fallback failed to %s %zu graph params to %s",
+                      get_desc().c_str(),
+                      action,
+                      graph_params.size(),
+                      ggml_backend_name(backend));
+            return false;
+        }
+        LOG_DEBUG("%s VAE CPU fallback %s %zu graph params to %s",
+                  get_desc().c_str(),
+                  action,
+                  graph_params.size(),
+                  ggml_backend_name(backend));
+        return true;
+    }
+
     void switch_runtime_backend(ggml_backend_t backend) {
         GGML_ASSERT(backend != nullptr);
         free_compute_buffer();
@@ -3238,6 +3268,43 @@ public:
         }
         const bool has_stateful_cache =
             !cache_tensor_map.empty() || cache_ctx != nullptr;
+        auto run_stateless_on_cpu =
+            [&](const std::vector<ggml_tensor*>& graph_params) -> std::optional<sd::Tensor<T>> {
+            ggml_backend_t previous_backend         = runtime_backend;
+            const std::string previous_backend_name = ggml_backend_name(previous_backend);
+            if (!assign_graph_params_compute_backend(graph_params,
+                                                     vae_fallback_backend,
+                                                     "assign")) {
+                return std::nullopt;
+            }
+            switch_runtime_backend(vae_fallback_backend);
+
+            auto restore_previous_backend = [&]() {
+                const bool restored = assign_graph_params_compute_backend(graph_params,
+                                                                          previous_backend,
+                                                                          "restore");
+                switch_runtime_backend(previous_backend);
+                return restored;
+            };
+
+            try {
+                // Fallback staging cannot remain active after runtime restoration.
+                // Always release CPU compute params before assigning the graph back.
+                auto output = compute<T>(get_graph,
+                                         n_threads,
+                                         false,
+                                         free_compute_buffer,
+                                         true,
+                                         no_return);
+                if (!restore_previous_backend()) {
+                    return std::nullopt;
+                }
+                return output;
+            } catch (...) {
+                restore_previous_backend();
+                throw;
+            }
+        };
         auto retry_stateless_on_cpu =
             [&](const char* failure) -> std::optional<sd::Tensor<T>> {
             if (!vae_auto_cpu_fallback_enabled ||
@@ -3247,27 +3314,12 @@ public:
                 has_stateful_cache) {
                 return std::nullopt;
             }
-            ggml_backend_t previous_backend = runtime_backend;
-            const std::string previous_backend_name =
-                ggml_backend_name(previous_backend);
+            const std::string previous_backend_name = ggml_backend_name(runtime_backend);
             LOG_WARN("%s VAE %s on %s; retrying stateless graph on CPU",
                      get_desc().c_str(),
                      failure,
                      previous_backend_name.c_str());
-            switch_runtime_backend(vae_fallback_backend);
-            try {
-                auto output = compute<T>(get_graph,
-                                         n_threads,
-                                         false,
-                                         free_compute_buffer,
-                                         free_compute_params,
-                                         no_return);
-                switch_runtime_backend(previous_backend);
-                return output;
-            } catch (...) {
-                switch_runtime_backend(previous_backend);
-                throw;
-            }
+            return run_stateless_on_cpu(collect_used_param_tensors(gf));
         };
 
         if (vae_auto_cpu_fallback_enabled &&
@@ -3320,23 +3372,13 @@ public:
                     previous_backend_name.c_str(),
                     cpu_backend_name.c_str());
 
-                switch_runtime_backend(vae_fallback_backend);
-                try {
-                    auto output = compute<T>(get_graph,
-                                             n_threads,
-                                             false,
-                                             free_compute_buffer,
-                                             free_compute_params,
-                                             no_return);
-                    switch_runtime_backend(previous_backend);
+                auto output = run_stateless_on_cpu(collect_used_param_tensors(gf));
+                if (output.has_value()) {
                     LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
                              get_desc().c_str(),
                              previous_backend_name.c_str());
-                    return output;
-                } catch (...) {
-                    switch_runtime_backend(previous_backend);
-                    throw;
                 }
+                return output;
             }
 
             if (decision.reason == sd::VaeGraphRouteReason::STATEFUL_GRAPH) {
