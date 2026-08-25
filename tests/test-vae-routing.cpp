@@ -1,12 +1,53 @@
+#include "core/ggml_extend.hpp"
 #include "core/ggml_extend_backend.h"
 #include "vae_fallback.hpp"
 
 #include <cstddef>
 #include <limits>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace {
     constexpr size_t MIB = 1024ull * 1024ull;
+
+    class RecordingWeightManager : public RunnerWeightManager {
+    public:
+        std::vector<ggml_backend_t> assignments;
+        size_t fail_on_assignment = 0;
+
+        bool assign_compute_backend(const std::vector<ggml_tensor*>& tensors,
+                                    ggml_backend_t compute_backend) override {
+            GGML_ASSERT(!tensors.empty());
+            assignments.push_back(compute_backend);
+            return fail_on_assignment == 0 || assignments.size() != fail_on_assignment;
+        }
+
+        bool prepare_params(const std::vector<ggml_tensor*>&) override { return true; }
+        void release_compute_backend_params(const std::vector<ggml_tensor*>&) override {}
+        void release_params_backend_params(const std::vector<ggml_tensor*>&) override {}
+    };
+
+    class RoutingTestRunner : public GGMLRunner {
+    public:
+        RoutingTestRunner(ggml_backend_t backend,
+                          const std::shared_ptr<RunnerWeightManager>& manager)
+            : GGMLRunner(backend, manager) {}
+
+        std::string get_desc() override { return "routing_test"; }
+
+        ggml_tensor* make_param() {
+            ggml_tensor* tensor = ggml_new_tensor_1d(params_ctx, GGML_TYPE_F32, 1);
+            ggml_set_name(tensor, "routing_test.weight");
+            return tensor;
+        }
+
+        bool assign_graph_params(const std::vector<ggml_tensor*>& tensors,
+                                 ggml_backend_t backend,
+                                 const char* action) {
+            return assign_graph_params_compute_backend(tensors, backend, action);
+        }
+    };
 }
 
 int main() {
@@ -20,6 +61,30 @@ int main() {
                                            false,
                                            &compatibility_error));
     compatibility_manager.reset();
+
+    ggml_backend_t original_backend = sd_backend_cpu_init();
+    ggml_backend_t fallback_backend = sd_backend_cpu_init();
+    GGML_ASSERT(original_backend != nullptr);
+    GGML_ASSERT(fallback_backend != nullptr);
+    {
+        auto manager = std::make_shared<RecordingWeightManager>();
+        RoutingTestRunner runner(original_backend, manager);
+        std::vector<ggml_tensor*> graph_params = {runner.make_param()};
+
+        GGML_ASSERT(runner.assign_graph_params(graph_params, fallback_backend, "assign"));
+        GGML_ASSERT(runner.assign_graph_params(graph_params, original_backend, "restore"));
+        GGML_ASSERT(manager->assignments.size() == 2);
+        GGML_ASSERT(manager->assignments[0] == fallback_backend);
+        GGML_ASSERT(manager->assignments[1] == original_backend);
+
+        manager->assignments.clear();
+        manager->fail_on_assignment = 2;
+        GGML_ASSERT(runner.assign_graph_params(graph_params, fallback_backend, "assign"));
+        GGML_ASSERT(!runner.assign_graph_params(graph_params, original_backend, "restore"));
+        GGML_ASSERT(manager->assignments.size() == 2);
+    }
+    ggml_backend_free(fallback_backend);
+    ggml_backend_free(original_backend);
 
     SDBackendAssignment runtime;
     runtime.set_default("vulkan0");
