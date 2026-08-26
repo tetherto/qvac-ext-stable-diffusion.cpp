@@ -748,23 +748,39 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
             runner.switch_runtime_backend(runner.vae_cpu_fallback_backend);
             return true;
         }
-        ~BackendRestoreGuard() {
-            if (previous != nullptr) {
-                if (!repoint(previous)) {
-                    LOG_WARN("%s VAE CPU fallback could not restore graph params", runner.get_desc().c_str());
-                }
-                runner.switch_runtime_backend(previous);
-                LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
-                         runner.get_desc().c_str(), ggml_backend_name(previous));
+        bool restore() noexcept {
+            if (previous == nullptr) return true;
+            const auto target = previous;
+            previous = nullptr;
+            bool restored = false;
+            try {
+                restored = repoint(target);
+                runner.switch_runtime_backend(target);
+            } catch (...) {
+                restored = false;
             }
+            if (!restored) {
+                LOG_ERROR("%s VAE CPU fallback could not restore graph params; disabling fallback and failing this call",
+                          runner.get_desc().c_str());
+                runner.vae_auto_cpu_fallback_enabled = false;
+                runner.last_compute_status_ = GGML_STATUS_FAILED;
+                return false;
+            }
+            LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
+                     runner.get_desc().c_str(), ggml_backend_name(target));
+            return true;
         }
+        ~BackendRestoreGuard() { restore(); }
     } backend_restore{*this};
     graph_active_ = true;
     bool success  = false;
     struct GraphEndGuard {
         GGMLRunner& runner;
         const bool& success;
-        ~GraphEndGuard() {
+        bool finished = false;
+        void finish() {
+            if (finished) return;
+            finished = true;
             if (!runner.workspace_.segment_end()) {
                 runner.last_compute_status_ = GGML_STATUS_FAILED;
             }
@@ -777,6 +793,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
             }
             runner.sync_runtime_residency();
         }
+        ~GraphEndGuard() { finish(); }
     } graph_guard{*this, success};
 
     ggml_cgraph* graph = nullptr;
@@ -846,6 +863,8 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
         cache_.graph_end(true);
         last_compute_status_ = GGML_STATUS_SUCCESS;
     }
+    graph_guard.finish();
+    if (!backend_restore.restore()) return std::nullopt;
     return output;
 }
 
