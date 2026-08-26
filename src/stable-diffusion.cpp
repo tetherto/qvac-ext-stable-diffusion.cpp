@@ -345,6 +345,9 @@ public:
         if (model == nullptr) {
             return true;
         }
+        if constexpr (std::is_base_of_v<GGMLRunner, T>) {
+            model->set_fit_module(module);
+        }
         std::map<std::string, ggml_tensor*> group_tensors;
         std::map<ggml_tensor*, enum ggml_op> tensor_ops;
         model->get_param_tensors(group_tensors);
@@ -4000,10 +4003,17 @@ void sd_fit_workload_init(sd_fit_workload_t* workload) {
 enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
                                    const sd_fit_workload_t* workload,
                                    sd_fit_result_t* result) {
-    if (sd_ctx_params == nullptr || workload == nullptr || result == nullptr) {
+    if (result == nullptr) {
         return SD_FIT_ERROR;
     }
     *result = {};
+    if (sd_ctx_params == nullptr || workload == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    if (workload->image_gen_params != nullptr && workload->video_gen_params != nullptr) {
+        LOG_ERROR("fit-params: set at most one complete generation request");
+        return SD_FIT_ERROR;
+    }
 
     int64_t t0 = ggml_time_ms();
 
@@ -4022,10 +4032,30 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         return SD_FIT_ERROR;
     }
 
-    const char* prompt = workload->prompt != nullptr && workload->prompt[0] != '\0'
-                             ? workload->prompt
-                             : "a photo of an astronaut riding a horse on the moon";
-    const bool video   = sd_version_supports_video_generation(sd_ctx->sd->version);
+    const int workload_width = workload->image_gen_params != nullptr ? workload->image_gen_params->width
+                               : workload->video_gen_params != nullptr ? workload->video_gen_params->width
+                                                                       : workload->width;
+    const int workload_height = workload->image_gen_params != nullptr ? workload->image_gen_params->height
+                                : workload->video_gen_params != nullptr ? workload->video_gen_params->height
+                                                                        : workload->height;
+    const int workload_frames = workload->video_gen_params != nullptr ? workload->video_gen_params->video_frames
+                                                                       : workload->video_frames;
+    const char* prompt         = workload->prompt != nullptr && workload->prompt[0] != '\0'
+                                     ? workload->prompt
+                                     : "a photo of an astronaut riding a horse on the moon";
+    const bool animatediff_video = sd_ctx->sd->animatediff_loaded &&
+                                   sd_version_supports_animatediff(sd_ctx->sd->version) &&
+                                   workload_frames > 1;
+    const bool video             = workload->video_gen_params != nullptr ||
+                                   (workload->image_gen_params == nullptr &&
+                                    (animatediff_video || sd_version_supports_video_generation(sd_ctx->sd->version)));
+
+    sd_tiling_params_t requested_tiling = workload->vae_tiling_params;
+    if (workload->image_gen_params != nullptr) {
+        requested_tiling = workload->image_gen_params->vae_tiling_params;
+    } else if (workload->video_gen_params != nullptr) {
+        requested_tiling = workload->video_gen_params->vae_tiling_params;
+    }
 
     // silence step progress during measurement, it would pollute stdout
     sd_progress_cb_t saved_progress_cb = sd_get_progress_callback();
@@ -4038,44 +4068,79 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     // the clip_vision and VAE encode graphs are built and measured too
     std::vector<uint8_t> dummy_image_data;
     sd_image_t dummy_init_image = {0, 0, 3, nullptr};
-    if (sd_ctx->sd->clip_vision != nullptr) {
-        dummy_image_data.assign((size_t)workload->width * workload->height * 3, 128);
-        dummy_init_image = {(uint32_t)workload->width, (uint32_t)workload->height, 3, dummy_image_data.data()};
+    if (sd_ctx->sd->clip_vision != nullptr && workload_width > 0 && workload_height > 0) {
+        dummy_image_data.assign((size_t)workload_width * workload_height * 3, 128);
+        dummy_init_image = {(uint32_t)workload_width, (uint32_t)workload_height, 3, dummy_image_data.data()};
     }
 
     auto measure = [&](const sd_tiling_params_t& tiling,
                        std::vector<GGMLRunner::graph_memory_measurement>& records) -> bool {
         records.clear();
-        GGMLRunner::set_measure_mode(true, &records);
+        struct MeasureModeGuard {
+            explicit MeasureModeGuard(std::vector<GGMLRunner::graph_memory_measurement>* records) {
+                GGMLRunner::set_measure_mode(true, records);
+            }
+            ~MeasureModeGuard() {
+                GGMLRunner::set_measure_mode(false);
+            }
+        } measure_mode_guard(&records);
         bool ok            = false;
         sd_image_t* images = nullptr;
         int num_images     = 0;
-        if (video) {
-            sd_vid_gen_params_t gen;
-            sd_vid_gen_params_init(&gen);
-            gen.prompt                     = prompt;
-            gen.width                      = workload->width;
-            gen.height                     = workload->height;
-            gen.video_frames               = std::max(workload->video_frames, 1);
-            gen.sample_params.sample_steps = 1;
-            gen.vae_tiling_params          = tiling;
-            gen.init_image                 = dummy_init_image;
-            sd_audio_t* audio              = nullptr;
-            ok                             = generate_video(sd_ctx, &gen, &images, &num_images, &audio);
-            free_sd_audio(audio);
-        } else {
-            sd_img_gen_params_t gen;
-            sd_img_gen_params_init(&gen);
-            gen.prompt                     = prompt;
-            gen.width                      = workload->width;
-            gen.height                     = workload->height;
-            gen.sample_params.sample_steps = 1;
-            gen.batch_count                = 1;
-            gen.vae_tiling_params          = tiling;
-            gen.ip_adapter_image           = dummy_init_image;  // image models have clip_vision only for ip-adapter
-            ok                             = generate_image(sd_ctx, &gen, &images, &num_images);
+        sd_audio_t* audio  = nullptr;
+        try {
+            if (video) {
+                sd_vid_gen_params_t gen;
+                if (workload->video_gen_params != nullptr) {
+                    gen = *workload->video_gen_params;
+                } else {
+                    sd_vid_gen_params_init(&gen);
+                    gen.prompt       = prompt;
+                    gen.width        = workload_width;
+                    gen.height       = workload_height;
+                    gen.video_frames = std::max(workload_frames, 1);
+                }
+                gen.sample_params.sample_steps        = 1;
+                gen.sample_params.custom_sigmas       = nullptr;
+                gen.sample_params.custom_sigmas_count = 0;
+                if (gen.high_noise_sample_params.sample_steps > 0) {
+                    gen.high_noise_sample_params.sample_steps        = 1;
+                    gen.high_noise_sample_params.custom_sigmas       = nullptr;
+                    gen.high_noise_sample_params.custom_sigmas_count = 0;
+                }
+                gen.vae_tiling_params = tiling;
+                if (gen.init_image.data == nullptr && dummy_init_image.data != nullptr) {
+                    gen.init_image = dummy_init_image;
+                }
+                ok = generate_video(sd_ctx, &gen, &images, &num_images, &audio);
+            } else {
+                sd_img_gen_params_t gen;
+                if (workload->image_gen_params != nullptr) {
+                    gen = *workload->image_gen_params;
+                } else {
+                    sd_img_gen_params_init(&gen);
+                    gen.prompt = prompt;
+                    gen.width  = workload_width;
+                    gen.height = workload_height;
+                }
+                gen.sample_params.sample_steps        = 1;
+                gen.sample_params.custom_sigmas       = nullptr;
+                gen.sample_params.custom_sigmas_count = 0;
+                gen.batch_count                       = 1;
+                gen.vae_tiling_params                 = tiling;
+                if (gen.ip_adapter_image.data == nullptr && dummy_init_image.data != nullptr) {
+                    gen.ip_adapter_image = dummy_init_image;  // image models have clip_vision only for ip-adapter
+                }
+                ok = generate_image(sd_ctx, &gen, &images, &num_images);
+            }
+        } catch (const std::bad_alloc&) {
+            LOG_ERROR("fit-params: host memory exhausted while materializing dry-run pipeline tensors");
+            ok = false;
+        } catch (const std::exception& error) {
+            LOG_ERROR("fit-params: dry-run pipeline failed: %s", error.what());
+            ok = false;
         }
-        GGMLRunner::set_measure_mode(false);
+        free_sd_audio(audio);
         if (images != nullptr) {
             for (int i = 0; i < num_images; i++) {
                 free(images[i].data);
@@ -4086,32 +4151,13 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     };
 
     std::vector<GGMLRunner::graph_memory_measurement> records;
-    if (!measure(workload->vae_tiling_params, records) || records.empty()) {
+    if (!measure(requested_tiling, records) || records.empty()) {
         LOG_ERROR("fit-params: measurement dry run failed");
         sd_set_progress_callback(saved_progress_cb, saved_progress_data);
         delete sd_ctx->sd;
         sd_ctx->sd = nullptr;
         return SD_FIT_ERROR;
     }
-
-    auto module_for_runner = [&](const GGMLRunner* runner) -> SDBackendModule {
-        StableDiffusionGGML* sd = sd_ctx->sd;
-        if (runner == static_cast<const GGMLRunner*>(sd->diffusion_model.get()) ||
-            runner == static_cast<const GGMLRunner*>(sd->high_noise_diffusion_model.get())) {
-            return SDBackendModule::DIFFUSION;
-        }
-        if (runner == static_cast<const GGMLRunner*>(sd->first_stage_model.get()) ||
-            runner == static_cast<const GGMLRunner*>(sd->preview_vae.get())) {
-            return SDBackendModule::VAE;
-        }
-        if (runner == static_cast<const GGMLRunner*>(sd->control_net.get())) {
-            return SDBackendModule::CONTROL_NET;
-        }
-        if (runner == static_cast<const GGMLRunner*>(sd->clip_vision.get())) {
-            return SDBackendModule::CLIP_VISION;
-        }
-        return SDBackendModule::TE;
-    };
 
     std::map<SDBackendModule, sd::fit_params::ModuleMemory> module_map;
     for (const auto& kv : sd_ctx->sd->fit_module_params_bytes) {
@@ -4120,10 +4166,15 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         m.params_bytes = kv.second;
     }
     for (const auto& record : records) {
-        SDBackendModule module = module_for_runner(record.runner);
+        SDBackendModule module = record.module;
         auto& m                = module_map[module];
         m.module               = module;
+        m.params_bytes         = std::max(m.params_bytes, record.params_bytes);
         m.compute_bytes        = std::max(m.compute_bytes, record.compute_bytes);
+        if (!record.split_segment_params_bytes.empty()) {
+            m.split_graph_segment_params.push_back(record.split_segment_params_bytes);
+            m.split_graph_segment_compute.push_back(record.split_segment_compute_bytes);
+        }
     }
     for (auto module : {SDBackendModule::DIFFUSION, SDBackendModule::TE}) {
         auto it = module_map.find(module);
@@ -4135,13 +4186,13 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     // price VAE tiling so the planner can fall back to it when full-resolution decode does not fit
     {
         auto it = module_map.find(SDBackendModule::VAE);
-        if (it != module_map.end() && !workload->vae_tiling_params.enabled) {
-            sd_tiling_params_t tiled = workload->vae_tiling_params;
+        if (it != module_map.end() && !requested_tiling.enabled) {
+            sd_tiling_params_t tiled = requested_tiling;
             tiled.enabled            = true;
             std::vector<GGMLRunner::graph_memory_measurement> tiled_records;
             if (measure(tiled, tiled_records)) {
                 for (const auto& record : tiled_records) {
-                    if (module_for_runner(record.runner) == SDBackendModule::VAE) {
+                    if (record.module == SDBackendModule::VAE) {
                         it->second.compute_bytes_tiled = std::max(it->second.compute_bytes_tiled, record.compute_bytes);
                     }
                 }

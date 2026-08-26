@@ -1751,8 +1751,11 @@ struct GGMLRunner {
         std::string desc;
         const GGMLRunner* runner = nullptr;
         ggml_backend_t backend   = nullptr;
+        SDBackendModule module   = SDBackendModule::TE;
         size_t compute_bytes     = 0;
         size_t params_bytes      = 0;
+        std::vector<size_t> split_segment_params_bytes;
+        std::vector<size_t> split_segment_compute_bytes;
         bool valid               = false;
     };
 
@@ -1794,9 +1797,10 @@ protected:
 
     // static so nested runners (e.g. text encoders inside a conditioner) are also
     // intercepted; measurement is single-threaded like the rest of param fitting
-    static inline bool measure_mode_                                          = false;
-    static inline std::vector<graph_memory_measurement>* measure_collector_   = nullptr;
+    static inline bool measure_mode_                                        = false;
+    static inline std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
     graph_memory_measurement last_measurement_;
+    SDBackendModule fit_module_ = SDBackendModule::TE;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -2334,6 +2338,28 @@ protected:
         last_measurement_.desc    = get_desc();
         last_measurement_.runner  = this;
         last_measurement_.backend = runtime_backend;
+        last_measurement_.module  = fit_module_;
+
+        const auto split_plan = sd::ggml_graph_cut::build_plan(runtime_backend,
+                                                               gf,
+                                                               params_tensor_set_,
+                                                               get_desc().c_str());
+        if (split_plan.valid && split_plan.has_cuts && split_plan.segments.size() > 1) {
+            std::unordered_set<ggml_tensor*> seen_split_params;
+            last_measurement_.split_segment_params_bytes.reserve(split_plan.segments.size());
+            last_measurement_.split_segment_compute_bytes.reserve(split_plan.segments.size());
+            for (const auto& segment : split_plan.segments) {
+                size_t segment_bytes = 0;
+                for (ggml_tensor* raw_param : sd::ggml_graph_cut::param_tensors(gf, segment)) {
+                    ggml_tensor* param = canonical_param_tensor(raw_param);
+                    if (param != nullptr && seen_split_params.insert(param).second) {
+                        segment_bytes += ggml_nbytes(param);
+                    }
+                }
+                last_measurement_.split_segment_params_bytes.push_back(segment_bytes);
+                last_measurement_.split_segment_compute_bytes.push_back(segment.compute_buffer_size);
+            }
+        }
         if (measure_collector_ != nullptr) {
             measure_collector_->push_back(last_measurement_);
         }
@@ -3493,6 +3519,10 @@ public:
 
     graph_memory_measurement get_last_measurement() const {
         return last_measurement_;
+    }
+
+    void set_fit_module(SDBackendModule module) {
+        fit_module_ = module;
     }
 
     void set_stream_layers_enabled(bool enabled) {

@@ -3,8 +3,10 @@
 `sd-fit-params` computes the CLI arguments that make a model fit into free
 device memory, using measured metadata-only dry runs: the real generation
 pipeline is executed once with graph building and memory measurement only, so
-no weight data is read and no buffers are allocated. The measured per-module
-memory is then packed against the free memory of every GPU device (minus a
+no weight data is read and no ggml weight or compute buffers are allocated.
+Shaped host tensors are still materialized to carry state between graph builds;
+allocation failures are reported as fit errors. The measured per-module memory
+is then packed against the free memory of every GPU device (minus a
 512 MiB margin, or the `--max-vram` budgets) and the resulting placement is
 printed to stdout as `--backend` / `--params-backend` / `--vae-tiling` /
 `--stream-layers` arguments.
@@ -43,8 +45,8 @@ Useful flags:
   disables graph splitting.
 - `--fit-print`: print the measured memory table to stdout instead of arguments
 - `-p`: representative prompt (token count affects text encoder memory)
-- model placement inputs such as `--type`, `--diffusion-fa`, `--vae-tiling`
-  flow into the measurement exactly as they would into a real run
+- generation inputs including init/control/reference images, LoRAs, hires, and
+  model placement options flow into the measurement as they would into a real run
 
 ## Planner order
 

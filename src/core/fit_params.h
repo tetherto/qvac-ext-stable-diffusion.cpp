@@ -16,6 +16,11 @@ namespace sd::fit_params {
         size_t compute_bytes       = 0;  // largest measured compute buffer among the module's graphs
         size_t compute_bytes_tiled = 0;  // VAE only: compute buffer with tiling enabled, 0 if not measured
         bool splittable            = false;
+        // Ordered, de-duplicated parameter bytes per graph-cut segment for each
+        // measured graph. Multi-device placement must fit these indivisible
+        // segments, not just the aggregate module size.
+        std::vector<std::vector<size_t>> split_graph_segment_params;
+        std::vector<std::vector<size_t>> split_graph_segment_compute;
     };
 
     struct FitPlan {

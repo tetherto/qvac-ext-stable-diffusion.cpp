@@ -96,6 +96,7 @@ bool UpscalerGGML::load_from_file(const std::string& esrgan_path,
         LOG_ERROR("init esrgan model from metadata failed: '%s'", esrgan_path.c_str());
         return false;
     }
+    esrgan_upscaler->set_fit_module(SDBackendModule::UPSCALER);
     esrgan_upscaler->set_max_graph_vram_bytes(max_graph_vram_bytes);
     esrgan_upscaler->set_stream_layers_enabled(stream_layers_enabled);
     if (direct) {

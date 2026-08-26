@@ -1,10 +1,17 @@
 #include <stdio.h>
+
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "stable-diffusion.h"
 
 #include "common/common.h"
+#include "common/media_io.h"
+
+namespace fs = std::filesystem;
 
 struct SDFitCliParams {
     bool verbose   = false;
@@ -49,6 +56,160 @@ static void fit_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     fflush(stderr);
 }
 
+static bool load_images_from_dir(const std::string& dir,
+                                 std::vector<SDImageOwner>& images,
+                                 int expected_width,
+                                 int expected_height,
+                                 int max_image_num,
+                                 bool verbose) {
+    if (!fs::exists(dir) || !fs::is_directory(dir)) {
+        fprintf(stderr, "'%s' is not a valid directory\n", dir.c_str());
+        return false;
+    }
+
+    std::vector<fs::directory_entry> entries;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (entry.is_regular_file()) {
+            entries.push_back(entry);
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.path().filename().string() < b.path().filename().string();
+    });
+
+    for (const auto& entry : entries) {
+        std::string path = entry.path().string();
+        std::string ext  = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (ext != ".jpg" && ext != ".jpeg" && ext != ".png" && ext != ".bmp" && ext != ".webp") {
+            continue;
+        }
+        if (verbose) {
+            fprintf(stderr, "load image %zu from '%s'\n", images.size(), path.c_str());
+        }
+        int width             = 0;
+        int height            = 0;
+        uint8_t* image_buffer = load_image_from_file(path.c_str(), width, height, expected_width, expected_height);
+        if (image_buffer == nullptr) {
+            fprintf(stderr, "load image from '%s' failed\n", path.c_str());
+            return false;
+        }
+        images.emplace_back(sd_image_t{static_cast<uint32_t>(width),
+                                       static_cast<uint32_t>(height),
+                                       3,
+                                       image_buffer});
+        if (max_image_num > 0 && static_cast<int>(images.size()) >= max_image_num) {
+            break;
+        }
+    }
+    return true;
+}
+
+static bool load_generation_inputs(SDGenerationParams& params, SDMode mode, bool verbose) {
+    auto load_image = [&](const std::string& path,
+                          SDImageOwner& image,
+                          bool resize_image = true,
+                          int channels      = 3) {
+        int width  = resize_image && params.width_and_height_are_set() ? params.width : 0;
+        int height = resize_image && params.width_and_height_are_set() ? params.height : 0;
+        if (!load_sd_image_from_file(image.put(), path.c_str(), width, height, channels)) {
+            fprintf(stderr, "failed to load image from '%s'\n", path.c_str());
+            return false;
+        }
+        params.set_width_and_height_if_unset(image.get().width, image.get().height);
+        return true;
+    };
+    auto load_audio = [&](const std::string& path, SDAudioOwner& audio) {
+        std::vector<float> samples;
+        uint32_t sample_rate = 0;
+        uint32_t channels    = 0;
+        if (!load_wav_from_file(path, samples, sample_rate, channels)) {
+            fprintf(stderr, "failed to load WAV audio from '%s'\n", path.c_str());
+            return false;
+        }
+        audio.reset(std::move(samples), sample_rate, channels);
+        return true;
+    };
+
+    if ((!params.init_image_path.empty() && !load_image(params.init_image_path, params.init_image)) ||
+        (!params.end_image_path.empty() && !load_image(params.end_image_path, params.end_image))) {
+        return false;
+    }
+    params.ref_images.clear();
+    for (const auto& path : params.ref_image_paths) {
+        SDImageOwner image({0, 0, 3, nullptr});
+        if (!load_image(path, image, false)) {
+            return false;
+        }
+        params.ref_images.push_back(std::move(image));
+    }
+    if (!params.validate(mode)) {
+        return false;
+    }
+
+    params.ref_videos.clear();
+    for (const auto& path : params.ref_video_paths) {
+        std::vector<SDImageOwner> frames;
+        if (!load_images_from_dir(path, frames, 0, 0, 0, verbose) || frames.empty()) {
+            fprintf(stderr, "failed to load reference video frames from '%s'\n", path.c_str());
+            return false;
+        }
+        params.ref_videos.push_back(std::move(frames));
+    }
+    params.ref_video_audios.clear();
+    params.ref_video_audios.resize(params.ref_videos.size());
+    for (size_t i = 0; i < params.ref_video_audio_paths.size(); ++i) {
+        if (!load_audio(params.ref_video_audio_paths[i], params.ref_video_audios[i])) {
+            return false;
+        }
+    }
+    params.ref_audios.clear();
+    params.ref_audios.resize(params.ref_audio_paths.size());
+    for (size_t i = 0; i < params.ref_audio_paths.size(); ++i) {
+        if (!load_audio(params.ref_audio_paths[i], params.ref_audios[i])) {
+            return false;
+        }
+    }
+
+    if (!params.mask_image_path.empty() &&
+        !load_image(params.mask_image_path, params.mask_image, true, 1)) {
+        return false;
+    }
+    if (!params.control_image_path.empty() &&
+        !load_image(params.control_image_path, params.control_image)) {
+        return false;
+    }
+    if (!params.ip_adapter_image_path.empty() &&
+        !load_image(params.ip_adapter_image_path, params.ip_adapter_image, false)) {
+        return false;
+    }
+    if (!params.control_video_path.empty()) {
+        params.control_frames.clear();
+        if (!load_images_from_dir(params.control_video_path,
+                                  params.control_frames,
+                                  params.get_resolved_width(),
+                                  params.get_resolved_height(),
+                                  params.video_frames,
+                                  verbose)) {
+            return false;
+        }
+    }
+    if (!params.pm_id_images_dir.empty()) {
+        params.pm_id_images.clear();
+        if (!load_images_from_dir(params.pm_id_images_dir,
+                                  params.pm_id_images,
+                                  0,
+                                  0,
+                                  0,
+                                  verbose)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int main(int argc, const char* argv[]) {
     if (argc > 1 && std::string(argv[1]) == "--version") {
         printf("%s\n", version_string().c_str());
@@ -73,6 +234,9 @@ int main(int argc, const char* argv[]) {
         print_usage(argc, argv, options_vec);
         return 1;
     }
+    if (!load_generation_inputs(gen_params, mode, fit_params.verbose)) {
+        return 1;
+    }
 
     sd_ctx_params_t sd_ctx_params = ctx_params.to_sd_ctx_params_t(false);
 
@@ -83,6 +247,16 @@ int main(int argc, const char* argv[]) {
     workload.height            = gen_params.get_resolved_height();
     workload.video_frames      = gen_params.video_frames;
     workload.vae_tiling_params = gen_params.vae_tiling_params;
+
+    sd_img_gen_params_t image_request;
+    sd_vid_gen_params_t video_request;
+    if (mode == VID_GEN) {
+        video_request             = gen_params.to_sd_vid_gen_params_t();
+        workload.video_gen_params = &video_request;
+    } else {
+        image_request             = gen_params.to_sd_img_gen_params_t();
+        workload.image_gen_params = &image_request;
+    }
 
     sd_fit_result_t result;
     enum sd_fit_status_t status = sd_fit_params(&sd_ctx_params, &workload, &result);

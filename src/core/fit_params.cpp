@@ -272,6 +272,53 @@ namespace sd::fit_params {
 
         // time-share plan: phases run sequentially, heavy modules load per phase and free after
         if (time_share) {
+            auto split_graphs_fit = [&](const ModuleMemory& m,
+                                        const std::vector<size_t>& device_idxs,
+                                        int64_t compute) {
+                if (m.split_graph_segment_params.empty()) {
+                    return false;
+                }
+                std::vector<int64_t> capacities;
+                capacities.reserve(device_idxs.size());
+                for (size_t device_idx : device_idxs) {
+                    capacities.push_back(std::max<int64_t>(devices[device_idx].budget_bytes - compute, 0));
+                }
+                for (const auto& graph_segments : m.split_graph_segment_params) {
+                    size_t device_pos = 0;
+                    int64_t used      = 0;
+                    for (size_t segment_bytes : graph_segments) {
+                        while (device_pos + 1 < capacities.size() &&
+                               used + (int64_t)segment_bytes > capacities[device_pos]) {
+                            ++device_pos;
+                            used = 0;
+                        }
+                        if (used + (int64_t)segment_bytes > capacities[device_pos]) {
+                            return false;
+                        }
+                        used += (int64_t)segment_bytes;
+                    }
+                }
+                return true;
+            };
+            auto streamed_graphs_fit = [&](const ModuleMemory& m, int64_t budget) {
+                if (m.split_graph_segment_params.empty() ||
+                    m.split_graph_segment_params.size() != m.split_graph_segment_compute.size()) {
+                    return false;
+                }
+                for (size_t graph_idx = 0; graph_idx < m.split_graph_segment_params.size(); ++graph_idx) {
+                    const auto& params  = m.split_graph_segment_params[graph_idx];
+                    const auto& compute = m.split_graph_segment_compute[graph_idx];
+                    if (params.size() != compute.size()) {
+                        return false;
+                    }
+                    for (size_t segment_idx = 0; segment_idx < params.size(); ++segment_idx) {
+                        if ((int64_t)params[segment_idx] + (int64_t)compute[segment_idx] > budget) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            };
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
                 Decision& decision    = decisions[mi];
@@ -311,19 +358,19 @@ namespace sd::fit_params {
                 }
                 if (m.splittable && devices.size() > 1) {
                     int64_t capacity = 0;
+                    std::vector<size_t> idxs(devices.size());
+                    for (size_t i = 0; i < idxs.size(); i++) {
+                        idxs[i] = i;
+                    }
+                    std::sort(idxs.begin(), idxs.end(), [&](size_t a, size_t b) {
+                        return devices[a].budget_bytes > devices[b].budget_bytes;
+                    });
                     for (const Device& d : devices) {
                         capacity += std::max<int64_t>(d.budget_bytes - (int64_t)m.compute_bytes, 0);
                     }
-                    if ((int64_t)m.params_bytes <= capacity) {
+                    if ((int64_t)m.params_bytes <= capacity && split_graphs_fit(m, idxs, (int64_t)m.compute_bytes)) {
                         decision.placed      = true;
                         decision.disk_params = true;
-                        std::vector<size_t> idxs(devices.size());
-                        for (size_t i = 0; i < idxs.size(); i++) {
-                            idxs[i] = i;
-                        }
-                        std::sort(idxs.begin(), idxs.end(), [&](size_t a, size_t b) {
-                            return devices[a].budget_bytes > devices[b].budget_bytes;
-                        });
                         decision.device_idxs = std::move(idxs);
                         continue;
                     }
@@ -331,6 +378,7 @@ namespace sd::fit_params {
                 if (m.module == SDBackendModule::DIFFUSION && m.splittable) {
                     for (size_t di = 0; di < devices.size(); di++) {
                         if (devices[di].graph_budget_enabled && devices[di].budget_bytes > 0 &&
+                            streamed_graphs_fit(m, devices[di].budget_bytes) &&
                             (best < 0 || devices[di].budget_bytes > devices[best].budget_bytes)) {
                             best = (int)di;
                         }

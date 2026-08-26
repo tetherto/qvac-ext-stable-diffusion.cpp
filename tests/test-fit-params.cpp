@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -28,6 +29,12 @@ sd::fit_params::ModuleMemory module(SDBackendModule module,
     memory.compute_bytes       = compute_gib * GiB;
     memory.splittable          = splittable;
     memory.compute_bytes_tiled = tiled_compute_mib * 1024ull * 1024ull;
+    if (splittable && params_gib > 0) {
+        std::vector<size_t> segment_params(params_gib, GiB);
+        std::vector<size_t> segment_compute(params_gib, std::min<size_t>(compute_gib, 1) * GiB);
+        memory.split_graph_segment_params.push_back(std::move(segment_params));
+        memory.split_graph_segment_compute.push_back(std::move(segment_compute));
+    }
     return memory;
 }
 
@@ -123,6 +130,40 @@ bool test_split_and_tiling() {
                   ("unexpected tiling params spec: " + tiling_plan.params_spec).c_str());
 }
 
+bool test_split_rejects_indivisible_segment() {
+    auto memory                        = module(SDBackendModule::DIFFUSION, 8, 2, true);
+    memory.split_graph_segment_params  = {{5 * GiB, 3 * GiB}};
+    memory.split_graph_segment_compute = {{1 * GiB, 1 * GiB}};
+
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:6,GPU1:6", 6.f, {memory}, &plan);
+    return expect(ok && plan.valid, "indivisible split fallback should remain valid") &&
+           expect(plan.stream_layers, "indivisible split should fall back to streaming") &&
+           expect(plan.runtime_spec == "diffusion=GPU0",
+                  ("unexpected indivisible fallback runtime spec: " + plan.runtime_spec).c_str()) &&
+           expect(plan.params_spec == "diffusion=cpu",
+                  ("unexpected indivisible fallback params spec: " + plan.params_spec).c_str());
+}
+
+bool test_public_result_is_initialized_on_error() {
+    sd_fit_workload_t workload;
+    sd_fit_workload_init(&workload);
+    if (!expect(workload.image_gen_params == nullptr && workload.video_gen_params == nullptr,
+                "fit workload request pointers should default to null")) {
+        return false;
+    }
+
+    sd_fit_result_t result{};
+    result.changed        = true;
+    result.backend        = reinterpret_cast<char*>(1);
+    result.params_backend = reinterpret_cast<char*>(1);
+    result.report         = reinterpret_cast<char*>(1);
+    const auto status     = sd_fit_params(nullptr, &workload, &result);
+    return expect(status == SD_FIT_ERROR, "invalid fit arguments should return SD_FIT_ERROR") &&
+           expect(!result.changed && result.backend == nullptr && result.params_backend == nullptr && result.report == nullptr,
+                  "fit result should be initialized before argument validation");
+}
+
 }  // namespace
 
 int main() {
@@ -130,7 +171,9 @@ int main() {
         !test_resident_spread() ||
         !test_time_share_cpu_fallback() ||
         !test_stream_layers_after_split_fails() ||
-        !test_split_and_tiling()) {
+        !test_split_and_tiling() ||
+        !test_split_rejects_indivisible_segment() ||
+        !test_public_result_is_initialized_on_error()) {
         return 1;
     }
     unsetenv("SD_FIT_DEBUG_DEVICES");

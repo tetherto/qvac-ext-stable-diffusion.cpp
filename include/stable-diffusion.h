@@ -507,6 +507,12 @@ typedef struct {
     int height;
     int video_frames;  // <= 1 for image generation
     sd_tiling_params_t vae_tiling_params;
+    // Optional complete representative request. Set at most one. When present,
+    // it supplies conditioning, LoRAs, hires, cache, and other generation inputs;
+    // the scalar fields above remain the fallback for callers that only need a
+    // basic text-to-image/video workload.
+    const sd_img_gen_params_t* image_gen_params;
+    const sd_vid_gen_params_t* video_gen_params;
 } sd_fit_workload_t;
 
 enum sd_fit_status_t {

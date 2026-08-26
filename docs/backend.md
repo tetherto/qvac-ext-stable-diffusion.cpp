@@ -147,9 +147,10 @@ still runs out of memory, tiling is enabled and the decode retried once.
 `sd-fit-params` is a standalone tool that derives the same kind of placement,
 but from *measured* memory instead of auto-fit's fixed compute reserves. It
 runs the real generation pipeline in a metadata-only dry run: every module's
-compute graphs are built for the requested width/height/frames and their
-compute buffer sizes are measured without allocating anything or reading any
-weight data, so a fit takes seconds even for very large models. Because
+compute graphs are built for the requested generation request and their
+compute buffer sizes are measured without allocating ggml weight/compute
+buffers or reading weight data. Shaped host tensors are materialized between
+graph builds, and allocation failures are returned as fit errors. Because
 compute memory depends on the generation parameters, they are inputs to the
 tool, and the printed arguments are valid for workloads up to that size.
 
