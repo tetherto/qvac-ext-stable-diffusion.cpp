@@ -6,8 +6,8 @@ pipeline is executed once with graph building and memory measurement only, so
 no weight data is read and no buffers are allocated. The measured per-module
 memory is then packed against the free memory of every GPU device (minus a
 512 MiB margin, or the `--max-vram` budgets) and the resulting placement is
-printed to stdout as `--backend` / `--params-backend` / `--vae-tiling`
-arguments.
+printed to stdout as `--backend` / `--params-backend` / `--vae-tiling` /
+`--stream-layers` arguments.
 
 Because compute memory depends on the generation parameters, pass the same
 width/height (and video frames) you intend to generate with. Example usage:
@@ -38,11 +38,57 @@ Useful flags:
 
 - `-W` / `-H` / `--video-frames`: the workload the fit must accommodate
 - `--max-vram <GiB>` or `--max-vram cuda0=8,cuda1=14`: per-device budgets
-  (default: free memory minus 512 MiB per device)
+  (default: free memory minus 512 MiB per device). Positive values cap the
+  graph-splitting budget, negative values use auto budget detection, and `0`
+  disables graph splitting.
 - `--fit-print`: print the measured memory table to stdout instead of arguments
 - `-p`: representative prompt (token count affects text encoder memory)
 - model placement inputs such as `--type`, `--diffusion-fa`, `--vae-tiling`
   flow into the measurement exactly as they would into a real run
+
+## Planner order
+
+The planner tries the fastest and most resident placements first, then falls
+back to progressively lower-VRAM choices. Device budgets come from the current
+free GPU memory minus a 512 MiB margin, unless `--max-vram` provides an explicit
+budget. If no GPU device is available, the tool keeps the default backend.
+
+The checks run in this order:
+
+1. Default placement: put every module on the first GPU. This succeeds when
+   the sum of all module parameters plus the largest measured compute buffer
+   fits that device budget. If it succeeds, the tool prints an empty line
+   because no extra CLI arguments are needed.
+2. Resident multi-device placement: sort modules by parameter size, largest
+   first, and place each module on one GPU while keeping all parameters resident.
+   For each GPU, resident parameters accumulate and only the largest compute
+   buffer assigned to that GPU is counted, because module compute phases do not
+   run at the same time.
+3. Resident VAE tiling: while trying the resident plan, if a module has a
+   measured tiled compute size and full-resolution compute does not fit, retry
+   that module with tiled compute. This currently applies to VAE measurements
+   and emits `--vae-tiling`.
+4. Time-share single-device placement: if resident placement fails, plan each
+   module as a separate phase. A module can run on a GPU with
+   `--params-backend <module>=disk` when its parameters plus its compute buffer
+   fit one device budget.
+5. Time-share VAE tiling: if the non-tiled time-share check fails and the module
+   has a tiled compute measurement, retry with the tiled compute size and emit
+   `--vae-tiling` if it fits.
+6. Multi-GPU split: if the module is splittable and more than one GPU exists,
+   split its parameters across all GPUs when the sum of each device budget minus
+   that module's compute buffer can hold the module parameters. The emitted
+   backend uses `&`, for example `diffusion=CUDA0&CUDA1`, and parameters are
+   loaded per phase from disk.
+7. Diffusion CPU params plus layer streaming: if split placement still does not
+   fit, and the module is a splittable diffusion module, choose the GPU with the
+   largest graph-splitting budget and keep diffusion parameters in CPU RAM while
+   streaming layers to the runtime GPU. This emits
+   `--params-backend diffusion=cpu`, preserves the original `--max-vram`, and
+   adds `--stream-layers`. This fallback is only considered when graph splitting
+   is enabled by a positive or negative `--max-vram`; `--max-vram 0` disables it.
+8. CPU runtime fallback: if none of the GPU options above fit, put the module on
+   the CPU runtime backend.
 
 If the current parameters already fit, the tool prints an empty line and
 reports that no changes are needed. If `--backend` / `--params-backend` are
