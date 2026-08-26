@@ -730,20 +730,57 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
     struct BackendRestoreGuard {
         GGMLRunner& runner;
         ggml_backend_t previous = nullptr;
-        ~BackendRestoreGuard() {
-            if (previous != nullptr) {
-                runner.switch_runtime_backend(previous);
-                LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
-                         runner.get_desc().c_str(), ggml_backend_name(previous));
-            }
+        std::vector<ggml_tensor*> params;
+        bool repoint(ggml_backend_t target) {
+            auto manager = runner.residency_manager.lock();
+            if (!manager || params.empty()) return true;
+            manager->clear_prefetched_params(reinterpret_cast<uintptr_t>(&runner));
+            manager->evict_compute_backend_params(params);
+            return manager->assign_compute_backend(params, target);
         }
+        bool begin(ggml_cgraph* graph) {
+            previous = runner.runtime_backend;
+            params = runner.collect_used_param_tensors(graph);
+            if (!repoint(runner.vae_cpu_fallback_backend)) {
+                LOG_ERROR("%s VAE CPU fallback failed to re-point graph params", runner.get_desc().c_str());
+                return false;
+            }
+            runner.switch_runtime_backend(runner.vae_cpu_fallback_backend);
+            return true;
+        }
+        bool restore() noexcept {
+            if (previous == nullptr) return true;
+            const auto target = previous;
+            previous = nullptr;
+            bool restored = false;
+            try {
+                restored = repoint(target);
+                runner.switch_runtime_backend(target);
+            } catch (...) {
+                restored = false;
+            }
+            if (!restored) {
+                LOG_ERROR("%s VAE CPU fallback could not restore graph params; disabling fallback and failing this call",
+                          runner.get_desc().c_str());
+                runner.vae_auto_cpu_fallback_enabled = false;
+                runner.last_compute_status_ = GGML_STATUS_FAILED;
+                return false;
+            }
+            LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
+                     runner.get_desc().c_str(), ggml_backend_name(target));
+            return true;
+        }
+        ~BackendRestoreGuard() { restore(); }
     } backend_restore{*this};
     graph_active_ = true;
     bool success  = false;
     struct GraphEndGuard {
         GGMLRunner& runner;
         const bool& success;
-        ~GraphEndGuard() {
+        bool finished = false;
+        void finish() {
+            if (finished) return;
+            finished = true;
             if (!runner.workspace_.segment_end()) {
                 runner.last_compute_status_ = GGML_STATUS_FAILED;
             }
@@ -756,6 +793,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
             }
             runner.sync_runtime_residency();
         }
+        ~GraphEndGuard() { finish(); }
     } graph_guard{*this, success};
 
     ggml_cgraph* graph = nullptr;
@@ -777,8 +815,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
             }
             LOG_WARN("%s VAE graph exceeds preflight capacity; routing only this graph to CPU: required=%zu bytes, budget=%zu bytes",
                      get_desc().c_str(), decision.required_bytes, decision.budget_bytes);
-            backend_restore.previous = runtime_backend;
-            switch_runtime_backend(vae_cpu_fallback_backend);
+            if (!backend_restore.begin(graph)) return std::nullopt;
             if (!prepare_compute_graph(get_graph, &graph)) return std::nullopt;
         } else if (decision.reason == sd::VaeGraphRouteReason::STATEFUL_GRAPH) {
             LOG_ERROR("%s VAE stateful graph exceeds preflight capacity and cannot change backends without migrating temporal state",
@@ -816,8 +853,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
         cut_cache_.clear();
         LOG_WARN("%s VAE runtime allocation or execution failed; retrying stateless graph on CPU",
                  get_desc().c_str());
-        backend_restore.previous = runtime_backend;
-        switch_runtime_backend(vae_cpu_fallback_backend);
+        if (!backend_restore.begin(graph)) return std::nullopt;
         if (!prepare_compute_graph(get_graph, &graph)) break;
         params_tensor_set_dirty_ = true;
         rebuild_params_tensor_set();
@@ -827,6 +863,8 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
         cache_.graph_end(true);
         last_compute_status_ = GGML_STATUS_SUCCESS;
     }
+    graph_guard.finish();
+    if (!backend_restore.restore()) return std::nullopt;
     return output;
 }
 
