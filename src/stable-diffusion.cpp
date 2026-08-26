@@ -4170,6 +4170,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
 
     result->report     = strdup(plan.report.c_str());
     result->vae_tiling = plan.vae_tiling;
+    result->stream_layers = plan.stream_layers;
     if (plan.changed && user_set_placement) {
         LOG_WARN("fit-params: changes needed but --backend/--params-backend already set by user, abort");
         return SD_FIT_FAILURE;

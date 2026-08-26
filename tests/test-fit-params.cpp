@@ -84,6 +84,20 @@ bool test_time_share_cpu_fallback() {
                   ("unexpected time-share params spec: " + plan.params_spec).c_str());
 }
 
+bool test_stream_layers_after_split_fails() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:6,GPU1:6", 6.f,
+                                {module(SDBackendModule::DIFFUSION, 20, 2, true)},
+                                &plan);
+    return expect(ok && plan.valid, "streaming plan should be valid") &&
+           expect(plan.time_share, "streaming plan should be a time-share fallback") &&
+           expect(plan.stream_layers, "streaming plan should request stream layers") &&
+           expect(plan.runtime_spec == "diffusion=GPU0",
+                  ("unexpected streaming runtime spec: " + plan.runtime_spec).c_str()) &&
+           expect(plan.params_spec == "diffusion=cpu",
+                  ("unexpected streaming params spec: " + plan.params_spec).c_str());
+}
+
 bool test_split_and_tiling() {
     sd::fit_params::FitPlan split_plan;
     bool split_ok = plan_with_devices("GPU0:6,GPU1:6", 6.f,
@@ -115,6 +129,7 @@ int main() {
     if (!test_default_fits() ||
         !test_resident_spread() ||
         !test_time_share_cpu_fallback() ||
+        !test_stream_layers_after_split_fails() ||
         !test_split_and_tiling()) {
         return 1;
     }

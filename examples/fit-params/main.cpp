@@ -114,6 +114,18 @@ int main(int argc, const char* argv[]) {
             }
             args += "--vae-tiling";
         }
+        if (result.stream_layers && strlen(SAFE_STR(sd_ctx_params.max_vram)) > 0) {
+            if (!args.empty()) {
+                args += " ";
+            }
+            args += std::string("--max-vram \"") + sd_ctx_params.max_vram + "\"";
+        }
+        if (result.stream_layers && !sd_ctx_params.stream_layers) {
+            if (!args.empty()) {
+                args += " ";
+            }
+            args += "--stream-layers";
+        }
         fprintf(stderr, "printing fitted CLI arguments to stdout...\n");
         printf("%s\n", args.c_str());
     } else {

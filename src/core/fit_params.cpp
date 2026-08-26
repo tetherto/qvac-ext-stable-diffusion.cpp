@@ -21,13 +21,16 @@ namespace sd::fit_params {
             int64_t free_bytes   = 0;
             int64_t total_bytes  = 0;
             int64_t budget_bytes = 0;
+            bool graph_budget_enabled = false;
         };
 
         struct Decision {
             bool placed      = false;
             bool on_cpu      = false;
             bool disk_params = false;
+            bool cpu_params  = false;
             bool tiled       = false;
+            bool stream_layers = false;
             std::vector<size_t> device_idxs;
         };
 
@@ -43,10 +46,13 @@ namespace sd::fit_params {
             }
             if (gib > 0.f) {
                 d.budget_bytes = std::min<int64_t>((int64_t)(gib * 1024.0 * 1024.0 * 1024.0), d.free_bytes);
+                d.graph_budget_enabled = true;
             } else if (gib < 0.f) {
                 d.budget_bytes = d.free_bytes + (int64_t)(gib * 1024.0 * 1024.0 * 1024.0);
+                d.graph_budget_enabled = true;
             } else {
                 d.budget_bytes = d.free_bytes - 512 * MiB;
+                d.graph_budget_enabled = false;
             }
             d.budget_bytes = std::max<int64_t>(d.budget_bytes, 0);
         }
@@ -322,6 +328,22 @@ namespace sd::fit_params {
                         continue;
                     }
                 }
+                if (m.module == SDBackendModule::DIFFUSION && m.splittable) {
+                    for (size_t di = 0; di < devices.size(); di++) {
+                        if (devices[di].graph_budget_enabled && devices[di].budget_bytes > 0 &&
+                            (best < 0 || devices[di].budget_bytes > devices[best].budget_bytes)) {
+                            best = (int)di;
+                        }
+                    }
+                    if (best >= 0) {
+                        decision.placed        = true;
+                        decision.cpu_params    = true;
+                        decision.stream_layers = true;
+                        plan->stream_layers    = true;
+                        decision.device_idxs.push_back((size_t)best);
+                        continue;
+                    }
+                }
                 decision.placed = true;
                 decision.on_cpu = true;
             }
@@ -348,10 +370,11 @@ namespace sd::fit_params {
                     target += " (split)";
                 }
             }
-            report_line(plan->report, "    %-12s -> %s%s%s",
+            report_line(plan->report, "    %-12s -> %s%s%s%s",
                         module_spec_key(m.module).c_str(),
                         target.c_str(),
                         decision.disk_params ? ", params on disk" : "",
+                        decision.cpu_params ? ", params on cpu, stream layers" : "",
                         decision.tiled ? ", vae tiling" : "");
         }
 
@@ -379,6 +402,8 @@ namespace sd::fit_params {
             append_assignment(plan->runtime_spec, key, device_list);
             if (decision.disk_params) {
                 append_assignment(plan->params_spec, key, "disk");
+            } else if (decision.cpu_params) {
+                append_assignment(plan->params_spec, key, "cpu");
             }
         }
 

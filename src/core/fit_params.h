@@ -23,6 +23,7 @@ namespace sd::fit_params {
         bool changed    = false;  // false = current/default placement already fits
         bool time_share = false;
         bool vae_tiling = false;
+        bool stream_layers = false;
         std::string runtime_spec;
         std::string params_spec;
         std::string report;  // human readable per-device / per-module table

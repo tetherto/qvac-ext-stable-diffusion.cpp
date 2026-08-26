@@ -520,6 +520,7 @@ typedef struct {
     char* backend;         // fitted runtime placement spec for --backend, owned by the result
     char* params_backend;  // fitted params placement spec for --params-backend, owned by the result
     bool vae_tiling;       // recommend enabling VAE tiling
+    bool stream_layers;    // recommend enabling graph-cut streaming layers
     char* report;          // human readable per-device / per-module memory table
 } sd_fit_result_t;
 
