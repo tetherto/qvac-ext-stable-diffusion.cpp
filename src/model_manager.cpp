@@ -1142,30 +1142,51 @@ bool ModelManager::assign_compute_backend(const std::vector<ggml_tensor*>& tenso
         return false;
     }
 
-    for (TensorState* state : required_states) {
+    // Two-phase: validate every state first, then commit. A mid-loop
+    // refusal must not leave a prefix of the tensors re-pointed at the new
+    // backend — a partially-moved set silently skips staging on the next
+    // graph (compute == params backend) and hands host pointers to device
+    // kernels, and the caller has no way to roll it back.
+    auto needs_move = [&](const TensorState* state, bool* params_follow_out) {
+        const bool params_follow_compute = state->params_follow_compute_backend ||
+                                           state->residency_mode == ResidencyMode::Disk;
+        if (params_follow_out != nullptr) {
+            *params_follow_out = params_follow_compute;
+        }
+        const bool compute_changes = state->compute_backend != compute_backend;
+        const bool params_changes  = params_follow_compute && state->params_backend != compute_backend;
+        return compute_changes || params_changes;
+    };
+
+    for (const TensorState* state : required_states) {
         if (state == nullptr || state->tensor == nullptr) {
             continue;
         }
-
-        const bool params_follow_compute = state->params_follow_compute_backend ||
-                                           state->residency_mode == ResidencyMode::Disk;
-        const bool compute_changes = state->compute_backend != compute_backend;
-        const bool params_changes  = params_follow_compute && state->params_backend != compute_backend;
-        if (!compute_changes && !params_changes) {
+        bool params_follow_compute = false;
+        if (!needs_move(state, &params_follow_compute)) {
             continue;
         }
-
         if (state->active_prepare_count > 0 || state->staged_to_compute_backend) {
             LOG_ERROR("model manager cannot move active tensor '%s' to another compute backend",
                       state->name.c_str());
             return false;
         }
+        const bool params_changes = params_follow_compute && state->params_backend != compute_backend;
         if (params_changes && state->loaded_to_params_backend) {
             LOG_ERROR("model manager cannot move loaded tensor '%s' to another params backend",
                       state->name.c_str());
             return false;
         }
+    }
 
+    for (TensorState* state : required_states) {
+        if (state == nullptr || state->tensor == nullptr) {
+            continue;
+        }
+        bool params_follow_compute = false;
+        if (!needs_move(state, &params_follow_compute)) {
+            continue;
+        }
         state->compute_backend = compute_backend;
         if (params_follow_compute) {
             state->params_backend = compute_backend;
