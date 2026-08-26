@@ -3194,6 +3194,90 @@ public:
         return ggml_get_tensor(cache_ctx, name.c_str());
     }
 
+    // Shared VAE-CPU-fallback reroute used by both entry points (the
+    // preflight route and the reactive retry after a failed
+    // execute_graph). prepare_params stages weights to each tensor state's
+    // registration-time compute backend, which does not follow a switched
+    // runtime: a CPU graph would read device-staged memory (SIGSEGV in
+    // ggml_vec_dot on a Vulkan-staged weight). So: collect the graph's
+    // params BEFORE switching (switch_runtime_backend frees the compute
+    // ctx that owns gf; the param pointers themselves are stable model
+    // tensors), quiesce this runner's prepared params, re-point the params
+    // at the fallback backend — with compute and params on the same
+    // backend staging is skipped and the CPU graph reads them in place —
+    // run the graph, then restore the runtime backend and the params on
+    // every exit path. A failed restore leaves the runner's weight
+    // bindings inconsistent with its runtime backend (the next graph would
+    // hand a host pointer to a GPU kernel), so it is fatal to the feature:
+    // disable the fallback and fail the call instead of returning output.
+    template <typename T>
+    std::optional<sd::Tensor<T>> compute_on_vae_fallback_backend(
+        ggml_cgraph* gf,
+        get_graph_cb_t get_graph,
+        int n_threads,
+        bool free_compute_buffer,
+        bool free_compute_params,
+        bool no_return) {
+        std::vector<ggml_tensor*> fallback_params = collect_used_param_tensors(gf);
+        ggml_backend_t previous_backend           = runtime_backend;
+        const std::string previous_backend_name   = ggml_backend_name(previous_backend);
+        const std::string cpu_backend_name        = ggml_backend_name(vae_fallback_backend);
+        auto repoint_params = [&](ggml_backend_t target) -> bool {
+            runner_done();
+            auto manager = weight_manager.lock();
+            if (manager == nullptr || fallback_params.empty()) {
+                return true;
+            }
+            return manager->assign_compute_backend(fallback_params, target);
+        };
+        switch_runtime_backend(vae_fallback_backend);
+        if (!repoint_params(vae_fallback_backend)) {
+            // assign_compute_backend validates before it commits, so a
+            // refusal here means nothing moved; switching back restores
+            // the exact pre-call state.
+            LOG_ERROR("%s VAE CPU fallback failed to re-point graph params to %s",
+                      get_desc().c_str(),
+                      cpu_backend_name.c_str());
+            switch_runtime_backend(previous_backend);
+            free_compute_ctx();
+            return std::nullopt;
+        }
+        auto restore = [&]() -> bool {
+            switch_runtime_backend(previous_backend);
+            return repoint_params(previous_backend);
+        };
+        auto on_failed_restore = [&]() {
+            LOG_ERROR(
+                "%s VAE CPU fallback could not restore graph params to %s; "
+                "weight bindings no longer match the runtime backend — "
+                "disabling VAE auto CPU fallback and failing this call",
+                get_desc().c_str(),
+                previous_backend_name.c_str());
+            vae_auto_cpu_fallback_enabled = false;
+        };
+        try {
+            auto output = compute<T>(get_graph,
+                                     n_threads,
+                                     false,
+                                     free_compute_buffer,
+                                     free_compute_params,
+                                     no_return);
+            if (!restore()) {
+                on_failed_restore();
+                return std::nullopt;
+            }
+            LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
+                     get_desc().c_str(),
+                     previous_backend_name.c_str());
+            return output;
+        } catch (...) {
+            if (!restore()) {
+                on_failed_restore();
+            }
+            throw;
+        }
+    }
+
     template <typename T>
     std::optional<sd::Tensor<T>> compute(get_graph_cb_t get_graph,
                                          int n_threads,
@@ -3242,27 +3326,18 @@ public:
                 has_stateful_cache) {
                 return std::nullopt;
             }
-            ggml_backend_t previous_backend = runtime_backend;
-            const std::string previous_backend_name =
-                ggml_backend_name(previous_backend);
             LOG_WARN("%s VAE %s on %s; retrying stateless graph on CPU",
                      get_desc().c_str(),
                      failure,
-                     previous_backend_name.c_str());
-            switch_runtime_backend(vae_fallback_backend);
-            try {
-                auto output = compute<T>(get_graph,
-                                         n_threads,
-                                         false,
-                                         free_compute_buffer,
-                                         free_compute_params,
-                                         no_return);
-                switch_runtime_backend(previous_backend);
-                return output;
-            } catch (...) {
-                switch_runtime_backend(previous_backend);
-                throw;
-            }
+                     ggml_backend_name(runtime_backend));
+            // gf is still owned by the (unfreed) compute ctx here; the
+            // shared reroute collects its params before switching.
+            return compute_on_vae_fallback_backend<T>(gf,
+                                                      get_graph,
+                                                      n_threads,
+                                                      free_compute_buffer,
+                                                      free_compute_params,
+                                                      no_return);
         };
 
         if (vae_auto_cpu_fallback_enabled &&
@@ -3295,8 +3370,7 @@ public:
                 capacity.free_memory_ratio);
 
             if (decision.use_cpu_fallback()) {
-                ggml_backend_t previous_backend         = runtime_backend;
-                const std::string previous_backend_name = ggml_backend_name(previous_backend);
+                const std::string previous_backend_name = ggml_backend_name(runtime_backend);
                 const std::string cpu_backend_name      = ggml_backend_name(vae_fallback_backend);
 
                 LOG_WARN(
@@ -3315,59 +3389,12 @@ public:
                     previous_backend_name.c_str(),
                     cpu_backend_name.c_str());
 
-                // prepare_params stages weights to each tensor state's
-                // registration-time compute backend, which does not follow
-                // the switched runtime: the CPU graph would read
-                // device-staged memory (SIGSEGV in ggml_vec_dot on a
-                // Vulkan-staged weight). Quiesce this runner's prepared
-                // params and re-point the graph's params at the fallback
-                // backend — with compute and params on the same backend,
-                // staging is skipped and the CPU graph reads the params in
-                // place. Restore on every exit path so later graphs stage
-                // back to the real runtime backend. Collect the params
-                // BEFORE switching: switch_runtime_backend frees the compute
-                // ctx that owns gf (the param pointers themselves are stable
-                // model tensors).
-                std::vector<ggml_tensor*> fallback_params = collect_used_param_tensors(gf);
-                switch_runtime_backend(vae_fallback_backend);
-                auto repoint_params = [&](ggml_backend_t target) -> bool {
-                    runner_done();
-                    auto manager = weight_manager.lock();
-                    if (manager == nullptr || fallback_params.empty()) {
-                        return true;
-                    }
-                    return manager->assign_compute_backend(fallback_params, target);
-                };
-                if (!repoint_params(vae_fallback_backend)) {
-                    LOG_ERROR("%s VAE CPU fallback failed to re-point graph params to %s",
-                              get_desc().c_str(),
-                              cpu_backend_name.c_str());
-                    switch_runtime_backend(previous_backend);
-                    free_compute_ctx();
-                    return std::nullopt;
-                }
-                try {
-                    auto output = compute<T>(get_graph,
-                                             n_threads,
-                                             false,
-                                             free_compute_buffer,
-                                             free_compute_params,
-                                             no_return);
-                    switch_runtime_backend(previous_backend);
-                    if (!repoint_params(previous_backend)) {
-                        LOG_WARN("%s VAE CPU fallback could not restore graph params to %s",
-                                 get_desc().c_str(),
-                                 previous_backend_name.c_str());
-                    }
-                    LOG_INFO("%s VAE CPU fallback complete; restored runtime backend %s",
-                             get_desc().c_str(),
-                             previous_backend_name.c_str());
-                    return output;
-                } catch (...) {
-                    switch_runtime_backend(previous_backend);
-                    repoint_params(previous_backend);
-                    throw;
-                }
+                return compute_on_vae_fallback_backend<T>(gf,
+                                                          get_graph,
+                                                          n_threads,
+                                                          free_compute_buffer,
+                                                          free_compute_params,
+                                                          no_return);
             }
 
             if (decision.reason == sd::VaeGraphRouteReason::STATEFUL_GRAPH) {
