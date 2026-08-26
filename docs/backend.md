@@ -169,7 +169,13 @@ changes would be needed, the tool fails instead of overriding them.
 
 The same measurement is available to library users through `sd_fit_params()`
 in `stable-diffusion.h`, which takes the context params plus an
-`sd_fit_workload_t` and returns the derived specs and a report.
+`sd_fit_workload_t` and returns the derived specs and a report. The workload can
+be the simple scalar fields (`prompt`, `width`, `height`, `video_frames`) or one
+complete representative request through `image_gen_params` or
+`video_gen_params`. Use the full request form when conditioning, LoRAs, hires,
+cache settings, image/video/audio inputs, or VAE tiling settings materially
+affect the graph being measured. Result strings are owned by `sd_fit_result_t`
+and must be released with `sd_fit_result_free()`.
 
 ## Modules
 

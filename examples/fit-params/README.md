@@ -100,6 +100,77 @@ them.
 See `docs/backend.md` for the placement spec syntax and the heuristic
 `--auto-fit` alternative built into `sd-cli`.
 
+## Library API
+
+Library callers can use the same measured fitting through `sd_fit_params()` in
+`stable-diffusion.h`. Start from initialized context params and workload params,
+then free the result when done:
+
+```c
+sd_ctx_params_t ctx;
+sd_ctx_params_init(&ctx);
+ctx.diffusion_model_path = "/models/model.gguf";
+ctx.max_vram = "8";
+
+sd_fit_workload_t workload;
+sd_fit_workload_init(&workload);
+workload.prompt = "a cat";
+workload.width = 1024;
+workload.height = 1024;
+workload.video_frames = 1;
+
+sd_fit_result_t result;
+sd_fit_status_t status = sd_fit_params(&ctx, &workload, &result);
+if (status == SD_FIT_SUCCESS && result.changed) {
+    printf("backend=%s\n", result.backend ? result.backend : "");
+    printf("params_backend=%s\n", result.params_backend ? result.params_backend : "");
+    printf("vae_tiling=%d\n", result.vae_tiling);
+    printf("stream_layers=%d\n", result.stream_layers);
+}
+sd_fit_result_free(&result);
+```
+
+For simple text-to-image or text-to-video fitting, the scalar workload fields
+are enough. `sd_fit_workload_init()` defaults to a 512x512 image workload
+(`video_frames = 1`) and default VAE tiling params.
+
+For the most accurate plan, pass a full representative request:
+
+```c
+sd_img_gen_params_t image_request;
+sd_img_gen_params_init(&image_request);
+image_request.prompt = "a cat";
+image_request.width = 1024;
+image_request.height = 1024;
+image_request.batch_count = 1;
+image_request.vae_tiling_params = workload.vae_tiling_params;
+
+workload.image_gen_params = &image_request;
+```
+
+Use `workload.video_gen_params` with `sd_vid_gen_params_t` for video. Set at
+most one of `image_gen_params` and `video_gen_params`; setting both returns
+`SD_FIT_ERROR`. When a full request is present, it supplies conditioning,
+LoRAs, hires/cache options, image/video/audio inputs, VAE tiling settings, and
+other generation fields. The scalar workload fields remain as a fallback for
+callers that only need a basic request.
+
+`sd_fit_params()` returns:
+
+- `SD_FIT_SUCCESS`: a placement was found, or the current/default placement
+  already fits.
+- `SD_FIT_FAILURE`: no placement was projected to fit, or placement was needed
+  but `ctx.backend` / `ctx.params_backend` was already set by the caller.
+- `SD_FIT_ERROR`: invalid inputs or a hard measurement error such as an
+  unreadable model.
+
+`sd_fit_result_t` owns `backend`, `params_backend`, and `report`; always call
+`sd_fit_result_free()`. If `result.changed` is false, the current/default
+placement already fits and the placement strings are null. If
+`result.stream_layers` is true, preserve the caller's nonzero `ctx.max_vram`
+when applying the result and also enable `--stream-layers`; the max-VRAM value
+is not duplicated in the result.
+
 ## Debugging the planner
 
 Set `SD_FIT_DEBUG_DEVICES` to plan against simulated devices instead of the
