@@ -974,9 +974,16 @@ public:
     // return false to fall back to the RNG.
     std::function<bool(int block, int step, float* dst, size_t n)> noise_override;
 
-    std::shared_ptr<ModelManager> model_manager;
     std::unique_ptr<AbotWorldRunner> runner;
     std::shared_ptr<AbotTinyVideoAutoEncoder> tae;
+    // Declared after the runners on purpose (mirrors StableDiffusionGGML):
+    // ~ModelManager force-frees the param storage blocks and writes through
+    // the registered ggml tensors (state->tensor->buffer = nullptr), which
+    // live in the runner/tae contexts above. Members destroy in reverse
+    // declaration order and the runners hold only weak_ptr refs to the
+    // manager, so this ordering runs ~ModelManager first, while every
+    // registered tensor is still alive.
+    std::shared_ptr<ModelManager> model_manager;
 
     // finalized walk state (per-frame ggml {W,H,C} latents, torch [C,H,W] flat)
     std::vector<std::vector<float>> history;
