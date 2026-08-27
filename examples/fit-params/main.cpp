@@ -107,103 +107,138 @@ static bool load_images_from_dir(const std::string& dir,
     return true;
 }
 
+static bool load_image_file(SDGenerationParams& params,
+                            const std::string& path,
+                            SDImageOwner& image,
+                            bool resize_image = true,
+                            int channels      = 3) {
+    if (path.empty()) {
+        return true;
+    }
+
+    const bool use_size = resize_image && params.width_and_height_are_set();
+    if (!load_sd_image_from_file(image.put(),
+                                 path.c_str(),
+                                 use_size ? params.width : 0,
+                                 use_size ? params.height : 0,
+                                 channels)) {
+        fprintf(stderr, "failed to load image from '%s'\n", path.c_str());
+        return false;
+    }
+    params.set_width_and_height_if_unset(image.get().width, image.get().height);
+    return true;
+}
+
+static bool load_audio_file(const std::string& path, SDAudioOwner& audio) {
+    std::vector<float> samples;
+    uint32_t sample_rate = 0;
+    uint32_t channels    = 0;
+    if (!load_wav_from_file(path, samples, sample_rate, channels)) {
+        fprintf(stderr, "failed to load WAV audio from '%s'\n", path.c_str());
+        return false;
+    }
+    audio.reset(std::move(samples), sample_rate, channels);
+    return true;
+}
+
+using LoadInput = bool (*)(SDGenerationParams&, SDMode, bool);
+
+struct LoadInputHandler {
+    const char* name;
+    LoadInput load;
+};
+
+static const LoadInputHandler LOAD_INPUT_HANDLERS[] = {
+    {"init_image", [](SDGenerationParams& params, SDMode, bool) {
+         return load_image_file(params, params.init_image_path, params.init_image);
+     }},
+    {"end_image", [](SDGenerationParams& params, SDMode, bool) {
+         return load_image_file(params, params.end_image_path, params.end_image);
+     }},
+    {"ref_images", [](SDGenerationParams& params, SDMode, bool) {
+         params.ref_images.clear();
+         for (const auto& path : params.ref_image_paths) {
+             SDImageOwner image({0, 0, 3, nullptr});
+             if (!load_image_file(params, path, image, false)) {
+                 return false;
+             }
+             params.ref_images.push_back(std::move(image));
+         }
+         return true;
+     }},
+    {"validate", [](SDGenerationParams& params, SDMode mode, bool) {
+         return params.validate(mode);
+     }},
+    {"ref_videos", [](SDGenerationParams& params, SDMode, bool verbose) {
+         params.ref_videos.clear();
+         for (const auto& path : params.ref_video_paths) {
+             std::vector<SDImageOwner> frames;
+             if (!load_images_from_dir(path, frames, 0, 0, 0, verbose) || frames.empty()) {
+                 fprintf(stderr, "failed to load reference video frames from '%s'\n", path.c_str());
+                 return false;
+             }
+             params.ref_videos.push_back(std::move(frames));
+         }
+         return true;
+     }},
+    {"ref_video_audios", [](SDGenerationParams& params, SDMode, bool) {
+         params.ref_video_audios.clear();
+         params.ref_video_audios.resize(params.ref_videos.size());
+         for (size_t i = 0; i < params.ref_video_audio_paths.size(); ++i) {
+             if (!load_audio_file(params.ref_video_audio_paths[i], params.ref_video_audios[i])) {
+                 return false;
+             }
+         }
+         return true;
+     }},
+    {"ref_audios", [](SDGenerationParams& params, SDMode, bool) {
+         params.ref_audios.clear();
+         params.ref_audios.resize(params.ref_audio_paths.size());
+         for (size_t i = 0; i < params.ref_audio_paths.size(); ++i) {
+             if (!load_audio_file(params.ref_audio_paths[i], params.ref_audios[i])) {
+                 return false;
+             }
+         }
+         return true;
+     }},
+    {"mask_image", [](SDGenerationParams& params, SDMode, bool) {
+         return load_image_file(params, params.mask_image_path, params.mask_image, true, 1);
+     }},
+    {"control_image", [](SDGenerationParams& params, SDMode, bool) {
+         return load_image_file(params, params.control_image_path, params.control_image);
+     }},
+    {"ip_adapter_image", [](SDGenerationParams& params, SDMode, bool) {
+         return load_image_file(params, params.ip_adapter_image_path, params.ip_adapter_image, false);
+     }},
+    {"control_video", [](SDGenerationParams& params, SDMode, bool verbose) {
+         if (params.control_video_path.empty()) {
+             return true;
+         }
+         params.control_frames.clear();
+         return load_images_from_dir(params.control_video_path,
+                                     params.control_frames,
+                                     params.get_resolved_width(),
+                                     params.get_resolved_height(),
+                                     params.video_frames,
+                                     verbose);
+     }},
+    {"pm_id_images", [](SDGenerationParams& params, SDMode, bool verbose) {
+         if (params.pm_id_images_dir.empty()) {
+             return true;
+         }
+         params.pm_id_images.clear();
+         return load_images_from_dir(params.pm_id_images_dir,
+                                     params.pm_id_images,
+                                     0,
+                                     0,
+                                     0,
+                                     verbose);
+     }},
+};
+
 static bool load_generation_inputs(SDGenerationParams& params, SDMode mode, bool verbose) {
-    auto load_image = [&](const std::string& path,
-                          SDImageOwner& image,
-                          bool resize_image = true,
-                          int channels      = 3) {
-        int width  = resize_image && params.width_and_height_are_set() ? params.width : 0;
-        int height = resize_image && params.width_and_height_are_set() ? params.height : 0;
-        if (!load_sd_image_from_file(image.put(), path.c_str(), width, height, channels)) {
-            fprintf(stderr, "failed to load image from '%s'\n", path.c_str());
-            return false;
-        }
-        params.set_width_and_height_if_unset(image.get().width, image.get().height);
-        return true;
-    };
-    auto load_audio = [&](const std::string& path, SDAudioOwner& audio) {
-        std::vector<float> samples;
-        uint32_t sample_rate = 0;
-        uint32_t channels    = 0;
-        if (!load_wav_from_file(path, samples, sample_rate, channels)) {
-            fprintf(stderr, "failed to load WAV audio from '%s'\n", path.c_str());
-            return false;
-        }
-        audio.reset(std::move(samples), sample_rate, channels);
-        return true;
-    };
-
-    if ((!params.init_image_path.empty() && !load_image(params.init_image_path, params.init_image)) ||
-        (!params.end_image_path.empty() && !load_image(params.end_image_path, params.end_image))) {
-        return false;
-    }
-    params.ref_images.clear();
-    for (const auto& path : params.ref_image_paths) {
-        SDImageOwner image({0, 0, 3, nullptr});
-        if (!load_image(path, image, false)) {
-            return false;
-        }
-        params.ref_images.push_back(std::move(image));
-    }
-    if (!params.validate(mode)) {
-        return false;
-    }
-
-    params.ref_videos.clear();
-    for (const auto& path : params.ref_video_paths) {
-        std::vector<SDImageOwner> frames;
-        if (!load_images_from_dir(path, frames, 0, 0, 0, verbose) || frames.empty()) {
-            fprintf(stderr, "failed to load reference video frames from '%s'\n", path.c_str());
-            return false;
-        }
-        params.ref_videos.push_back(std::move(frames));
-    }
-    params.ref_video_audios.clear();
-    params.ref_video_audios.resize(params.ref_videos.size());
-    for (size_t i = 0; i < params.ref_video_audio_paths.size(); ++i) {
-        if (!load_audio(params.ref_video_audio_paths[i], params.ref_video_audios[i])) {
-            return false;
-        }
-    }
-    params.ref_audios.clear();
-    params.ref_audios.resize(params.ref_audio_paths.size());
-    for (size_t i = 0; i < params.ref_audio_paths.size(); ++i) {
-        if (!load_audio(params.ref_audio_paths[i], params.ref_audios[i])) {
-            return false;
-        }
-    }
-
-    if (!params.mask_image_path.empty() &&
-        !load_image(params.mask_image_path, params.mask_image, true, 1)) {
-        return false;
-    }
-    if (!params.control_image_path.empty() &&
-        !load_image(params.control_image_path, params.control_image)) {
-        return false;
-    }
-    if (!params.ip_adapter_image_path.empty() &&
-        !load_image(params.ip_adapter_image_path, params.ip_adapter_image, false)) {
-        return false;
-    }
-    if (!params.control_video_path.empty()) {
-        params.control_frames.clear();
-        if (!load_images_from_dir(params.control_video_path,
-                                  params.control_frames,
-                                  params.get_resolved_width(),
-                                  params.get_resolved_height(),
-                                  params.video_frames,
-                                  verbose)) {
-            return false;
-        }
-    }
-    if (!params.pm_id_images_dir.empty()) {
-        params.pm_id_images.clear();
-        if (!load_images_from_dir(params.pm_id_images_dir,
-                                  params.pm_id_images,
-                                  0,
-                                  0,
-                                  0,
-                                  verbose)) {
+    for (const auto& handler : LOAD_INPUT_HANDLERS) {
+        if (!handler.load(params, mode, verbose)) {
             return false;
         }
     }
