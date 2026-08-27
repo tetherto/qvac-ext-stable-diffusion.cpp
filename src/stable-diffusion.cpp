@@ -4093,10 +4093,18 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         requested_tiling = workload->video_gen_params->vae_tiling_params;
     }
 
-    // silence step progress during measurement, it would pollute stdout
-    sd_progress_cb_t saved_progress_cb = sd_get_progress_callback();
-    void* saved_progress_data          = sd_get_progress_callback_data();
-    sd_set_progress_callback([](int, int, float, void*) {}, nullptr);
+    // Silence progress from this dry run without replacing the process-wide
+    // callback used by concurrent generation calls.
+    struct ProgressSuppressionGuard {
+        ProgressSuppressionGuard()
+            : previous(sd_get_progress_suppressed()) {
+            sd_set_progress_suppressed(true);
+        }
+        ~ProgressSuppressionGuard() {
+            sd_set_progress_suppressed(previous);
+        }
+        bool previous;
+    } progress_suppression_guard;
 
     // run the real generation pipeline in measure mode: every runner builds its graphs,
     // records memory requirements and returns shaped zero tensors, no weights are read
@@ -4194,7 +4202,6 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     std::vector<GGMLRunner::graph_memory_measurement> records;
     if (!measure(requested_tiling, records) || records.empty()) {
         LOG_ERROR("fit-params: measurement dry run failed");
-        sd_set_progress_callback(saved_progress_cb, saved_progress_data);
         delete sd_ctx->sd;
         sd_ctx->sd = nullptr;
         return SD_FIT_ERROR;
@@ -4245,8 +4252,6 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
             }
         }
     }
-
-    sd_set_progress_callback(saved_progress_cb, saved_progress_data);
 
     const bool user_set_placement = strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
                                     strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0;

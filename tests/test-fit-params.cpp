@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/fit_params.h"
@@ -248,6 +249,21 @@ bool test_measure_mode_preserves_outputs_and_projects_cache() {
     return passed;
 }
 
+bool test_measure_mode_is_thread_local() {
+    std::vector<GGMLRunner::graph_memory_measurement> records;
+    GGMLRunner::set_measure_mode(true, &records);
+    const bool enabled_on_calling_thread = GGMLRunner::measure_mode_enabled();
+    bool enabled_on_other_thread         = true;
+    std::thread other_thread([&]() {
+        enabled_on_other_thread = GGMLRunner::measure_mode_enabled();
+    });
+    other_thread.join();
+    GGMLRunner::set_measure_mode(false);
+
+    return expect(enabled_on_calling_thread, "measurement should be enabled on the fitting thread") &&
+           expect(!enabled_on_other_thread, "measurement must not affect another thread");
+}
+
 bool test_public_result_is_initialized_on_error() {
     sd_fit_workload_t workload;
     sd_fit_workload_init(&workload);
@@ -280,6 +296,7 @@ int main() {
         !test_controlnet_compute_is_concurrent() ||
         !test_cpu_fallback_checks_host_memory() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
+        !test_measure_mode_is_thread_local() ||
         !test_public_result_is_initialized_on_error()) {
         return 1;
     }

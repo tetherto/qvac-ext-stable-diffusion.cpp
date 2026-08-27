@@ -1796,11 +1796,11 @@ protected:
     std::unordered_set<const ggml_tensor*> runner_param_tensor_set;
     bool params_tensor_set_dirty_ = true;
 
-    // static so nested runners (e.g. text encoders inside a conditioner) are also
-    // intercepted; measurement is single-threaded like the rest of param fitting
-    static inline bool measure_mode_                                        = false;
-    static inline std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
-    static inline size_t measure_generation_                                = 0;
+    // Thread-local so nested runners in one fitting call are intercepted without
+    // affecting generation or fitting calls running on other threads.
+    static inline thread_local bool measure_mode_                                        = false;
+    static inline thread_local std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
+    static inline thread_local size_t measure_generation_                                = 0;
     graph_memory_measurement last_measurement_;
     SDBackendModule fit_module_ = SDBackendModule::UNSET;
     size_t measure_generation_seen_ = 0;

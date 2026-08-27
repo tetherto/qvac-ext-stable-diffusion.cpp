@@ -8,7 +8,7 @@ add_test(NAME test-vae-routing COMMAND test-vae-routing)
 
 add_executable(test-fit-params test-fit-params.cpp)
 target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(test-fit-params PRIVATE stable-diffusion)
+target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-fit-params COMMAND test-fit-params)
 
 add_executable(test-ltx-vae-temporal test-ltx-vae-temporal.cpp)
