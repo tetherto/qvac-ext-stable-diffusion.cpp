@@ -1751,8 +1751,9 @@ struct GGMLRunner {
         std::string desc;
         const GGMLRunner* runner = nullptr;
         ggml_backend_t backend   = nullptr;
-        SDBackendModule module   = SDBackendModule::TE;
+        SDBackendModule module   = SDBackendModule::UNSET;
         size_t compute_bytes     = 0;
+        size_t cache_bytes       = 0;
         size_t params_bytes      = 0;
         std::vector<size_t> split_segment_params_bytes;
         std::vector<size_t> split_segment_compute_bytes;
@@ -1799,8 +1800,17 @@ protected:
     // intercepted; measurement is single-threaded like the rest of param fitting
     static inline bool measure_mode_                                        = false;
     static inline std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
+    static inline size_t measure_generation_                                = 0;
     graph_memory_measurement last_measurement_;
-    SDBackendModule fit_module_ = SDBackendModule::TE;
+    SDBackendModule fit_module_ = SDBackendModule::UNSET;
+    size_t measure_generation_seen_ = 0;
+
+    struct measured_cache_tensor {
+        ggml_type type = GGML_TYPE_F32;
+        std::vector<int64_t> shape;
+        size_t alloc_bytes = 0;
+    };
+    std::map<std::string, measured_cache_tensor> measured_cache_tensors_;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -2329,6 +2339,35 @@ protected:
         last_measurement_.compute_bytes = sizes[0];
         ggml_gallocr_free(allocr);
 
+        ggml_backend_buffer_type_t cache_buft =
+            ggml_backend_get_default_buffer_type(runtime_backend);
+        const size_t cache_alignment = ggml_backend_buft_get_alignment(cache_buft);
+        size_t previous_cache_bytes = 0;
+        for (const auto& entry : measured_cache_tensors_) {
+            previous_cache_bytes += entry.second.alloc_bytes;
+        }
+        const bool replaces_cache_buffer = !cache_tensor_map.empty();
+        for (const auto& entry : cache_tensor_map) {
+            ggml_tensor* tensor = sd::ggml_graph_cut::cache_source_tensor(entry.second);
+            if (tensor == nullptr) {
+                continue;
+            }
+            measured_cache_tensor measured;
+            measured.type = tensor->type;
+            measured.shape.assign(tensor->ne, tensor->ne + ggml_n_dims(tensor));
+            measured.alloc_bytes = ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+            if (cache_alignment > 0) {
+                measured.alloc_bytes = GGML_PAD(measured.alloc_bytes, cache_alignment);
+            }
+            measured_cache_tensors_[entry.first] = std::move(measured);
+        }
+        for (const auto& entry : measured_cache_tensors_) {
+            last_measurement_.cache_bytes += entry.second.alloc_bytes;
+        }
+        const size_t live_cache_bytes = last_measurement_.cache_bytes +
+                                        (replaces_cache_buffer ? previous_cache_bytes : 0);
+        last_measurement_.compute_bytes += live_cache_bytes;
+
         for (const auto& kv : saved_bindings) {
             kv.first->buffer = kv.second.buffer;
             kv.first->data   = kv.second.data;
@@ -2357,7 +2396,8 @@ protected:
                     }
                 }
                 last_measurement_.split_segment_params_bytes.push_back(segment_bytes);
-                last_measurement_.split_segment_compute_bytes.push_back(segment.compute_buffer_size);
+                last_measurement_.split_segment_compute_bytes.push_back(
+                    segment.compute_buffer_size + live_cache_bytes);
             }
         }
         if (measure_collector_ != nullptr) {
@@ -3206,6 +3246,9 @@ public:
     }
 
     void reset_compute_ctx() {
+        if (measure_mode_) {
+            cache_tensor_map.clear();
+        }
         free_compute_ctx();
         alloc_compute_ctx();
     }
@@ -3283,10 +3326,23 @@ public:
     }
 
     ggml_tensor* get_cache_tensor_by_name(const std::string& name) {
-        if (cache_ctx == nullptr) {
+        if (cache_ctx != nullptr) {
+            return ggml_get_tensor(cache_ctx, name.c_str());
+        }
+        if (!measure_mode_) {
             return nullptr;
         }
-        return ggml_get_tensor(cache_ctx, name.c_str());
+        auto it = measured_cache_tensors_.find(name);
+        if (it == measured_cache_tensors_.end() || compute_ctx == nullptr || it->second.shape.empty()) {
+            return nullptr;
+        }
+        ggml_tensor* tensor = ggml_new_tensor(compute_ctx,
+                                              it->second.type,
+                                              static_cast<int>(it->second.shape.size()),
+                                              it->second.shape.data());
+        ggml_set_name(tensor, name.c_str());
+        tensor->data = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        return tensor;
     }
 
     template <typename T>
@@ -3315,6 +3371,12 @@ public:
         };
         RunnerDoneGuard runner_done_guard(this, auto_free);
 
+        if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
+            cache_tensor_map.clear();
+            measured_cache_tensors_.clear();
+            measure_generation_seen_ = measure_generation_;
+        }
+
         ggml_cgraph* gf = nullptr;
         if (!prepare_compute_graph(get_graph, &gf)) {
             return std::nullopt;
@@ -3328,10 +3390,12 @@ public:
             // (condition assembly, samplers) keeps working without weight data
             std::optional<sd::Tensor<T>> result = sd::Tensor<T>();
             if (!no_return && ggml_graph_n_nodes(gf) > 0) {
-                ggml_tensor* out = ggml_graph_node(gf, -1);
-                result           = sd::zeros<T>({out->ne[0], out->ne[1], out->ne[2], out->ne[3]});
+                ggml_tensor* out = ggml_get_tensor(compute_ctx, final_result_name.c_str());
+                if (out == nullptr) {
+                    return std::nullopt;
+                }
+                result = sd::zeros<T>(sd::shape_from_ggml(out));
             }
-            free_compute_ctx();
             return result;
         }
 
@@ -3509,6 +3573,9 @@ public:
     // in measure mode compute() builds the graph, records memory requirements and
     // returns a shaped zero tensor without loading weights or allocating buffers
     static void set_measure_mode(bool enabled, std::vector<graph_memory_measurement>* collector = nullptr) {
+        if (enabled && !measure_mode_) {
+            ++measure_generation_;
+        }
         measure_mode_      = enabled;
         measure_collector_ = enabled ? collector : nullptr;
     }

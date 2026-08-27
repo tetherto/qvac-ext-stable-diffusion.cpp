@@ -993,6 +993,8 @@ const char* sd_backend_module_name(SDBackendModule module) {
             return "upscaler";
         case SDBackendModule::DETECTOR:
             return "detector";
+        case SDBackendModule::UNSET:
+            return "unset";
     }
     return "unknown";
 }

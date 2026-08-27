@@ -2,12 +2,13 @@
 
 `sd-fit-params` computes the CLI arguments that make a model fit into free
 device memory, using measured metadata-only dry runs: the real generation
-pipeline is executed once with graph building and memory measurement only, so
+pipeline is executed with graph building and memory measurement only, so
 no weight data is read and no ggml weight or compute buffers are allocated.
 Shaped host tensors are still materialized to carry state between graph builds;
 allocation failures are reported as fit errors. The measured per-module memory
-is then packed against the free memory of every GPU device (minus a
-512 MiB margin, or the `--max-vram` budgets) and the resulting placement is
+includes projected persistent cache buffers and is packed against the free
+memory of every GPU device. A 512 MiB safety margin is retained after applying
+either detected or explicit `--max-vram` limits, and the resulting placement is
 printed to stdout as `--backend` / `--params-backend` / `--vae-tiling` /
 `--stream-layers` arguments.
 
@@ -19,7 +20,7 @@ width/height (and video frames) you intend to generate with. Example usage:
 > ./build/bin/sd-fit-params -m sd_v1-5.gguf -W 1024 -H 1024 --max-vram 4 | tee args.txt
 [INFO ] fit_params.cpp:93   - fit-params: measured memory plan
 [INFO ] fit_params.cpp:93   -   devices:
-[INFO ] fit_params.cpp:93   -     MTL0         Apple M4                         free  12123 MiB, budget   4096 MiB
+[INFO ] fit_params.cpp:93   -     MTL0         Apple M4                         free  12123 MiB, budget   3584 MiB
 [INFO ] fit_params.cpp:93   -   modules (measured for this workload):
 [INFO ] fit_params.cpp:93   -     diffusion    params   1398 MiB, compute   8360 MiB
 [INFO ] fit_params.cpp:93   -     te           params    125 MiB, compute      1 MiB
@@ -39,10 +40,10 @@ printing fitted CLI arguments to stdout...
 Useful flags:
 
 - `-W` / `-H` / `--video-frames`: the workload the fit must accommodate
-- `--max-vram <GiB>` or `--max-vram cuda0=8,cuda1=14`: per-device budgets
-  (default: free memory minus 512 MiB per device). Positive values cap the
-  graph-splitting budget, negative values use auto budget detection, and `0`
-  disables graph splitting.
+- `--max-vram <GiB>` or `--max-vram cuda0=8,cuda1=14`: per-device limits.
+  The planner retains 512 MiB of headroom after applying the limit. Positive
+  values cap the graph-splitting budget, negative values use auto budget
+  detection, and `0` disables graph splitting.
 - `--fit-print`: print the measured memory table to stdout instead of arguments
 - `-p`: representative prompt (token count affects text encoder memory)
 - generation inputs including init/control/reference images, LoRAs, hires, and
@@ -51,21 +52,24 @@ Useful flags:
 ## Planner order
 
 The planner tries the fastest and most resident placements first, then falls
-back to progressively lower-VRAM choices. Device budgets come from the current
-free GPU memory minus a 512 MiB margin, unless `--max-vram` provides an explicit
-budget. If no GPU device is available, the tool keeps the default backend.
+back to progressively lower-VRAM choices. Device budgets retain a 512 MiB
+margin after both automatic and explicit `--max-vram` limits. If no GPU device
+is available, the tool verifies that the workload fits available host memory
+before keeping the default CPU backend.
 
 The checks run in this order:
 
 1. Default placement: put every module on the first GPU. This succeeds when
-   the sum of all module parameters plus the largest measured compute buffer
-   fits that device budget. If it succeeds, the tool prints an empty line
+   the sum of all module parameters plus the peak measured compute phase fits
+   that device budget. Diffusion and ControlNet buffers are added because both
+   remain live during denoising; other sequential module buffers use their
+   maximum. If it succeeds, the tool prints an empty line
    because no extra CLI arguments are needed.
 2. Resident multi-device placement: sort modules by parameter size, largest
    first, and place each module on one GPU while keeping all parameters resident.
-   For each GPU, resident parameters accumulate and only the largest compute
-   buffer assigned to that GPU is counted, because module compute phases do not
-   run at the same time.
+   For each GPU, resident parameters accumulate and sequential compute buffers
+   use their maximum. Diffusion and ControlNet compute buffers are summed when
+   assigned to the same GPU.
 3. Resident VAE tiling: while trying the resident plan, if a module has a
    measured tiled compute size and full-resolution compute does not fit, retry
    that module with tiled compute. This currently applies to VAE measurements
@@ -90,7 +94,8 @@ The checks run in this order:
    adds `--stream-layers`. This fallback is only considered when graph splitting
    is enabled by a positive or negative `--max-vram`; `--max-vram 0` disables it.
 8. CPU runtime fallback: if none of the GPU options above fit, put the module on
-   the CPU runtime backend.
+   the CPU runtime backend. The planner returns `SD_FIT_FAILURE` if the CPU
+   parameters and compute phases exceed currently available host memory.
 
 If the current parameters already fit, the tool prints an empty line and
 reports that no changes are needed. If `--backend` / `--params-backend` are
@@ -153,7 +158,10 @@ most one of `image_gen_params` and `video_gen_params`; setting both returns
 `SD_FIT_ERROR`. When a full request is present, it supplies conditioning,
 LoRAs, hires/cache options, image/video/audio inputs, VAE tiling settings, and
 other generation fields. The scalar workload fields remain as a fallback for
-callers that only need a basic request.
+callers that only need a basic request. A video-only model selects the video
+measurement pipeline even if an image request was supplied; shared request
+fields are promoted to a video request. Supplying a video request for an
+image-only model returns `SD_FIT_ERROR`.
 
 `sd_fit_params()` returns:
 

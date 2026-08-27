@@ -162,7 +162,8 @@ cat args.txt | xargs sd-cli -m model.gguf -p "a cat" -W 1024 -H 1024
 ```
 
 `--fit-print` prints the measured per-device / per-module memory table instead
-of arguments. Budgets reuse `--max-vram` with the same semantics as auto-fit.
+of arguments. Budgets reuse `--max-vram`, with measured fitting retaining a
+512 MiB safety margin after applying automatic or explicit per-device limits.
 If the current parameters already fit, nothing needs to change and the tool
 prints an empty line. If `--backend` / `--params-backend` are already set and
 changes would be needed, the tool fails instead of overriding them.
@@ -175,7 +176,10 @@ complete representative request through `image_gen_params` or
 `video_gen_params`. Use the full request form when conditioning, LoRAs, hires,
 cache settings, image/video/audio inputs, or VAE tiling settings materially
 affect the graph being measured. Result strings are owned by `sd_fit_result_t`
-and must be released with `sd_fit_result_free()`.
+and must be released with `sd_fit_result_free()`. Persistent cache buffers and
+the concurrent diffusion/ControlNet compute phase are included in the measured
+peak. CPU fallbacks are accepted only when the projected CPU parameters and
+compute buffers fit currently available host memory.
 
 ## Modules
 

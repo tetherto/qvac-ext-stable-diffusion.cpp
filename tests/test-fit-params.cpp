@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/fit_params.h"
+#include "core/ggml_extend.hpp"
 
 namespace {
 
@@ -17,6 +18,40 @@ bool expect(bool condition, const char* message) {
     }
     return true;
 }
+
+struct MeasureRunner : public GGMLRunner {
+    bool warm_cache_seen = false;
+    ggml_tensor* output  = nullptr;
+
+    explicit MeasureRunner(ggml_backend_t backend)
+        : GGMLRunner(backend) {
+        set_fit_module(SDBackendModule::VAE);
+    }
+
+    std::string get_desc() override {
+        return "fit measurement test";
+    }
+
+    std::optional<sd::Tensor<float>> run(bool no_return = false) {
+        const sd::Tensor<float> input = sd::zeros<float>({2, 3});
+        const sd::Tensor<float> initial_cache = sd::zeros<float>({5});
+        auto get_graph = [&]() {
+            ggml_cgraph* graph = new_graph_custom(32);
+            ggml_tensor* x     = make_input(input);
+            output             = ggml_scale(compute_ctx, x, 2.f);
+            ggml_build_forward_expand(graph, output);
+
+            ggml_tensor* previous_cache = get_cache_tensor_by_name("state");
+            warm_cache_seen             = previous_cache != nullptr;
+            ggml_tensor* cache_input    = previous_cache != nullptr
+                                              ? previous_cache
+                                              : make_input(initial_cache);
+            cache("state", ggml_scale(compute_ctx, cache_input, 2.f));
+            return graph;
+        };
+        return compute<float>(get_graph, 1, false, true, true, no_return);
+    }
+};
 
 sd::fit_params::ModuleMemory module(SDBackendModule module,
                                     size_t params_gib,
@@ -41,8 +76,10 @@ sd::fit_params::ModuleMemory module(SDBackendModule module,
 bool plan_with_devices(const char* devices,
                        float max_vram_gib,
                        const std::vector<sd::fit_params::ModuleMemory>& modules,
-                       sd::fit_params::FitPlan* plan) {
+                       sd::fit_params::FitPlan* plan,
+                       float host_memory_gib = 64.f) {
     setenv("SD_FIT_DEBUG_DEVICES", devices, 1);
+    setenv("SD_FIT_DEBUG_HOST_MEMORY_GIB", std::to_string(host_memory_gib).c_str(), 1);
     sd::ggml_graph_cut::MaxVramAssignment budgets;
     budgets.reset(max_vram_gib);
     return sd::fit_params::plan_placement(modules, budgets, plan);
@@ -63,7 +100,7 @@ bool test_default_fits() {
 
 bool test_resident_spread() {
     sd::fit_params::FitPlan plan;
-    bool ok = plan_with_devices("GPU0:8,GPU1:8", 8.f,
+    bool ok = plan_with_devices("GPU0:9,GPU1:9", 9.f,
                                 {module(SDBackendModule::DIFFUSION, 5, 2, true),
                                  module(SDBackendModule::TE, 3, 1, true),
                                  module(SDBackendModule::VAE, 2, 3)},
@@ -107,7 +144,7 @@ bool test_stream_layers_after_split_fails() {
 
 bool test_split_and_tiling() {
     sd::fit_params::FitPlan split_plan;
-    bool split_ok = plan_with_devices("GPU0:6,GPU1:6", 6.f,
+    bool split_ok = plan_with_devices("GPU0:7,GPU1:7", 7.f,
                                       {module(SDBackendModule::DIFFUSION, 8, 2, true)},
                                       &split_plan);
     if (!expect(split_ok && split_plan.valid, "split plan should be valid") ||
@@ -136,13 +173,79 @@ bool test_split_rejects_indivisible_segment() {
     memory.split_graph_segment_compute = {{1 * GiB, 1 * GiB}};
 
     sd::fit_params::FitPlan plan;
-    bool ok = plan_with_devices("GPU0:6,GPU1:6", 6.f, {memory}, &plan);
+    bool ok = plan_with_devices("GPU0:7,GPU1:7", 7.f, {memory}, &plan);
     return expect(ok && plan.valid, "indivisible split fallback should remain valid") &&
            expect(plan.stream_layers, "indivisible split should fall back to streaming") &&
            expect(plan.runtime_spec == "diffusion=GPU0",
                   ("unexpected indivisible fallback runtime spec: " + plan.runtime_spec).c_str()) &&
            expect(plan.params_spec == "diffusion=cpu",
                   ("unexpected indivisible fallback params spec: " + plan.params_spec).c_str());
+}
+
+bool test_explicit_budget_keeps_headroom() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 8.f,
+                                {module(SDBackendModule::VAE, 7, 1)},
+                                &plan);
+    return expect(ok && plan.valid, "headroom fallback plan should be valid") &&
+           expect(plan.changed, "explicit max-vram must retain safety headroom") &&
+           expect(plan.runtime_spec == "vae=cpu",
+                  ("unexpected headroom fallback runtime spec: " + plan.runtime_spec).c_str());
+}
+
+bool test_controlnet_compute_is_concurrent() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 8.f,
+                                {module(SDBackendModule::DIFFUSION, 2, 2, true),
+                                 module(SDBackendModule::CONTROL_NET, 2, 2)},
+                                &plan);
+    return expect(ok && plan.valid, "ControlNet plan should remain valid") &&
+           expect(plan.changed, "concurrent ControlNet and diffusion buffers must not use the default placement") &&
+           expect(plan.time_share, "concurrent ControlNet pressure should require the time-share tier");
+}
+
+bool test_cpu_fallback_checks_host_memory() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:4", 4.f,
+                                {module(SDBackendModule::DIFFUSION, 8, 2, true)},
+                                &plan,
+                                8.f);
+    return expect(ok, "host-capacity failure should be a completed planning attempt") &&
+           expect(!plan.valid, "CPU fallback must fail when projected use exceeds host memory") &&
+           expect(plan.report.find("no placement fits available host memory") != std::string::npos,
+                  "host-capacity failure should be explained in the report");
+}
+
+bool test_measure_mode_preserves_outputs_and_projects_cache() {
+    ggml_backend_t backend = sd_backend_cpu_init();
+    if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
+        return false;
+    }
+
+    bool passed = true;
+    {
+        MeasureRunner runner(backend);
+        std::vector<GGMLRunner::graph_memory_measurement> records;
+        GGMLRunner::set_measure_mode(true, &records);
+
+        auto first = runner.run();
+        passed &= expect(first.has_value() && first->dim() == 2,
+                         "measure output should preserve the named result rank");
+        passed &= expect(first.has_value() && first->shape()[0] == 2 && first->shape()[1] == 3,
+                         "measure output should preserve the named result shape");
+        passed &= expect(!records.empty() && records.back().cache_bytes > 0,
+                         "measurements should include projected persistent cache bytes");
+
+        auto second = runner.run(true);
+        passed &= expect(second.has_value() && runner.warm_cache_seen,
+                         "the next measured graph should observe projected warm cache state");
+        passed &= expect(runner.output != nullptr && ggml_n_dims(runner.output) == 2,
+                         "no-return graph tensors should remain alive for the caller");
+
+        GGMLRunner::set_measure_mode(false);
+    }
+    ggml_backend_free(backend);
+    return passed;
 }
 
 bool test_public_result_is_initialized_on_error() {
@@ -173,9 +276,14 @@ int main() {
         !test_stream_layers_after_split_fails() ||
         !test_split_and_tiling() ||
         !test_split_rejects_indivisible_segment() ||
+        !test_explicit_budget_keeps_headroom() ||
+        !test_controlnet_compute_is_concurrent() ||
+        !test_cpu_fallback_checks_host_memory() ||
+        !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_public_result_is_initialized_on_error()) {
         return 1;
     }
     unsetenv("SD_FIT_DEBUG_DEVICES");
+    unsetenv("SD_FIT_DEBUG_HOST_MEMORY_GIB");
     return 0;
 }

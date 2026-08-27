@@ -2002,6 +2002,7 @@ public:
                                                 lora_spec.path,
                                                 lora_spec.is_high_noise ? "model.high_noise_" : "",
                                                 version);
+        lora->set_fit_module(module);
         LoraModel::filter_t lora_tensor_filter = module_filter;
         if (!lora_spec.tensor_name_prefix_filter.empty()) {
             lora_tensor_filter = [module_filter, prefix = lora_spec.tensor_name_prefix_filter](const std::string& tensor_name) {
@@ -3951,6 +3952,35 @@ static bool sd_version_supports_image_generation(SDVersion version) {
     return version != VERSION_ABOT_WORLD && !sd_version_supports_video_generation(version);
 }
 
+static void sd_vid_gen_params_from_image_request(sd_vid_gen_params_t* video,
+                                                  const sd_img_gen_params_t& image,
+                                                  int video_frames) {
+    sd_vid_gen_params_init(video);
+    video->loras                 = image.loras;
+    video->lora_count            = image.lora_count;
+    video->prompt                = image.prompt;
+    video->negative_prompt       = image.negative_prompt;
+    video->clip_skip             = image.clip_skip;
+    video->init_image            = image.init_image;
+    video->ref_images            = image.ref_images;
+    video->ref_images_count      = image.ref_images_count;
+    video->width                 = image.width;
+    video->height                = image.height;
+    video->sample_params         = image.sample_params;
+    video->strength              = image.strength;
+    video->seed                  = image.seed;
+    video->video_frames          = std::max(video_frames, 1);
+    video->vae_tiling_params     = image.vae_tiling_params;
+    video->cache                 = image.cache;
+    video->hires                 = image.hires;
+    video->circular_x            = image.circular_x;
+    video->circular_y            = image.circular_y;
+    if (image.control_image.data != nullptr) {
+        video->control_frames      = const_cast<sd_image_t*>(&image.control_image);
+        video->control_frames_size = 1;
+    }
+}
+
 sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_t* sd_ctx = (sd_ctx_t*)malloc(sizeof(sd_ctx_t));
     if (sd_ctx == nullptr) {
@@ -4043,12 +4073,18 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     const char* prompt         = workload->prompt != nullptr && workload->prompt[0] != '\0'
                                      ? workload->prompt
                                      : "a photo of an astronaut riding a horse on the moon";
-    const bool animatediff_video = sd_ctx->sd->animatediff_loaded &&
-                                   sd_version_supports_animatediff(sd_ctx->sd->version) &&
-                                   workload_frames > 1;
-    const bool video             = workload->video_gen_params != nullptr ||
-                                   (workload->image_gen_params == nullptr &&
-                                    (animatediff_video || sd_version_supports_video_generation(sd_ctx->sd->version)));
+    const bool model_video_only = sd_version_supports_video_generation(sd_ctx->sd->version);
+    const bool animatediff_capable = sd_ctx->sd->animatediff_loaded &&
+                                      sd_version_supports_animatediff(sd_ctx->sd->version);
+    const bool animatediff_video = animatediff_capable && workload_frames > 1;
+    if ((workload->video_gen_params != nullptr || workload_frames > 1) &&
+        !model_video_only && !animatediff_capable) {
+        LOG_ERROR("fit-params: a video workload was supplied for an image-only model");
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+    const bool video = workload->video_gen_params != nullptr || model_video_only || animatediff_video;
 
     sd_tiling_params_t requested_tiling = workload->vae_tiling_params;
     if (workload->image_gen_params != nullptr) {
@@ -4093,6 +4129,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
                 sd_vid_gen_params_t gen;
                 if (workload->video_gen_params != nullptr) {
                     gen = *workload->video_gen_params;
+                } else if (workload->image_gen_params != nullptr) {
+                    LOG_WARN("fit-params: promoting the image request to the video pipeline required by this model");
+                    sd_vid_gen_params_from_image_request(&gen,
+                                                         *workload->image_gen_params,
+                                                         workload_frames);
                 } else {
                     sd_vid_gen_params_init(&gen);
                     gen.prompt       = prompt;
@@ -4100,11 +4141,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
                     gen.height       = workload_height;
                     gen.video_frames = std::max(workload_frames, 1);
                 }
-                gen.sample_params.sample_steps        = 1;
+                gen.sample_params.sample_steps        = 2;
                 gen.sample_params.custom_sigmas       = nullptr;
                 gen.sample_params.custom_sigmas_count = 0;
                 if (gen.high_noise_sample_params.sample_steps > 0) {
-                    gen.high_noise_sample_params.sample_steps        = 1;
+                    gen.high_noise_sample_params.sample_steps        = 2;
                     gen.high_noise_sample_params.custom_sigmas       = nullptr;
                     gen.high_noise_sample_params.custom_sigmas_count = 0;
                 }
@@ -4123,7 +4164,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
                     gen.width  = workload_width;
                     gen.height = workload_height;
                 }
-                gen.sample_params.sample_steps        = 1;
+                gen.sample_params.sample_steps        = 2;
                 gen.sample_params.custom_sigmas       = nullptr;
                 gen.sample_params.custom_sigmas_count = 0;
                 gen.batch_count                       = 1;
@@ -4167,6 +4208,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     }
     for (const auto& record : records) {
         SDBackendModule module = record.module;
+        if (module == SDBackendModule::UNSET) {
+            LOG_WARN("fit-params: ignoring unattributed graph measurement from %s",
+                     record.desc.c_str());
+            continue;
+        }
         auto& m                = module_map[module];
         m.module               = module;
         m.params_bytes         = std::max(m.params_bytes, record.params_bytes);
