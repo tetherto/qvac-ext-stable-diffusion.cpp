@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -17,6 +18,8 @@ static void set_error(std::string* error, const std::string& message) {
         *error = message;
     }
 }
+
+static std::mutex gguf_probe_log_mutex;
 
 bool is_gguf_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
@@ -50,12 +53,15 @@ bool read_gguf_file(const std::string& file_path,
     // ggml's reader rejects tensors with more than GGML_MAX_DIMS dimensions (e.g.
     // the 5-D Wan patch_embedding.weight) that the GGUFReader fallback handles,
     // so silence its log during the probe to avoid spurious error messages
-    ggml_log_callback saved_log_cb = nullptr;
-    void* saved_log_data           = nullptr;
-    ggml_log_get(&saved_log_cb, &saved_log_data);
-    ggml_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
-    ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
-    ggml_log_set(saved_log_cb, saved_log_data);
+    {
+        std::lock_guard<std::mutex> lock(gguf_probe_log_mutex);
+        ggml_log_callback saved_log_cb = nullptr;
+        void* saved_log_data           = nullptr;
+        ggml_log_get(&saved_log_cb, &saved_log_data);
+        ggml_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
+        ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
+        ggml_log_set(saved_log_cb, saved_log_data);
+    }
 
     if (!ctx_gguf_) {
         GGUFReader gguf_reader;
