@@ -1,10 +1,11 @@
 #include "gguf_io.h"
 
+#include <mutex>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <mutex>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -18,8 +19,6 @@ static void set_error(std::string* error, const std::string& message) {
         *error = message;
     }
 }
-
-static std::mutex gguf_probe_log_mutex;
 
 bool is_gguf_file(const std::string& file_path) {
     std::ifstream file(file_path, std::ios::binary);
@@ -49,6 +48,7 @@ bool read_gguf_file(const std::string& file_path,
 
     gguf_context* ctx_gguf_ = nullptr;
     ggml_context* ctx_meta_ = nullptr;
+    static std::mutex gguf_probe_log_mutex;
 
     // ggml's reader rejects tensors with more than GGML_MAX_DIMS dimensions (e.g.
     // the 5-D Wan patch_embedding.weight) that the GGUFReader fallback handles,
