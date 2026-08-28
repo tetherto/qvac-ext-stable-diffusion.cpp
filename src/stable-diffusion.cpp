@@ -4268,13 +4268,13 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     delete sd_ctx->sd;
     sd_ctx->sd = nullptr;
 
+    result->report        = strdup(plan.report.c_str());
+    result->vae_tiling    = plan.vae_tiling;
+    result->stream_layers = plan.stream_layers;
     if (!planned || !plan.valid) {
         return SD_FIT_FAILURE;
     }
 
-    result->report     = strdup(plan.report.c_str());
-    result->vae_tiling = plan.vae_tiling;
-    result->stream_layers = plan.stream_layers;
     if (plan.changed) {
         result->changed = true;
         if (!plan.runtime_spec.empty()) {
