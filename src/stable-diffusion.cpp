@@ -4044,6 +4044,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         LOG_ERROR("fit-params: set at most one complete generation request");
         return SD_FIT_ERROR;
     }
+    if (strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
+        strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0) {
+        LOG_WARN("fit-params: explicit backend placement cannot be validated; clear backend and params_backend before fitting");
+        return SD_FIT_FAILURE;
+    }
 
     int64_t t0 = ggml_time_ms();
 
@@ -4253,9 +4258,6 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         }
     }
 
-    const bool user_set_placement = strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
-                                    strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0;
-
     std::vector<sd::fit_params::ModuleMemory> modules;
     for (const auto& kv : module_map) {
         modules.push_back(kv.second);
@@ -4273,10 +4275,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     result->report     = strdup(plan.report.c_str());
     result->vae_tiling = plan.vae_tiling;
     result->stream_layers = plan.stream_layers;
-    if (plan.changed && user_set_placement) {
-        LOG_WARN("fit-params: changes needed but --backend/--params-backend already set by user, abort");
-        return SD_FIT_FAILURE;
-    } else if (plan.changed) {
+    if (plan.changed) {
         result->changed = true;
         if (!plan.runtime_spec.empty()) {
             result->backend = strdup(plan.runtime_spec.c_str());

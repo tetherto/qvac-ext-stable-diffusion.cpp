@@ -533,7 +533,7 @@ typedef struct {
 SD_API void sd_fit_workload_init(sd_fit_workload_t* workload);
 
 // fit model/context placement to free device memory using measured no-alloc dry runs;
-// reads only model metadata, never weight data
+// reads only model metadata, never weight data; backend and params_backend must be unset
 SD_API enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
                                           const sd_fit_workload_t* workload,
                                           sd_fit_result_t* result);

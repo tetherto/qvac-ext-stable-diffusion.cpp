@@ -283,6 +283,22 @@ bool test_public_result_is_initialized_on_error() {
                   "fit result should be initialized before argument validation");
 }
 
+bool test_public_rejects_explicit_placement() {
+    sd_ctx_params_t params;
+    sd_ctx_params_init(&params);
+    params.backend = "cpu";
+    sd_fit_workload_t workload;
+    sd_fit_workload_init(&workload);
+    sd_fit_result_t result;
+
+    const enum sd_fit_status_t status = sd_fit_params(&params, &workload, &result);
+    const bool passed = expect(status == SD_FIT_FAILURE, "explicit placement should be rejected") &&
+                        expect(!result.changed && result.backend == nullptr && result.params_backend == nullptr && result.report == nullptr,
+                               "placement rejection should leave an initialized result");
+    sd_fit_result_free(&result);
+    return passed;
+}
+
 }  // namespace
 
 int main() {
@@ -297,6 +313,7 @@ int main() {
         !test_cpu_fallback_checks_host_memory() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
+        !test_public_rejects_explicit_placement() ||
         !test_public_result_is_initialized_on_error()) {
         return 1;
     }

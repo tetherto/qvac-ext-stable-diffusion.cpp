@@ -46,8 +46,9 @@ Useful flags:
   detection, and `0` disables graph splitting.
 - `--fit-print`: print the measured memory table to stdout instead of arguments
 - `-p`: representative prompt (token count affects text encoder memory)
-- generation inputs including init/control/reference images, LoRAs, hires, and
-  model placement options flow into the measurement as they would into a real run
+- generation inputs including init/control/reference images, LoRAs, and hires
+  options flow into the measurement as they would into a real run; explicit
+  `--backend` / `--params-backend` placement is rejected
 
 ## Planner order
 
@@ -97,10 +98,10 @@ The checks run in this order:
    the CPU runtime backend. The planner returns `SD_FIT_FAILURE` if the CPU
    parameters and compute phases exceed currently available host memory.
 
-If the current parameters already fit, the tool prints an empty line and
-reports that no changes are needed. If `--backend` / `--params-backend` are
-already set and changes would be needed, the tool fails instead of overriding
-them.
+If the default placement already fits, the tool prints an empty line and
+reports that no changes are needed. Explicit `--backend` / `--params-backend`
+assignments are rejected because the tool derives placement rather than
+validating an existing assignment.
 
 See `docs/backend.md` for the placement spec syntax and the heuristic
 `--auto-fit` alternative built into `sd-cli`.
@@ -167,8 +168,8 @@ image-only model returns `SD_FIT_ERROR`.
 
 - `SD_FIT_SUCCESS`: a placement was found, or the current/default placement
   already fits.
-- `SD_FIT_FAILURE`: no placement was projected to fit, or placement was needed
-  but `ctx.backend` / `ctx.params_backend` was already set by the caller.
+- `SD_FIT_FAILURE`: no placement was projected to fit, or `ctx.backend` /
+  `ctx.params_backend` was already set by the caller.
 - `SD_FIT_ERROR`: invalid inputs or a hard measurement error such as an
   unreadable model.
 
