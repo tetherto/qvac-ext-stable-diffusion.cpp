@@ -126,7 +126,7 @@ workload.height = 1024;
 workload.video_frames = 1;
 
 sd_fit_result_t result;
-sd_fit_status_t status = sd_fit_params(&ctx, &workload, &result);
+enum sd_fit_status_t status = sd_fit_params(&ctx, &workload, &result);
 if (status == SD_FIT_SUCCESS && result.changed) {
     printf("backend=%s\n", result.backend ? result.backend : "");
     printf("params_backend=%s\n", result.params_backend ? result.params_backend : "");
