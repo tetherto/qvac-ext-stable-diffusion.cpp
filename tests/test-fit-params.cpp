@@ -20,6 +20,22 @@ bool expect(bool condition, const char* message) {
     return true;
 }
 
+bool set_test_env(const char* name, const std::string& value) {
+#if defined(_WIN32)
+    return _putenv_s(name, value.c_str()) == 0;
+#else
+    return setenv(name, value.c_str(), 1) == 0;
+#endif
+}
+
+void unset_test_env(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 struct MeasureRunner : public GGMLRunner {
     bool warm_cache_seen = false;
     ggml_tensor* output  = nullptr;
@@ -79,8 +95,10 @@ bool plan_with_devices(const char* devices,
                        const std::vector<sd::fit_params::ModuleMemory>& modules,
                        sd::fit_params::FitPlan* plan,
                        float host_memory_gib = 64.f) {
-    setenv("SD_FIT_DEBUG_DEVICES", devices, 1);
-    setenv("SD_FIT_DEBUG_HOST_MEMORY_GIB", std::to_string(host_memory_gib).c_str(), 1);
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", devices) ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", std::to_string(host_memory_gib))) {
+        return false;
+    }
     sd::ggml_graph_cut::MaxVramAssignment budgets;
     budgets.reset(max_vram_gib);
     return sd::fit_params::plan_placement(modules, budgets, plan);
@@ -317,7 +335,7 @@ int main() {
         !test_public_result_is_initialized_on_error()) {
         return 1;
     }
-    unsetenv("SD_FIT_DEBUG_DEVICES");
-    unsetenv("SD_FIT_DEBUG_HOST_MEMORY_GIB");
+    unset_test_env("SD_FIT_DEBUG_DEVICES");
+    unset_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB");
     return 0;
 }
