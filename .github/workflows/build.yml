@@ -43,6 +43,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  runner_names:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-runner-names.yml
+
   ubuntu-latest-cmake:
     runs-on: ubuntu-latest
 
@@ -267,8 +272,8 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
   windows-latest-cmake:
-    runs-on: windows-2022
-
+    needs: runner_names
+    runs-on: ${{ needs.runner_names.outputs.windows_2022 }}
     env:
       VULKAN_VERSION: 1.4.328.1
 
@@ -388,8 +393,8 @@ jobs:
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip
 
   windows-latest-cmake-hip:
-    runs-on: windows-2022
-
+    needs: runner_names
+    runs-on: ${{ needs.runner_names.outputs.windows_2022 }}
     env:
       HIPSDK_INSTALLER_VERSION: "25.Q3"
       GPU_TARGETS: "gfx1151;gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032"
@@ -693,3 +698,4 @@ jobs:
                 });
               }
             }
+
