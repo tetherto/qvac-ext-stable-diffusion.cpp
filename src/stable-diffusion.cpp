@@ -7565,6 +7565,22 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
             sd::Tensor<int32_t>::from_vector(std::get<0>(tokens)),
             sd::Tensor<float>::from_vector(std::get<2>(tokens)));
         if (prompt.empty()) { LOG_ERROR("sd_abot_scene_create: prompt encoding failed"); return false; }
+        // The reference WanTextEncoder zeroes embeddings past the real tokens
+        // (`u[v:] = 0`). The encoder's attention mask only affects attention
+        // inside the encoder, not its output rows, so without this the pack
+        // carries live pad-token embeddings in all 512 context rows and the
+        // walk collapses into blur from the first generated block. The
+        // tokenizer mask is additive: 0.0 = real token, -inf = padding.
+        {
+            const std::vector<float>& attn_mask = std::get<2>(tokens);
+            const int64_t emb_dim               = prompt.shape()[0];
+            float* pd                           = prompt.data();
+            for (size_t i = 0; i < attn_mask.size(); i++) {
+                if (attn_mask[i] != 0.0f) {
+                    memset(pd + static_cast<size_t>(emb_dim) * i, 0, static_cast<size_t>(emb_dim) * sizeof(float));
+                }
+            }
+        }
         if (prompt.shape().size() == 2) prompt = prompt.unsqueeze(2);
         sd::Tensor<float> first;
         if (has_image) {
