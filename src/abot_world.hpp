@@ -579,6 +579,34 @@ struct AbotWorldRunner : public GGMLRunner {
     // 8-key vector to 8 channels, repeat_interleaves x4 -> 32 channels constant
     // over HxW, then PixelUnshuffle(16): output channel c corresponds to input
     // channel c / (16*16) -> value = key[(c / 256) / 4].
+    // The action planes are the largest host-built input (~51 MB per frame) and
+    // are identical for every graph of a block: same keys held, same frame
+    // count, same latent size. Refilling them per graph put ~150 MB of memset
+    // on the critical path before each denoise step, so keep the filled buffer
+    // and rebuild it only when the key really changes.
+    sd::Tensor<float> act_planes;
+    uint8_t act_planes_mask = 0;
+    int act_planes_frames   = -1;
+    int64_t act_planes_w    = 0;
+    int64_t act_planes_h    = 0;
+
+    sd::Tensor<float>& action_planes(uint8_t action_mask, int F_cur, int64_t lat_w, int64_t lat_h, int c_unsh) {
+        if (act_planes_frames == F_cur && act_planes_mask == action_mask &&
+            act_planes_w == lat_w && act_planes_h == lat_h && !act_planes.empty()) {
+            return act_planes;
+        }
+        act_planes = sd::zeros<float>({lat_w, lat_h, c_unsh, F_cur});
+        for (int f = 0; f < F_cur; f++) {
+            fill_act_plane(act_planes.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
+                           action_mask, static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
+        }
+        act_planes_mask   = action_mask;
+        act_planes_frames = F_cur;
+        act_planes_w      = lat_w;
+        act_planes_h      = lat_h;
+        return act_planes;
+    }
+
     void fill_act_plane(float* dst, uint8_t action_mask, int w_in, int h_in, int c_unsh) {
         for (int c = 0; c < c_unsh; c++) {
             int key   = (c / (cfg.act_downscale_factor * cfg.act_downscale_factor)) / 4;
@@ -788,11 +816,7 @@ struct AbotWorldRunner : public GGMLRunner {
                 memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
             }
         }
-        sd::Tensor<float> act({lat_w, lat_h, c_unsh, F_cur});
-        for (int f = 0; f < F_cur; f++) {
-            fill_act_plane(act.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
-                           action_mask, static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
-        }
+        sd::Tensor<float>& act = action_planes(action_mask, F_cur, lat_w, lat_h, c_unsh);
         sd::Tensor<float> tvec({F_cur + 1});
         for (int f = 0; f < F_cur; f++) {
             tvec.data()[f] = frame_timesteps[static_cast<size_t>(f)];
@@ -1177,6 +1201,10 @@ public:
                                                           true,
                                                           VERSION_ABOT_WORLD,
                                                           model_manager);
+        // Direct convolution for the pixel decoder: im2col+GEMM materializes a
+        // large intermediate per conv, and the decoder is all small 3x3 convs.
+        // Measured 148 -> 68 ms per block decode, bit-identical output.
+        tae->set_conv2d_direct_enabled(true);
         if (!model_manager->register_runner_params("ABot-World DiT",
                                                     *runner,
                                                     "model.diffusion_model",
