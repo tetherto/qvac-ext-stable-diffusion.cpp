@@ -216,7 +216,14 @@ namespace WAN {
 
             const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
             ggml_tensor* kq   = ggml_mul_mat(gctx, K, q_r);  // {T_kv, n_token, n_head*N}
-            ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+            // No GGML_PREC_F32 here. On a coopmat2 device an F32 x F32 matmul
+            // asking for F32 precision has no cooperative-matrix pipeline to
+            // fall back on (pipeline_matmul_f32_cm1 is only built in the
+            // coopmat1 branch), so it lands on a scalar shader with no tensor
+            // cores; the default precision converts both operands to F16 and
+            // uses matmul_f16_f16acc_cm2 instead. Measured 241 -> 207 ms per
+            // denoise step on an RTX 5090. Scores feed a softmax, so the
+            // accumulator's dynamic range is not the limit here.
             // One fused pass instead of scale -> add -> soft_max: the scores are
             // the largest tensor in the walk graph (T_kv x n_token x n_head), so
             // each separate elementwise pass costs a full read+write of it. The
