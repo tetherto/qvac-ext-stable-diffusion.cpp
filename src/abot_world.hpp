@@ -101,6 +101,8 @@ struct AbotScenePack {
     sd::Tensor<float> ref_latents;          // {32, 32, C, K} (T=1 squeezed)
     sd::Tensor<float> ref_mask;             // {K}
     int ref_slots = 0;
+    // prompt rows before the zeroed padding (diagnostic; 0 = not computed)
+    int64_t text_rows_live = 0;
     // false = text-only scene: block-0 frame 0 is generated from noise
     // instead of being pinned to first_frame_latents
     bool has_first_frame = true;
@@ -233,6 +235,41 @@ struct AbotScenePack {
             return false;
         }
         prompt_embeds.resize({sh[2], sh[1], 1, 1});
+        // Real prompt rows: the producer zeroes everything past the last token
+        // (the reference's `u[v:] = 0`), so trailing all-zero rows are padding.
+        // Reported because a pack whose padding is NOT zeroed conditions the
+        // walk on pad-token embeddings and degrades generation from the first
+        // block - a silent failure that is otherwise only visible in the
+        // output pixels.
+        {
+            const int64_t emb = prompt_embeds.shape()[0];
+            const int64_t rows = prompt_embeds.shape()[1];
+            const float* pd = prompt_embeds.data();
+            int64_t live = 0;
+            for (int64_t r = rows - 1; r >= 0; r--) {
+                bool nonzero = false;
+                for (int64_t i = 0; i < emb; i++) {
+                    if (pd[r * emb + i] != 0.0f) {
+                        nonzero = true;
+                        break;
+                    }
+                }
+                if (nonzero) {
+                    live = r + 1;
+                    break;
+                }
+            }
+            text_rows_live = live;
+            if (live == rows) {
+                LOG_WARN(
+                    "scene pack: all %lld prompt rows are non-zero - padding is not zeroed, so the "
+                    "walk is conditioned on pad embeddings (expect washed-out output; the pack "
+                    "producer is missing the reference's zero-padding step)",
+                    (long long)rows);
+            } else {
+                LOG_INFO("scene pack: prompt rows %lld live / %lld", (long long)live, (long long)rows);
+            }
+        }
         if (!fetch("first_frame_latents", first_frame_latents, sh) ||  // [1,1,C,H,W]
             !expect("first_frame_latents", sh, 5, {0, 1})) {
             return false;
