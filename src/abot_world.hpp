@@ -678,7 +678,11 @@ struct AbotWorldRunner : public GGMLRunner {
             return gf;
         };
 
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        // keep the compute buffer and its graph allocator across steps: the walk
+        // runs 5-6 graphs per block forever, and the defaults would free and
+        // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
+        // automatically when the graph shape changes between denoise and append)
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
         if (!result.has_value()) {
             return {};
         }
@@ -923,7 +927,11 @@ struct AbotWorldRunner : public GGMLRunner {
             return gf;
         };
 
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        // keep the compute buffer and its graph allocator across steps: the walk
+        // runs 5-6 graphs per block forever, and the defaults would free and
+        // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
+        // automatically when the graph shape changes between denoise and append)
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
         if (prof) {
             const int64_t prof_t2 = ggml_time_ms();
             const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";

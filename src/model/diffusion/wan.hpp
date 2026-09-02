@@ -217,11 +217,12 @@ namespace WAN {
             const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
             ggml_tensor* kq   = ggml_mul_mat(gctx, K, q_r);  // {T_kv, n_token, n_head*N}
             ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
-            kq = ggml_scale_inplace(gctx, kq, scale);
-            if (mask != nullptr) {
-                kq = ggml_add_inplace(gctx, kq, mask);  // {T_kv, n_token} broadcast over heads
-            }
-            kq = ggml_soft_max_inplace(gctx, kq);
+            // One fused pass instead of scale -> add -> soft_max: the scores are
+            // the largest tensor in the walk graph (T_kv x n_token x n_head), so
+            // each separate elementwise pass costs a full read+write of it. The
+            // mask is {T_kv, n_token} and broadcasts over heads, which
+            // ggml_soft_max_ext supports on CPU, CUDA and Vulkan.
+            kq = ggml_soft_max_ext(gctx, kq, mask, scale, 0.0f);
 
             ggml_tensor* kqv = ggml_mul_mat(gctx, V, kq);  // {d_head, n_token, n_head*N}
             kqv              = ggml_reshape_4d(gctx, kqv, head_dim, n_token, num_heads, N);
