@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "core/compute_workspace.h"
+#include "core/ggml_extend_backend.h"
 #include "vae_fallback.hpp"
 #include "core/ggml_graph_cut.h"
 #include "core/runner_cache.h"
@@ -137,6 +138,19 @@ ggml_tensor* ggml_ext_attention_ext(GGMLRunnerContext* ctx,
                                     bool* used_flash_attn = nullptr);
 
 struct GGMLRunner {
+    struct graph_memory_measurement {
+        std::string desc;
+        const GGMLRunner* runner = nullptr;
+        ggml_backend_t backend   = nullptr;
+        SDBackendModule module   = SDBackendModule::UNSET;
+        size_t compute_bytes     = 0;
+        size_t cache_bytes       = 0;
+        size_t params_bytes      = 0;
+        std::vector<size_t> split_segment_params_bytes;
+        std::vector<size_t> split_segment_compute_bytes;
+        bool valid               = false;
+    };
+
 private:
     std::map<ggml_backend_t, size_t> logged_compute_bytes_;
     size_t logged_segment_count_     = 0;
@@ -182,6 +196,24 @@ protected:
     std::shared_ptr<WeightAdapter> weight_adapter = nullptr;
     std::weak_ptr<DeviceResidencyManager> residency_manager;
     bool params_tensor_set_dirty_ = true;
+
+    // Thread-local so nested runners in one fitting call are intercepted without
+    // affecting generation or fitting calls running on other threads.
+    static inline thread_local bool measure_mode_                                        = false;
+    static inline thread_local std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
+    static inline thread_local size_t measure_generation_                                = 0;
+    graph_memory_measurement last_measurement_;
+    SDBackendModule fit_module_ = SDBackendModule::UNSET;
+    size_t measure_generation_seen_ = 0;
+
+    struct measured_cache_tensor {
+        ggml_type type = GGML_TYPE_F32;
+        std::vector<int64_t> shape;
+        size_t alloc_bytes = 0;
+    };
+    std::map<std::string, measured_cache_tensor> measured_cache_tensors_;
+
+    void measure_graph_memory(ggml_cgraph* graph);
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -344,8 +376,23 @@ public:
     void cache(const std::string name, ggml_tensor* tensor, ggml_cgraph* graph = nullptr);
 
     ggml_tensor* get_cache_tensor_by_name(const std::string& name) {
-        return cache_.get(name);
+        if (auto* cached = cache_.get(name)) return cached;
+        if (!measure_mode_) {
+            return nullptr;
+        }
+        auto it = measured_cache_tensors_.find(name);
+        if (it == measured_cache_tensors_.end() || compute_ctx == nullptr || it->second.shape.empty()) {
+            return nullptr;
+        }
+        ggml_tensor* tensor = ggml_new_tensor(compute_ctx,
+                                              it->second.type,
+                                              static_cast<int>(it->second.shape.size()),
+                                              it->second.shape.data());
+        ggml_set_name(tensor, name.c_str());
+        tensor->data = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        return tensor;
     }
+
 
     std::optional<sd::Tensor<float>> compute(get_graph_cb_t get_graph,
                                              int n_threads,
@@ -357,6 +404,28 @@ public:
 
     void set_vae_auto_cpu_fallback(bool enabled, float memory_ratio = 0.9f,
                                    ggml_backend_t cpu_backend = nullptr);
+
+    // in measure mode compute() builds the graph, records memory requirements and
+    // returns a shaped zero tensor without loading weights or allocating buffers
+    static void set_measure_mode(bool enabled, std::vector<graph_memory_measurement>* collector = nullptr) {
+        if (enabled && !measure_mode_) {
+            ++measure_generation_;
+        }
+        measure_mode_      = enabled;
+        measure_collector_ = enabled ? collector : nullptr;
+    }
+
+    static bool measure_mode_enabled() {
+        return measure_mode_;
+    }
+
+    graph_memory_measurement get_last_measurement() const {
+        return last_measurement_;
+    }
+
+    void set_fit_module(SDBackendModule module) {
+        fit_module_ = module;
+    }
 
     void set_flash_attention_enabled(bool enabled) {
         flash_attn_enabled = enabled;

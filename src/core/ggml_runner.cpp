@@ -562,12 +562,14 @@ GGMLRunnerContext GGMLRunner::get_context(ggml_cgraph* graph) {
 }
 
 void GGMLRunner::reset_compute_ctx() {
+    if (measure_mode_) cache_.graph_end(false);
     free_compute_ctx();
     alloc_compute_ctx();
 }
 
 void GGMLRunner::free_cache_ctx_and_buffer() {
     cache_.clear();
+    measured_cache_tensors_.clear();
     sync_runtime_residency();
 }
 
@@ -704,12 +706,124 @@ void GGMLRunner::set_vae_auto_cpu_fallback(bool enabled, float memory_ratio, ggm
 }
 
 
+// measure the compute buffer size and used param bytes of a built graph without
+// allocating anything: params are temporarily marked as externally owned so
+// gallocr does not reserve them (same trick as measure_segment_compute_buffer)
+void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
+    last_measurement_ = {};
+
+    struct TensorRuntimeBinding {
+        ggml_backend_buffer_t buffer = nullptr;
+        void* data                   = nullptr;
+        void* extra                  = nullptr;
+    };
+    std::unordered_map<ggml_tensor*, TensorRuntimeBinding> saved_bindings;
+    auto mark_external = [&](ggml_tensor* t) {
+        if (t == nullptr || saved_bindings.find(t) != saved_bindings.end()) {
+            return;
+        }
+        saved_bindings[t] = {t->buffer, t->data, t->extra};
+        t->data           = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+    };
+
+    std::vector<ggml_tensor*> used_params = collect_used_param_tensors(gf);
+    for (ggml_tensor* param : used_params) {
+        last_measurement_.params_bytes += ggml_nbytes(param);
+    }
+    const int n_leafs = sd::ggml_graph_cut::leaf_count(gf);
+    for (int i = 0; i < n_leafs; ++i) {
+        ggml_tensor* leaf = sd::ggml_graph_cut::leaf_tensor(gf, i);
+        if (canonical_param_tensor(leaf) == nullptr) {
+            continue;
+        }
+        mark_external(leaf);
+        mark_external(leaf->view_src);
+    }
+
+    ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_backend));
+    size_t sizes[1]       = {0};
+    ggml_gallocr_reserve_n_size(allocr, gf, nullptr, nullptr, sizes);
+    last_measurement_.compute_bytes = sizes[0];
+    ggml_gallocr_free(allocr);
+
+    ggml_backend_buffer_type_t cache_buft =
+        ggml_backend_get_default_buffer_type(runtime_backend);
+    const size_t cache_alignment = ggml_backend_buft_get_alignment(cache_buft);
+    size_t previous_cache_bytes = 0;
+    for (const auto& entry : measured_cache_tensors_) {
+        previous_cache_bytes += entry.second.alloc_bytes;
+    }
+    const bool replaces_cache_buffer = !cache_.outputs().empty();
+    for (const auto& entry : cache_.outputs()) {
+        ggml_tensor* tensor = sd::ggml_graph_cut::cache_source_tensor(entry.second);
+        if (tensor == nullptr) {
+            continue;
+        }
+        measured_cache_tensor measured;
+        measured.type = tensor->type;
+        measured.shape.assign(tensor->ne, tensor->ne + ggml_n_dims(tensor));
+        measured.alloc_bytes = ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+        if (cache_alignment > 0) {
+            measured.alloc_bytes = GGML_PAD(measured.alloc_bytes, cache_alignment);
+        }
+        measured_cache_tensors_[entry.first] = std::move(measured);
+    }
+    for (const auto& entry : measured_cache_tensors_) {
+        last_measurement_.cache_bytes += entry.second.alloc_bytes;
+    }
+    const size_t live_cache_bytes = last_measurement_.cache_bytes +
+                                    (replaces_cache_buffer ? previous_cache_bytes : 0);
+    last_measurement_.compute_bytes += live_cache_bytes;
+
+    for (const auto& kv : saved_bindings) {
+        kv.first->buffer = kv.second.buffer;
+        kv.first->data   = kv.second.data;
+        kv.first->extra  = kv.second.extra;
+    }
+    last_measurement_.valid   = true;
+    last_measurement_.desc    = get_desc();
+    last_measurement_.runner  = this;
+    last_measurement_.backend = runtime_backend;
+    last_measurement_.module  = fit_module_;
+
+    const auto split_plan = sd::ggml_graph_cut::build_plan(runtime_backend,
+                                                           gf,
+                                                           params_tensor_set_,
+                                                           get_desc().c_str());
+    if (split_plan.valid && split_plan.has_cuts && split_plan.segments.size() > 1) {
+        std::unordered_set<ggml_tensor*> seen_split_params;
+        last_measurement_.split_segment_params_bytes.reserve(split_plan.segments.size());
+        last_measurement_.split_segment_compute_bytes.reserve(split_plan.segments.size());
+        for (const auto& segment : split_plan.segments) {
+            size_t segment_bytes = 0;
+            for (ggml_tensor* raw_param : sd::ggml_graph_cut::param_tensors(gf, segment)) {
+                ggml_tensor* param = canonical_param_tensor(raw_param);
+                if (param != nullptr && seen_split_params.insert(param).second) {
+                    segment_bytes += ggml_nbytes(param);
+                }
+            }
+            last_measurement_.split_segment_params_bytes.push_back(segment_bytes);
+            last_measurement_.split_segment_compute_bytes.push_back(
+                segment.compute_buffer_size + live_cache_bytes);
+        }
+    }
+    if (measure_collector_ != nullptr) {
+        measure_collector_->push_back(last_measurement_);
+    }
+}
+
+
 std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
                                                      int n_threads,
                                                      bool auto_runner_end,
                                                      bool no_return,
                                                      const std::function<bool()>& read_outputs) {
     last_compute_status_ = GGML_STATUS_FAILED;
+    if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
+        cache_.clear();
+        measured_cache_tensors_.clear();
+        measure_generation_seen_ = measure_generation_;
+    }
     if (graph_active_) {
         LOG_ERROR("%s does not support reentrant graph execution", get_desc().c_str());
         return std::nullopt;
@@ -799,6 +913,19 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
     ggml_cgraph* graph = nullptr;
     if (!prepare_compute_graph(get_graph, &graph)) {
         return std::nullopt;
+    }
+    if (measure_mode_) {
+        measure_graph_memory(graph);
+        std::optional<sd::Tensor<float>> output = sd::Tensor<float>();
+        if (!no_return && ggml_graph_n_nodes(graph) > 0) {
+            auto* out = ggml_get_tensor(compute_ctx, final_result_name.c_str());
+            if (out == nullptr) return std::nullopt;
+            output = sd::zeros<float>(sd::shape_from_ggml(out));
+        }
+        if (read_outputs && !read_outputs()) return std::nullopt;
+        success = true;
+        last_compute_status_ = GGML_STATUS_SUCCESS;
+        return output;
     }
     if (vae_auto_cpu_fallback_enabled && !sd_backend_is_cpu(runtime_backend) &&
         vae_cpu_fallback_backend != nullptr && sd_backend_is_cpu(vae_cpu_fallback_backend)) {

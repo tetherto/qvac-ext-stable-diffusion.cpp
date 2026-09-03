@@ -134,6 +134,7 @@ bool UpscalerGGML::load_from_file(const std::string& esrgan_path,
     }
     LOG_INFO("Upscaler architecture: %s", runner()->get_desc().c_str());
     runner()->set_max_graph_vram_bytes(max_graph_vram_bytes);
+    runner()->set_fit_module(SDBackendModule::UPSCALER);
     if (direct) {
         runner()->set_conv2d_direct_enabled(true);
     }

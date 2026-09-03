@@ -421,7 +421,8 @@ struct ControlNet : public GGMLRunner {
             controls.clear();
             controls.reserve(control_outputs_ggml.size());
             for (ggml_tensor* control : control_outputs_ggml) {
-                auto control_host = restore_trailing_singleton_dims(sd::make_sd_tensor_from_ggml<float>(control), 4);
+                auto control_host = restore_trailing_singleton_dims(GGMLRunner::measure_mode_enabled()
+                    ? sd::zeros<float>(sd::shape_from_ggml(control)) : sd::make_sd_tensor_from_ggml<float>(control), 4);
                 if (control_host.empty()) {
                     return false;
                 }

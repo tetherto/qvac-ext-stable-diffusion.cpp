@@ -22,6 +22,7 @@ enum class SDBackendModule {
     UPSCALER,
     DETECTOR,
     AUDIO_ENCODER,
+    UNSET,
 };
 
 struct SDBackendAssignment {

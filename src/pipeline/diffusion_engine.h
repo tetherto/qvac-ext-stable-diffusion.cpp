@@ -107,6 +107,8 @@ public:
     std::string split_mode_spec;
     bool auto_fit_enabled = false;
     bool vae_auto_cpu_fallback_enabled = false;
+    bool fit_dry_run = false;
+    std::map<SDBackendModule, size_t> fit_module_params_bytes;
 
     bool diffusion_conv_direct = false;
 

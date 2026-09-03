@@ -1221,6 +1221,7 @@ struct LoraModel : public GGMLRunner {
             return build_lora_graph(model_tensors, model_tensor_names, version);
         };
         auto read_outputs = [&]() {
+            if (GGMLRunner::measure_mode_enabled()) return true;
             for (const auto& item : original_tensor_to_final_tensor) {
                 ggml_backend_tensor_copy(item.second, item.first);
             }

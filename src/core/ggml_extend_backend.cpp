@@ -1262,6 +1262,8 @@ const char* sd_backend_module_name(SDBackendModule module) {
             return "detector";
         case SDBackendModule::AUDIO_ENCODER:
             return "audio_encoder";
+        case SDBackendModule::UNSET:
+            return "unset";
     }
     return "unknown";
 }

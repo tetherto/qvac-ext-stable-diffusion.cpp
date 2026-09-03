@@ -320,11 +320,17 @@ bool StableDiffusionGGML::register_runner_params(ModelComponent component,
     if (model == nullptr) {
         return true;
     }
+    if constexpr (std::is_base_of_v<GGMLRunner, T> ||
+                  std::is_base_of_v<Conditioner, T> ||
+                  std::is_base_of_v<GenerationExtension, T>) model->set_fit_module(module);
     std::map<std::string, ggml_tensor*> group_tensors;
     std::map<ggml_tensor*, enum ggml_op> tensor_ops;
     model->get_param_tensors(group_tensors);
     if constexpr (std::is_base_of_v<Conditioner, T>) {
         model->get_param_tensor_ops(tensor_ops);
+    }
+    for (const auto& entry : group_tensors) {
+        if (entry.second) fit_module_params_bytes[module] += ggml_nbytes(entry.second);
     }
     if (model_manager == nullptr) {
         return true;
@@ -932,6 +938,7 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     disable_prefetch          = sd_ctx_params->disable_prefetch;
     disable_segmented_compute = sd_ctx_params->disable_segmented_compute;
     eager_load                = sd_ctx_params->eager_load;
+    if (fit_dry_run) { enable_mmap = false; eager_load = false; }
     backend_spec              = SAFE_STR(sd_ctx_params->backend);
     params_backend_spec       = SAFE_STR(sd_ctx_params->params_backend);
     split_mode_spec           = SAFE_STR(sd_ctx_params->split_mode);
@@ -1088,7 +1095,7 @@ void StableDiffusionGGML::configure_weight_loading() {
         LOG_WARN("in mode 'immediately', LoRAs will cause extra memory usage with mmap");
     }
     model_manager->prepare_file_io();
-    load_alphas_cumprod();
+    if (!fit_dry_run) load_alphas_cumprod();
 }
 
 sd::model_builders::Context StableDiffusionGGML::model_build_context() {
@@ -1481,7 +1488,7 @@ bool StableDiffusionGGML::build_denoiser() {
         pred_type          = policy.default_prediction;
         default_flow_shift = policy.flow_shift_from_weights ? policy.flow_shift_from_weights(tensor_storage_map) : policy.default_flow_shift;
         if (policy.probe_v_prediction) {
-            pred_type = is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
+            pred_type = !fit_dry_run && is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
         } else if (policy.prediction_from_weights) {
             pred_type = policy.prediction_from_weights(tensor_storage_map);
         }
@@ -1662,6 +1669,7 @@ std::shared_ptr<LoraModel> StableDiffusionGGML::load_lora_model(const ModelManag
     auto lora                              = std::make_shared<LoraModel>(lora_log_id(lora_spec), backend_for(module), params_backend_for(module),
                                                                          model_manager, lora_spec.file_id, version, mode,
                                                                          backend_manager.params_backend_follows_runtime(module));
+    lora->set_fit_module(module);
     LoraModel::filter_t lora_tensor_filter = module_filter;
     if (!lora_spec.tensor_name_prefix_filter.empty()) {
         lora_tensor_filter = [module_filter, prefix = lora_spec.tensor_name_prefix_filter](const std::string& tensor_name) {

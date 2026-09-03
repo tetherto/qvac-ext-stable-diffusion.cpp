@@ -375,6 +375,7 @@ int32_t sd_get_num_physical_cores() {
 
 static sd_progress_cb_t sd_progress_cb = nullptr;
 void* sd_progress_cb_data              = nullptr;
+static thread_local bool sd_progress_suppressed = false;
 
 static sd_preview_info_t sd_preview_info = {};
 static sd_preview_cb_t sd_preview_cb     = nullptr;
@@ -597,6 +598,9 @@ static int show_eta      = -1;  // -1 - estimate duration, 0 - hide, 1 - show
 static float passed_time = 0.f;
 
 void pretty_progress(int step, int steps, float time) {
+    if (sd_progress_suppressed) {
+        return;
+    }
     if (sd_progress_cb) {
         sd_progress_cb(step, steps, time, sd_progress_cb_data);
         return;
@@ -626,6 +630,9 @@ void pretty_progress(int step, int steps, float time) {
 }
 
 void pretty_bytes_progress(int step, int steps, uint64_t bytes_processed, float elapsed_seconds) {
+    if (sd_progress_suppressed) {
+        return;
+    }
     if (sd_progress_cb) {
         float time = elapsed_seconds / (step + 1e-6f);
         sd_progress_cb(step, steps, time, sd_progress_cb_data);
@@ -791,6 +798,14 @@ sd_progress_cb_t sd_get_progress_callback() {
 }
 void* sd_get_progress_callback_data() {
     return sd_progress_cb_data;
+}
+
+bool sd_get_progress_suppressed() {
+    return sd_progress_suppressed;
+}
+
+void sd_set_progress_suppressed(bool suppressed) {
+    sd_progress_suppressed = suppressed;
 }
 
 sd_image_t tensor_to_sd_image(const sd::Tensor<float>& tensor, int frame_index) {
