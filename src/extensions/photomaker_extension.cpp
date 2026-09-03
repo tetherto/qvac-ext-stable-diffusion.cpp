@@ -116,6 +116,12 @@ struct PhotoMakerExtension : public GenerationExtension {
         return enabled;
     }
 
+    void set_fit_module(SDBackendModule module) override {
+        if (pmid_model) {
+            pmid_model->set_fit_module(module);
+        }
+    }
+
     bool init(const GenerationExtensionInitContext& ctx) override {
         model_path = SAFE_STR(ctx.params->photo_maker_path);
         if (model_path.empty()) {

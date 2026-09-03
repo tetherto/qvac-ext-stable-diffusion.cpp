@@ -140,6 +140,7 @@ public:
     virtual SDCondition get_learned_condition(int n_threads,
                                               const ConditionerParams& conditioner_params) = 0;
     virtual void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors)           = 0;
+    virtual void set_fit_module(SDBackendModule module)                                    = 0;
     virtual void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) {}
     virtual void set_max_graph_vram_bytes(size_t max_vram_bytes) {}
     virtual void set_stream_layers_enabled(bool enabled) {}
@@ -192,6 +193,13 @@ struct FrozenCLIPEmbedderWithCustomWords : public Conditioner {
         text_model->get_param_tensors(tensors, "cond_stage_model.transformer.text_model");
         if (sd_version_is_sdxl(version)) {
             text_model2->get_param_tensors(tensors, "cond_stage_model.1.transformer.text_model");
+        }
+    }
+
+    void set_fit_module(SDBackendModule module) override {
+        text_model->set_fit_module(module);
+        if (sd_version_is_sdxl(version)) {
+            text_model2->set_fit_module(module);
         }
     }
 
@@ -663,6 +671,18 @@ struct SD3CLIPEmbedder : public Conditioner {
         }
     }
 
+    void set_fit_module(SDBackendModule module) override {
+        if (clip_l) {
+            clip_l->set_fit_module(module);
+        }
+        if (clip_g) {
+            clip_g->set_fit_module(module);
+        }
+        if (t5) {
+            t5->set_fit_module(module);
+        }
+    }
+
     void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
         if (clip_l) {
             clip_l->set_max_graph_vram_bytes(max_vram_bytes);
@@ -1070,6 +1090,15 @@ struct FluxCLIPEmbedder : public Conditioner {
         }
     }
 
+    void set_fit_module(SDBackendModule module) override {
+        if (clip_l) {
+            clip_l->set_fit_module(module);
+        }
+        if (t5) {
+            t5->set_fit_module(module);
+        }
+    }
+
     void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
         if (clip_l) {
             clip_l->set_max_graph_vram_bytes(max_vram_bytes);
@@ -1360,6 +1389,12 @@ struct T5CLIPEmbedder : public Conditioner {
         }
     }
 
+    void set_fit_module(SDBackendModule module) override {
+        if (t5) {
+            t5->set_fit_module(module);
+        }
+    }
+
     void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
         if (t5) {
             t5->set_max_graph_vram_bytes(max_vram_bytes);
@@ -1576,6 +1611,12 @@ struct MiniT2IConditioner : public Conditioner {
         }
     }
 
+    void set_fit_module(SDBackendModule module) override {
+        if (t5) {
+            t5->set_fit_module(module);
+        }
+    }
+
     void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
         if (t5) {
             t5->set_max_graph_vram_bytes(max_vram_bytes);
@@ -1686,6 +1727,10 @@ struct AnimaConditioner : public Conditioner {
 
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
         llm->get_param_tensors(tensors, "text_encoders.llm");
+    }
+
+    void set_fit_module(SDBackendModule module) override {
+        llm->set_fit_module(module);
     }
 
     void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) override {
@@ -1873,6 +1918,13 @@ struct LLMEmbedder : public Conditioner {
         llm->get_param_tensors(tensors, "text_encoders.llm");
         if (byt5) {
             byt5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
+        }
+    }
+
+    void set_fit_module(SDBackendModule module) override {
+        llm->set_fit_module(module);
+        if (byt5) {
+            byt5->set_fit_module(module);
         }
     }
 
@@ -3002,6 +3054,11 @@ struct LTXAVEmbedder : public Conditioner {
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
         llm->get_param_tensors(tensors, "text_encoders.llm");
         projector->get_param_tensors(tensors, "text_embedding_projection");
+    }
+
+    void set_fit_module(SDBackendModule module) override {
+        llm->set_fit_module(module);
+        projector->set_fit_module(module);
     }
 
     void get_param_tensor_ops(std::map<ggml_tensor*, enum ggml_op>& tensor_ops) override {

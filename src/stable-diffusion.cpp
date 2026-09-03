@@ -345,7 +345,9 @@ public:
         if (model == nullptr) {
             return true;
         }
-        if constexpr (std::is_base_of_v<GGMLRunner, T>) {
+        if constexpr (std::is_base_of_v<GGMLRunner, T> ||
+                      std::is_base_of_v<Conditioner, T> ||
+                      std::is_base_of_v<GenerationExtension, T>) {
             model->set_fit_module(module);
         }
         std::map<std::string, ggml_tensor*> group_tensors;
@@ -4223,9 +4225,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     for (const auto& record : records) {
         SDBackendModule module = record.module;
         if (module == SDBackendModule::UNSET) {
-            LOG_WARN("fit-params: ignoring unattributed graph measurement from %s",
-                     record.desc.c_str());
-            continue;
+            LOG_ERROR("fit-params: unattributed graph measurement from %s",
+                      record.desc.c_str());
+            delete sd_ctx->sd;
+            sd_ctx->sd = nullptr;
+            return SD_FIT_ERROR;
         }
         auto& m                = module_map[module];
         m.module               = module;
@@ -4252,6 +4256,13 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
             std::vector<GGMLRunner::graph_memory_measurement> tiled_records;
             if (measure(tiled, tiled_records)) {
                 for (const auto& record : tiled_records) {
+                    if (record.module == SDBackendModule::UNSET) {
+                        LOG_ERROR("fit-params: unattributed tiled graph measurement from %s",
+                                  record.desc.c_str());
+                        delete sd_ctx->sd;
+                        sd_ctx->sd = nullptr;
+                        return SD_FIT_ERROR;
+                    }
                     if (record.module == SDBackendModule::VAE) {
                         it->second.compute_bytes_tiled = std::max(it->second.compute_bytes_tiled, record.compute_bytes);
                     }
@@ -7167,6 +7178,7 @@ static sd::Tensor<float> upscale_ltx_spatial_video_latent(sd_ctx_t* sd_ctx,
         std::make_unique<LTXVUpsampler::LatentUpsamplerRunner>(sd_ctx->sd->backend_for(SDBackendModule::UPSCALER),
                                                                model_loader.get_tensor_storage_map(),
                                                                upsampler_manager);
+    upsampler->set_fit_module(SDBackendModule::UPSCALER);
     const size_t max_graph_vram_bytes = sd_ctx->sd->max_graph_vram_bytes_for_module(SDBackendModule::UPSCALER);
     upsampler->set_max_graph_vram_bytes(max_graph_vram_bytes);
     if (upsampler->model == nullptr) {

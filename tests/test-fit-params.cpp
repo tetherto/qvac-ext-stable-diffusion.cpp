@@ -286,6 +286,8 @@ bool test_measure_mode_preserves_outputs_and_projects_cache() {
                          "measure output should preserve the named result shape");
         passed &= expect(!records.empty() && records.back().cache_bytes > 0,
                          "measurements should include projected persistent cache bytes");
+        passed &= expect(!records.empty() && records.back().module == SDBackendModule::VAE,
+                         "measurements should preserve their runner module attribution");
 
         auto second = runner.run(true);
         passed &= expect(second.has_value() && runner.warm_cache_seen,

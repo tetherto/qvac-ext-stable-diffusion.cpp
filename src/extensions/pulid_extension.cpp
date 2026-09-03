@@ -87,6 +87,8 @@ struct PuLIDExtension : public GenerationExtension {
         return enabled;
     }
 
+    void set_fit_module(SDBackendModule) override {}
+
     bool init(const GenerationExtensionInitContext& ctx) override {
         enabled = strlen(SAFE_STR(ctx.params->pulid_weights_path)) > 0;
         return true;
