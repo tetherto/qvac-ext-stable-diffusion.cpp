@@ -258,7 +258,8 @@ namespace sd::fit_params {
 
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
-                        FitPlan* plan) {
+                        FitPlan* plan,
+                        bool offload_params_to_cpu) {
         if (plan == nullptr) {
             return false;
         }
@@ -308,7 +309,7 @@ namespace sd::fit_params {
         }
 
         // check-first: the default placement puts every module on the default (first GPU) device
-        {
+        if (!offload_params_to_cpu) {
             int64_t params_sum = 0;
             ComputePhases compute;
             for (const ModuleMemory& m : modules) {
@@ -335,10 +336,10 @@ namespace sd::fit_params {
         });
 
         std::vector<Decision> decisions(modules.size());
-        bool time_share = false;
+        bool time_share = offload_params_to_cpu;
 
         // resident plan: every module keeps its params loaded, compute buffers coexist per device
-        {
+        if (!time_share) {
             std::vector<int64_t> params_sum(devices.size(), 0);
             std::vector<ComputePhases> compute_phases(devices.size());
             bool ok         = true;
@@ -395,6 +396,10 @@ namespace sd::fit_params {
         // time-share plan: phases run sequentially, heavy modules load per phase and free after
         if (time_share) {
             std::vector<ComputePhases> compute_phases(devices.size());
+            auto set_params_residency = [offload_params_to_cpu](Decision& decision) {
+                decision.cpu_params  = offload_params_to_cpu;
+                decision.disk_params = !offload_params_to_cpu;
+            };
             auto compute_with_concurrent_phase = [&](size_t device_idx,
                                                      SDBackendModule module,
                                                      int64_t compute) {
@@ -480,8 +485,8 @@ namespace sd::fit_params {
                     }
                 }
                 if (best >= 0) {
-                    decision.placed      = true;
-                    decision.disk_params = true;
+                    decision.placed = true;
+                    set_params_residency(decision);
                     decision.device_idxs.push_back((size_t)best);
                     compute_phases[best].add(m.module, (int64_t)m.compute_bytes);
                     continue;
@@ -495,8 +500,8 @@ namespace sd::fit_params {
                         }
                     }
                     if (best >= 0) {
-                        decision.placed      = true;
-                        decision.disk_params = true;
+                        decision.placed = true;
+                        set_params_residency(decision);
                         decision.tiled       = true;
                         plan->vae_tiling     = true;
                         decision.device_idxs.push_back((size_t)best);
@@ -523,8 +528,8 @@ namespace sd::fit_params {
                                                  compute_with_concurrent_phase(di, m.module, (int64_t)m.compute_bytes));
                     }
                     if ((int64_t)m.params_bytes <= capacity && split_graphs_fit(m, idxs, split_compute)) {
-                        decision.placed      = true;
-                        decision.disk_params = true;
+                        decision.placed = true;
+                        set_params_residency(decision);
                         decision.device_idxs = std::move(idxs);
                         for (size_t di : decision.device_idxs) {
                             compute_phases[di].add(m.module, (int64_t)m.compute_bytes);
@@ -584,11 +589,16 @@ namespace sd::fit_params {
                     target += " (split)";
                 }
             }
+            const char* cpu_params_desc = "";
+            if (decision.cpu_params) {
+                cpu_params_desc = decision.stream_layers ? ", params on cpu, stream layers"
+                                                         : ", params on cpu";
+            }
             report_line(plan->report, "    %-12s -> %s%s%s%s",
                         module_spec_key(m.module).c_str(),
                         target.c_str(),
                         decision.disk_params ? ", params on disk" : "",
-                        decision.cpu_params ? ", params on cpu, stream layers" : "",
+                        cpu_params_desc,
                         decision.tiled ? ", vae tiling" : "");
         }
 

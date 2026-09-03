@@ -4044,9 +4044,11 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         LOG_ERROR("fit-params: set at most one complete generation request");
         return SD_FIT_ERROR;
     }
+    const bool offload_params_to_cpu = strcmp(SAFE_STR(sd_ctx_params->params_backend), "*=cpu") == 0;
     if (strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
-        strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0) {
-        LOG_WARN("fit-params: explicit backend placement cannot be validated; clear backend and params_backend before fitting");
+        (strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0 && !offload_params_to_cpu)) {
+        LOG_WARN("fit-params: explicit backend placement cannot be validated; clear backend and "
+                 "params_backend before fitting (params_backend *=cpu is supported)");
         return SD_FIT_FAILURE;
     }
 
@@ -4263,7 +4265,10 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         modules.push_back(kv.second);
     }
     sd::fit_params::FitPlan plan;
-    bool planned = sd::fit_params::plan_placement(modules, sd_ctx->sd->max_vram_assignment, &plan);
+    bool planned = sd::fit_params::plan_placement(modules,
+                                                  sd_ctx->sd->max_vram_assignment,
+                                                  &plan,
+                                                  offload_params_to_cpu);
 
     delete sd_ctx->sd;
     sd_ctx->sd = nullptr;

@@ -45,6 +45,8 @@ Useful flags:
   values cap the graph-splitting budget, negative values use auto budget
   detection, and `0` disables graph splitting.
 - `--fit-print`: print the measured memory table to stdout instead of arguments
+- `--offload-to-cpu`: require parameters to remain in host RAM and include that
+  host-memory requirement in the fitted placement
 - `-p`: representative prompt (token count affects text encoder memory)
 - generation inputs including init/control/reference images, LoRAs, and hires
   options flow into the measurement as they would into a real run; explicit
@@ -169,7 +171,8 @@ image-only model returns `SD_FIT_ERROR`.
 - `SD_FIT_SUCCESS`: a placement was found, or the current/default placement
   already fits.
 - `SD_FIT_FAILURE`: no placement was projected to fit, or `ctx.backend` /
-  `ctx.params_backend` was already set by the caller.
+  `ctx.params_backend` was already set by the caller. The supported exception is
+  `ctx.params_backend = "*=cpu"`, which requests CPU parameter offload.
 - `SD_FIT_ERROR`: invalid inputs or a hard measurement error such as an
   unreadable model.
 

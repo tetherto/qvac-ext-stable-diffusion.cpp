@@ -167,7 +167,9 @@ of arguments. Budgets reuse `--max-vram`, with measured fitting retaining a
 If the default placement already fits, nothing needs to change and the tool
 prints an empty line. Explicit `--backend` / `--params-backend` assignments are
 rejected because measured fitting derives a new placement rather than validating
-an existing one.
+an existing one. `--offload-to-cpu` is supported: the planner keeps parameters
+in host RAM, validates that capacity, and emits the equivalent fitted parameter
+placement.
 
 The same measurement is available to library users through `sd_fit_params()`
 in `stable-diffusion.h`, which takes the context params plus an
@@ -181,7 +183,8 @@ and must be released with `sd_fit_result_free()`. Persistent cache buffers and
 the concurrent diffusion/ControlNet compute phase are included in the measured
 peak. CPU fallbacks are accepted only when the projected CPU parameters and
 compute buffers fit currently available host memory. Callers must leave
-`backend` and `params_backend` unset while requesting a fit.
+`backend` unset and `params_backend` either unset or exactly `*=cpu` while
+requesting a fit.
 
 ## Modules
 

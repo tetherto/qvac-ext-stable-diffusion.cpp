@@ -37,7 +37,8 @@ namespace sd::fit_params {
     // derive placement specs from measured module memory and per-device budgets
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
-                        FitPlan* plan);
+                        FitPlan* plan,
+                        bool offload_params_to_cpu = false);
 
 }  // namespace sd::fit_params
 

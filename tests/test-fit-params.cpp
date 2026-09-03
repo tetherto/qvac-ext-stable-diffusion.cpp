@@ -235,6 +235,38 @@ bool test_cpu_fallback_checks_host_memory() {
                   "host-capacity failure should be explained in the report");
 }
 
+bool test_cpu_param_offload_is_planned() {
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "64")) {
+        return false;
+    }
+
+    const std::vector<sd::fit_params::ModuleMemory> modules = {
+        module(SDBackendModule::DIFFUSION, 2, 2, true),
+        module(SDBackendModule::TE, 1, 1, true),
+    };
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement(modules, budgets, &plan, true);
+    if (!expect(ok && plan.valid, "CPU parameter offload plan should be valid") ||
+        !expect(plan.changed && plan.time_share, "CPU parameter offload should use a time-share placement") ||
+        !expect(plan.runtime_spec == "diffusion=GPU0,te=GPU0",
+                ("unexpected CPU offload runtime spec: " + plan.runtime_spec).c_str()) ||
+        !expect(plan.params_spec == "diffusion=cpu,te=cpu",
+                ("unexpected CPU offload params spec: " + plan.params_spec).c_str())) {
+        return false;
+    }
+
+    if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "3")) {
+        return false;
+    }
+    sd::fit_params::FitPlan constrained_plan;
+    ok = sd::fit_params::plan_placement(modules, budgets, &constrained_plan, true);
+    return expect(ok && !constrained_plan.valid,
+                  "CPU parameter offload must fail when its weights exceed host memory");
+}
+
 bool test_measure_mode_preserves_outputs_and_projects_cache() {
     ggml_backend_t backend = sd_backend_cpu_init();
     if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
@@ -329,6 +361,7 @@ int main() {
         !test_explicit_budget_keeps_headroom() ||
         !test_controlnet_compute_is_concurrent() ||
         !test_cpu_fallback_checks_host_memory() ||
+        !test_cpu_param_offload_is_planned() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||
