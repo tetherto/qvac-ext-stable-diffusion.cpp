@@ -142,6 +142,50 @@ GPUs with the layer/row split mechanism (`--split-mode` selects which, layer
 by default). Components that fit nowhere fall back to the CPU. If a VAE decode
 still runs out of memory, tiling is enabled and the decode retried once.
 
+## Measured fitting (`sd-fit-params`)
+
+`sd-fit-params` is a standalone tool that derives the same kind of placement,
+but from *measured* memory instead of auto-fit's fixed compute reserves. It
+runs the real generation pipeline in a metadata-only dry run: every module's
+compute graphs are built for the requested generation request and their
+compute buffer sizes are measured without allocating ggml weight/compute
+buffers or reading weight data. Shaped host tensors are materialized between
+graph builds, and allocation failures are returned as fit errors. Because
+compute memory depends on the generation parameters, they are inputs to the
+tool, and the printed arguments are valid for workloads up to that size.
+
+Logs go to stderr, the fitted arguments go to stdout:
+
+```shell
+sd-fit-params -m model.gguf -W 1024 -H 1024 | tee args.txt
+cat args.txt | xargs sd-cli -m model.gguf -p "a cat" -W 1024 -H 1024
+```
+
+`--fit-print` prints the measured per-device / per-module memory table instead
+of arguments. Budgets reuse `--max-vram`, with measured fitting retaining a
+512 MiB safety margin after applying automatic or explicit per-device limits.
+If the default placement already fits, nothing needs to change and the tool
+prints an empty line. Explicit `--backend` / `--params-backend` assignments are
+rejected because measured fitting derives a new placement rather than validating
+an existing one. `--offload-to-cpu` is supported: the planner keeps parameters
+in host RAM, validates that capacity, and emits the equivalent fitted parameter
+placement.
+
+The same measurement is available to library users through `sd_fit_params()`
+in `stable-diffusion.h`, which takes the context params plus an
+`sd_fit_workload_t` and returns the derived specs and a report. The workload can
+be the simple scalar fields (`prompt`, `width`, `height`, `video_frames`) or one
+complete representative request through `image_gen_params` or
+`video_gen_params`. Use the full request form when conditioning, LoRAs, hires,
+cache settings, image/video/audio inputs, or VAE tiling settings materially
+affect the graph being measured. Result strings are owned by `sd_fit_result_t`
+and must be released with `sd_fit_result_free()`. Persistent cache buffers and
+the concurrent diffusion/ControlNet compute phase are included in the measured
+peak. CPU fallbacks are accepted only when the projected CPU parameters and
+compute buffers fit currently available host memory. Callers must leave
+`backend` unset and `params_backend` either unset or exactly `*=cpu` while
+requesting a fit.
+
 ## Modules
 
 | Module | Purpose | Accepted names |

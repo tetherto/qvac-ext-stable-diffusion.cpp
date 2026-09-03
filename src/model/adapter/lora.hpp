@@ -1179,11 +1179,13 @@ struct LoraModel : public GGMLRunner {
         };
         GGMLRunner::compute<float>(get_graph, n_threads, false, false, false, true);
         stat(!warn_unused);
-        for (auto item : original_tensor_to_final_tensor) {
-            ggml_tensor* original_tensor = item.first;
-            ggml_tensor* final_tensor    = item.second;
+        if (!GGMLRunner::measure_mode_enabled()) {
+            for (auto item : original_tensor_to_final_tensor) {
+                ggml_tensor* original_tensor = item.first;
+                ggml_tensor* final_tensor    = item.second;
 
-            ggml_backend_tensor_copy(final_tensor, original_tensor);
+                ggml_backend_tensor_copy(final_tensor, original_tensor);
+            }
         }
         original_tensor_to_final_tensor.clear();
         GGMLRunner::free_compute_buffer();

@@ -21,6 +21,7 @@
 
 #include "conditioning/conditioner.hpp"
 #include "core/backend_fit.h"
+#include "core/fit_params.h"
 #include "extensions/generation_extension.h"
 #include "model/adapter/ip_adapter.hpp"
 #include "model/adapter/lora.hpp"
@@ -267,6 +268,8 @@ public:
     std::string split_mode_spec;
     bool auto_fit_enabled = false;
     bool vae_auto_cpu_fallback_enabled = false;
+    bool fit_dry_run      = false;  // metadata-only init for memory measurement, never reads weight data
+    std::map<SDBackendModule, size_t> fit_module_params_bytes;
 
     bool diffusion_conv_direct = false;
 
@@ -342,11 +345,21 @@ public:
         if (model == nullptr) {
             return true;
         }
+        if constexpr (std::is_base_of_v<GGMLRunner, T> ||
+                      std::is_base_of_v<Conditioner, T> ||
+                      std::is_base_of_v<GenerationExtension, T>) {
+            model->set_fit_module(module);
+        }
         std::map<std::string, ggml_tensor*> group_tensors;
         std::map<ggml_tensor*, enum ggml_op> tensor_ops;
         model->get_param_tensors(group_tensors);
         if constexpr (std::is_base_of_v<Conditioner, T>) {
             model->get_param_tensor_ops(tensor_ops);
+        }
+        for (const auto& kv : group_tensors) {
+            if (kv.second != nullptr) {
+                fit_module_params_bytes[module] += ggml_nbytes(kv.second);
+            }
         }
         if (model_manager == nullptr) {
             return true;
@@ -901,6 +914,10 @@ public:
                 }
             }
         }
+        if (fit_dry_run) {
+            enable_mmap = false;
+            eager_load  = false;
+        }
         max_vram_assignment.reset(0.f);
         {
             std::string error;
@@ -1031,7 +1048,9 @@ public:
             LOG_WARN("in mode 'immediately', LoRAs will cause extra memory usage with mmap");
         }
         model_loader.process_model_files(enable_mmap, needs_writable_mmap);
-        load_alphas_cumprod(model_loader);
+        if (!fit_dry_run) {
+            load_alphas_cumprod(model_loader);
+        }
 
         diffusion_conv_direct = sd_ctx_params->diffusion_conv_direct;
 
@@ -1775,8 +1794,9 @@ public:
 
             size_t total_params_size = total_params_ram_size + total_params_vram_size;
             LOG_INFO(
-                "total params memory size = %.2fMB (VRAM %.2fMB, RAM %.2fMB): "
+                "%stotal params memory size = %.2fMB (VRAM %.2fMB, RAM %.2fMB): "
                 "text_encoders %.2fMB(%s), diffusion_model %.2fMB(%s), vae %.2fMB(%s), controlnet %.2fMB(%s), extensions %.2fMB(%s)",
+                fit_dry_run ? "projected " : "",  // in a fit dry run nothing is allocated
                 total_params_size / 1024.0 / 1024.0,
                 total_params_vram_size / 1024.0 / 1024.0,
                 total_params_ram_size / 1024.0 / 1024.0,
@@ -1798,7 +1818,8 @@ public:
 
             if (pred_type == PREDICTION_COUNT) {
                 if (sd_version_is_sd2(version)) {
-                    pred_type = is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
+                    // the v-pred probe runs a real compute with loaded weights; irrelevant for memory measurement
+                    pred_type = !fit_dry_run && is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
                 } else if (sd_version_is_sdxl(version)) {
                     if (tensor_storage_map.find("edm_vpred.sigma_max") != tensor_storage_map.end()) {
                         // CosXL models
@@ -1983,6 +2004,7 @@ public:
                                                 lora_spec.path,
                                                 lora_spec.is_high_noise ? "model.high_noise_" : "",
                                                 version);
+        lora->set_fit_module(module);
         LoraModel::filter_t lora_tensor_filter = module_filter;
         if (!lora_spec.tensor_name_prefix_filter.empty()) {
             lora_tensor_filter = [module_filter, prefix = lora_spec.tensor_name_prefix_filter](const std::string& tensor_name) {
@@ -3120,8 +3142,8 @@ public:
         return latent_frames_to_video_frames(video_frames_to_latent_frames(frames));
     }
 
-    sd::Tensor<float> encode_to_vae_latents(const sd::Tensor<float>& x, bool encode_video = false) {
-        auto latents = first_stage_model->encode(n_threads, x, vae_tiling_params, encode_video, circular_x, circular_y);
+    sd::Tensor<float> encode_to_vae_latents(const sd::Tensor<float>& x) {
+        auto latents = first_stage_model->encode(n_threads, x, vae_tiling_params, circular_x, circular_y);
         if (latents.empty()) {
             return {};
         }
@@ -3129,8 +3151,8 @@ public:
         return latents;
     }
 
-    sd::Tensor<float> encode_first_stage(const sd::Tensor<float>& x, bool encode_video = false) {
-        auto latents = encode_to_vae_latents(x, encode_video);
+    sd::Tensor<float> encode_first_stage(const sd::Tensor<float>& x) {
+        auto latents = encode_to_vae_latents(x);
         if (latents.empty()) {
             return {};
         }
@@ -3932,6 +3954,35 @@ static bool sd_version_supports_image_generation(SDVersion version) {
     return version != VERSION_ABOT_WORLD && !sd_version_supports_video_generation(version);
 }
 
+static void sd_vid_gen_params_from_image_request(sd_vid_gen_params_t* video,
+                                                  const sd_img_gen_params_t& image,
+                                                  int video_frames) {
+    sd_vid_gen_params_init(video);
+    video->loras                 = image.loras;
+    video->lora_count            = image.lora_count;
+    video->prompt                = image.prompt;
+    video->negative_prompt       = image.negative_prompt;
+    video->clip_skip             = image.clip_skip;
+    video->init_image            = image.init_image;
+    video->ref_images            = image.ref_images;
+    video->ref_images_count      = image.ref_images_count;
+    video->width                 = image.width;
+    video->height                = image.height;
+    video->sample_params         = image.sample_params;
+    video->strength              = image.strength;
+    video->seed                  = image.seed;
+    video->video_frames          = std::max(video_frames, 1);
+    video->vae_tiling_params     = image.vae_tiling_params;
+    video->cache                 = image.cache;
+    video->hires                 = image.hires;
+    video->circular_x            = image.circular_x;
+    video->circular_y            = image.circular_y;
+    if (image.control_image.data != nullptr) {
+        video->control_frames      = const_cast<sd_image_t*>(&image.control_image);
+        video->control_frames_size = 1;
+    }
+}
+
 sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_t* sd_ctx = (sd_ctx_t*)malloc(sizeof(sd_ctx_t));
     if (sd_ctx == nullptr) {
@@ -3968,6 +4019,301 @@ SD_API void sd_cancel_generation(sd_ctx_t* sd_ctx, enum sd_cancel_mode_t mode) {
         }
         sd_ctx->sd->set_cancel_flag(mode);
     }
+}
+
+void sd_fit_workload_init(sd_fit_workload_t* workload) {
+    if (workload == nullptr) {
+        return;
+    }
+    *workload                   = {};
+    workload->width             = 512;
+    workload->height            = 512;
+    workload->video_frames      = 1;
+    workload->vae_tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
+}
+
+enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
+                                   const sd_fit_workload_t* workload,
+                                   sd_fit_result_t* result) {
+    if (result == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    *result = {};
+    if (sd_ctx_params == nullptr || workload == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    if (workload->image_gen_params != nullptr && workload->video_gen_params != nullptr) {
+        LOG_ERROR("fit-params: set at most one complete generation request");
+        return SD_FIT_ERROR;
+    }
+    const bool offload_params_to_cpu = strcmp(SAFE_STR(sd_ctx_params->params_backend), "*=cpu") == 0;
+    if (strlen(SAFE_STR(sd_ctx_params->backend)) > 0 ||
+        (strlen(SAFE_STR(sd_ctx_params->params_backend)) > 0 && !offload_params_to_cpu)) {
+        LOG_WARN("fit-params: explicit backend placement cannot be validated; clear backend and "
+                 "params_backend before fitting (params_backend *=cpu is supported)");
+        return SD_FIT_FAILURE;
+    }
+
+    int64_t t0 = ggml_time_ms();
+
+    sd_ctx_params_t dry_params = *sd_ctx_params;
+    dry_params.auto_fit        = false;
+    dry_params.eager_load      = false;
+
+    sd_ctx_t sd_ctx_storage{};
+    sd_ctx_t* sd_ctx        = &sd_ctx_storage;
+    sd_ctx->sd              = new StableDiffusionGGML();
+    sd_ctx->sd->fit_dry_run = true;
+    if (!sd_ctx->sd->init(&dry_params)) {
+        LOG_ERROR("fit-params: dry-run model init failed");
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+
+    const int workload_width = workload->image_gen_params != nullptr ? workload->image_gen_params->width
+                               : workload->video_gen_params != nullptr ? workload->video_gen_params->width
+                                                                       : workload->width;
+    const int workload_height = workload->image_gen_params != nullptr ? workload->image_gen_params->height
+                                : workload->video_gen_params != nullptr ? workload->video_gen_params->height
+                                                                        : workload->height;
+    const int workload_frames = workload->video_gen_params != nullptr ? workload->video_gen_params->video_frames
+                                                                       : workload->video_frames;
+    const char* prompt         = workload->prompt != nullptr && workload->prompt[0] != '\0'
+                                     ? workload->prompt
+                                     : "a photo of an astronaut riding a horse on the moon";
+    const bool model_video_only = sd_version_supports_video_generation(sd_ctx->sd->version);
+    const bool animatediff_capable = sd_ctx->sd->animatediff_loaded &&
+                                      sd_version_supports_animatediff(sd_ctx->sd->version);
+    const bool animatediff_video = animatediff_capable && workload_frames > 1;
+    if ((workload->video_gen_params != nullptr || workload_frames > 1) &&
+        !model_video_only && !animatediff_capable) {
+        LOG_ERROR("fit-params: a video workload was supplied for an image-only model");
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+    const bool video = workload->video_gen_params != nullptr || model_video_only || animatediff_video;
+
+    sd_tiling_params_t requested_tiling = workload->vae_tiling_params;
+    if (workload->image_gen_params != nullptr) {
+        requested_tiling = workload->image_gen_params->vae_tiling_params;
+    } else if (workload->video_gen_params != nullptr) {
+        requested_tiling = workload->video_gen_params->vae_tiling_params;
+    }
+
+    // Silence progress from this dry run without replacing the process-wide
+    // callback used by concurrent generation calls.
+    struct ProgressSuppressionGuard {
+        ProgressSuppressionGuard()
+            : previous(sd_get_progress_suppressed()) {
+            sd_set_progress_suppressed(true);
+        }
+        ~ProgressSuppressionGuard() {
+            sd_set_progress_suppressed(previous);
+        }
+        bool previous;
+    } progress_suppression_guard;
+
+    // run the real generation pipeline in measure mode: every runner builds its graphs,
+    // records memory requirements and returns shaped zero tensors, no weights are read
+    // models with a vision tower condition on an input image; feed a dummy one so
+    // the clip_vision and VAE encode graphs are built and measured too
+    std::vector<uint8_t> dummy_image_data;
+    sd_image_t dummy_init_image = {0, 0, 3, nullptr};
+    if (sd_ctx->sd->clip_vision != nullptr && workload_width > 0 && workload_height > 0) {
+        dummy_image_data.assign((size_t)workload_width * workload_height * 3, 128);
+        dummy_init_image = {(uint32_t)workload_width, (uint32_t)workload_height, 3, dummy_image_data.data()};
+    }
+
+    auto measure = [&](const sd_tiling_params_t& tiling,
+                       std::vector<GGMLRunner::graph_memory_measurement>& records) -> bool {
+        records.clear();
+        struct MeasureModeGuard {
+            explicit MeasureModeGuard(std::vector<GGMLRunner::graph_memory_measurement>* records) {
+                GGMLRunner::set_measure_mode(true, records);
+            }
+            ~MeasureModeGuard() {
+                GGMLRunner::set_measure_mode(false);
+            }
+        } measure_mode_guard(&records);
+        bool ok            = false;
+        sd_image_t* images = nullptr;
+        int num_images     = 0;
+        sd_audio_t* audio  = nullptr;
+        try {
+            if (video) {
+                sd_vid_gen_params_t gen;
+                if (workload->video_gen_params != nullptr) {
+                    gen = *workload->video_gen_params;
+                } else if (workload->image_gen_params != nullptr) {
+                    LOG_WARN("fit-params: promoting the image request to the video pipeline required by this model");
+                    sd_vid_gen_params_from_image_request(&gen,
+                                                         *workload->image_gen_params,
+                                                         workload_frames);
+                } else {
+                    sd_vid_gen_params_init(&gen);
+                    gen.prompt       = prompt;
+                    gen.width        = workload_width;
+                    gen.height       = workload_height;
+                    gen.video_frames = std::max(workload_frames, 1);
+                }
+                gen.sample_params.sample_steps        = 2;
+                gen.sample_params.custom_sigmas       = nullptr;
+                gen.sample_params.custom_sigmas_count = 0;
+                if (gen.high_noise_sample_params.sample_steps > 0) {
+                    gen.high_noise_sample_params.sample_steps        = 2;
+                    gen.high_noise_sample_params.custom_sigmas       = nullptr;
+                    gen.high_noise_sample_params.custom_sigmas_count = 0;
+                }
+                gen.vae_tiling_params = tiling;
+                if (gen.init_image.data == nullptr && dummy_init_image.data != nullptr) {
+                    gen.init_image = dummy_init_image;
+                }
+                ok = generate_video(sd_ctx, &gen, &images, &num_images, &audio);
+            } else {
+                sd_img_gen_params_t gen;
+                if (workload->image_gen_params != nullptr) {
+                    gen = *workload->image_gen_params;
+                } else {
+                    sd_img_gen_params_init(&gen);
+                    gen.prompt = prompt;
+                    gen.width  = workload_width;
+                    gen.height = workload_height;
+                }
+                gen.sample_params.sample_steps        = 2;
+                gen.sample_params.custom_sigmas       = nullptr;
+                gen.sample_params.custom_sigmas_count = 0;
+                gen.batch_count                       = 1;
+                gen.vae_tiling_params                 = tiling;
+                if (gen.ip_adapter_image.data == nullptr && dummy_init_image.data != nullptr) {
+                    gen.ip_adapter_image = dummy_init_image;  // image models have clip_vision only for ip-adapter
+                }
+                ok = generate_image(sd_ctx, &gen, &images, &num_images);
+            }
+        } catch (const std::bad_alloc&) {
+            LOG_ERROR("fit-params: host memory exhausted while materializing dry-run pipeline tensors");
+            ok = false;
+        } catch (const std::exception& error) {
+            LOG_ERROR("fit-params: dry-run pipeline failed: %s", error.what());
+            ok = false;
+        }
+        free_sd_audio(audio);
+        if (images != nullptr) {
+            for (int i = 0; i < num_images; i++) {
+                free(images[i].data);
+            }
+            free(images);
+        }
+        return ok;
+    };
+
+    std::vector<GGMLRunner::graph_memory_measurement> records;
+    if (!measure(requested_tiling, records) || records.empty()) {
+        LOG_ERROR("fit-params: measurement dry run failed");
+        delete sd_ctx->sd;
+        sd_ctx->sd = nullptr;
+        return SD_FIT_ERROR;
+    }
+
+    std::map<SDBackendModule, sd::fit_params::ModuleMemory> module_map;
+    for (const auto& kv : sd_ctx->sd->fit_module_params_bytes) {
+        auto& m        = module_map[kv.first];
+        m.module       = kv.first;
+        m.params_bytes = kv.second;
+    }
+    for (const auto& record : records) {
+        SDBackendModule module = record.module;
+        if (module == SDBackendModule::UNSET) {
+            LOG_ERROR("fit-params: unattributed graph measurement from %s",
+                      record.desc.c_str());
+            delete sd_ctx->sd;
+            sd_ctx->sd = nullptr;
+            return SD_FIT_ERROR;
+        }
+        auto& m                = module_map[module];
+        m.module               = module;
+        m.params_bytes         = std::max(m.params_bytes, record.params_bytes);
+        m.compute_bytes        = std::max(m.compute_bytes, record.compute_bytes);
+        if (!record.split_segment_params_bytes.empty()) {
+            m.split_graph_segment_params.push_back(record.split_segment_params_bytes);
+            m.split_graph_segment_compute.push_back(record.split_segment_compute_bytes);
+        }
+    }
+    for (auto module : {SDBackendModule::DIFFUSION, SDBackendModule::TE}) {
+        auto it = module_map.find(module);
+        if (it != module_map.end()) {
+            it->second.splittable = true;
+        }
+    }
+
+    // price VAE tiling so the planner can fall back to it when full-resolution decode does not fit
+    {
+        auto it = module_map.find(SDBackendModule::VAE);
+        if (it != module_map.end() && !requested_tiling.enabled) {
+            sd_tiling_params_t tiled = requested_tiling;
+            tiled.enabled            = true;
+            std::vector<GGMLRunner::graph_memory_measurement> tiled_records;
+            if (measure(tiled, tiled_records)) {
+                for (const auto& record : tiled_records) {
+                    if (record.module == SDBackendModule::UNSET) {
+                        LOG_ERROR("fit-params: unattributed tiled graph measurement from %s",
+                                  record.desc.c_str());
+                        delete sd_ctx->sd;
+                        sd_ctx->sd = nullptr;
+                        return SD_FIT_ERROR;
+                    }
+                    if (record.module == SDBackendModule::VAE) {
+                        it->second.compute_bytes_tiled = std::max(it->second.compute_bytes_tiled, record.compute_bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<sd::fit_params::ModuleMemory> modules;
+    for (const auto& kv : module_map) {
+        modules.push_back(kv.second);
+    }
+    sd::fit_params::FitPlan plan;
+    bool planned = sd::fit_params::plan_placement(modules,
+                                                  sd_ctx->sd->max_vram_assignment,
+                                                  &plan,
+                                                  offload_params_to_cpu);
+
+    delete sd_ctx->sd;
+    sd_ctx->sd = nullptr;
+
+    result->report        = strdup(plan.report.c_str());
+    result->vae_tiling    = plan.vae_tiling;
+    result->stream_layers = plan.stream_layers;
+    if (!planned || !plan.valid) {
+        return SD_FIT_FAILURE;
+    }
+
+    if (plan.changed) {
+        result->changed = true;
+        if (!plan.runtime_spec.empty()) {
+            result->backend = strdup(plan.runtime_spec.c_str());
+        }
+        if (!plan.params_spec.empty()) {
+            result->params_backend = strdup(plan.params_spec.c_str());
+        }
+    }
+
+    int64_t t1 = ggml_time_ms();
+    LOG_INFO("fit-params: fitting params to free memory took %.2fs", (t1 - t0) * 1.0f / 1000);
+    return SD_FIT_SUCCESS;
+}
+
+void sd_fit_result_free(sd_fit_result_t* result) {
+    if (result == nullptr) {
+        return;
+    }
+    free(result->backend);
+    free(result->params_backend);
+    free(result->report);
+    *result = {};
 }
 
 static sd_audio_t* waveform_to_sd_audio(const StableDiffusionGGML* sd,
@@ -6508,7 +6854,7 @@ static std::optional<ImageGenerationLatents> prepare_video_generation_latents(sd
             sd::ops::slice_assign(&image, 2, request->frames - 1, request->frames, end_image.unsqueeze(2));
         }
 
-        auto concat_latent = sd_ctx->sd->encode_first_stage(image, /*encode_video=*/true);  // [b, c, t, h/vae_scale_factor, w/vae_scale_factor]; encode_video bypasses spatial tiling
+        auto concat_latent = sd_ctx->sd->encode_first_stage(image);  // [b, c, t, h/vae_scale_factor, w/vae_scale_factor]
         if (concat_latent.empty()) {
             LOG_ERROR("failed to encode video conditioning frames");
             return std::nullopt;
@@ -6832,6 +7178,7 @@ static sd::Tensor<float> upscale_ltx_spatial_video_latent(sd_ctx_t* sd_ctx,
         std::make_unique<LTXVUpsampler::LatentUpsamplerRunner>(sd_ctx->sd->backend_for(SDBackendModule::UPSCALER),
                                                                model_loader.get_tensor_storage_map(),
                                                                upsampler_manager);
+    upsampler->set_fit_module(SDBackendModule::UPSCALER);
     const size_t max_graph_vram_bytes = sd_ctx->sd->max_graph_vram_bytes_for_module(SDBackendModule::UPSCALER);
     upsampler->set_max_graph_vram_bytes(max_graph_vram_bytes);
     if (upsampler->model == nullptr) {

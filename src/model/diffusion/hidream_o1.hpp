@@ -498,6 +498,10 @@ namespace HiDreamO1 {
             vision_runner->get_param_tensors(tensors);
         }
 
+        void set_fit_module(SDBackendModule module) override {
+            vision_runner->set_fit_module(module);
+        }
+
         void set_max_graph_vram_bytes(size_t max_graph_vram_bytes) override {
             vision_runner->set_max_graph_vram_bytes(max_graph_vram_bytes);
         }

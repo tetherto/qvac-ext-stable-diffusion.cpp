@@ -47,6 +47,7 @@ struct GenerationExtension {
         return true;
     }
     virtual void get_param_tensors(std::map<std::string, ggml_tensor*>&) {}
+    virtual void set_fit_module(SDBackendModule module) = 0;
     virtual void collect_loras(std::vector<ModelManager::LoraSpec>&) {}
     virtual void add_ignore_tensors(std::set<std::string>&) const {}
     virtual void runner_done() {}

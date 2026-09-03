@@ -1747,6 +1747,19 @@ struct GGMLRunnerContext {
 };
 
 struct GGMLRunner {
+    struct graph_memory_measurement {
+        std::string desc;
+        const GGMLRunner* runner = nullptr;
+        ggml_backend_t backend   = nullptr;
+        SDBackendModule module   = SDBackendModule::UNSET;
+        size_t compute_bytes     = 0;
+        size_t cache_bytes       = 0;
+        size_t params_bytes      = 0;
+        std::vector<size_t> split_segment_params_bytes;
+        std::vector<size_t> split_segment_compute_bytes;
+        bool valid               = false;
+    };
+
 protected:
     typedef std::function<ggml_cgraph*()> get_graph_cb_t;
     using GraphCutSegment = sd::ggml_graph_cut::Segment;
@@ -1782,6 +1795,22 @@ protected:
     std::vector<ggml_tensor*> runner_param_tensors;
     std::unordered_set<const ggml_tensor*> runner_param_tensor_set;
     bool params_tensor_set_dirty_ = true;
+
+    // Thread-local so nested runners in one fitting call are intercepted without
+    // affecting generation or fitting calls running on other threads.
+    static inline thread_local bool measure_mode_                                        = false;
+    static inline thread_local std::vector<graph_memory_measurement>* measure_collector_ = nullptr;
+    static inline thread_local size_t measure_generation_                                = 0;
+    graph_memory_measurement last_measurement_;
+    SDBackendModule fit_module_ = SDBackendModule::UNSET;
+    size_t measure_generation_seen_ = 0;
+
+    struct measured_cache_tensor {
+        ggml_type type = GGML_TYPE_F32;
+        std::vector<int64_t> shape;
+        size_t alloc_bytes = 0;
+    };
+    std::map<std::string, measured_cache_tensor> measured_cache_tensors_;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -2268,6 +2297,112 @@ protected:
                   compute_buffer_size / 1024.0 / 1024.0,
                   sd_backend_is_cpu(runtime_backend) ? "RAM" : "VRAM");
         return true;
+    }
+
+    // measure the compute buffer size and used param bytes of a built graph without
+    // allocating anything: params are temporarily marked as externally owned so
+    // gallocr does not reserve them (same trick as measure_segment_compute_buffer)
+    void measure_graph_memory(ggml_cgraph* gf) {
+        last_measurement_ = {};
+
+        struct TensorRuntimeBinding {
+            ggml_backend_buffer_t buffer = nullptr;
+            void* data                   = nullptr;
+            void* extra                  = nullptr;
+        };
+        std::unordered_map<ggml_tensor*, TensorRuntimeBinding> saved_bindings;
+        auto mark_external = [&](ggml_tensor* t) {
+            if (t == nullptr || saved_bindings.find(t) != saved_bindings.end()) {
+                return;
+            }
+            saved_bindings[t] = {t->buffer, t->data, t->extra};
+            t->data           = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        };
+
+        std::vector<ggml_tensor*> used_params = collect_used_param_tensors(gf);
+        for (ggml_tensor* param : used_params) {
+            last_measurement_.params_bytes += ggml_nbytes(param);
+        }
+        const int n_leafs = sd::ggml_graph_cut::leaf_count(gf);
+        for (int i = 0; i < n_leafs; ++i) {
+            ggml_tensor* leaf = sd::ggml_graph_cut::leaf_tensor(gf, i);
+            if (canonical_param_tensor(leaf) == nullptr) {
+                continue;
+            }
+            mark_external(leaf);
+            mark_external(leaf->view_src);
+        }
+
+        ggml_gallocr_t allocr = ggml_gallocr_new(ggml_backend_get_default_buffer_type(runtime_backend));
+        size_t sizes[1]       = {0};
+        ggml_gallocr_reserve_n_size(allocr, gf, nullptr, nullptr, sizes);
+        last_measurement_.compute_bytes = sizes[0];
+        ggml_gallocr_free(allocr);
+
+        ggml_backend_buffer_type_t cache_buft =
+            ggml_backend_get_default_buffer_type(runtime_backend);
+        const size_t cache_alignment = ggml_backend_buft_get_alignment(cache_buft);
+        size_t previous_cache_bytes = 0;
+        for (const auto& entry : measured_cache_tensors_) {
+            previous_cache_bytes += entry.second.alloc_bytes;
+        }
+        const bool replaces_cache_buffer = !cache_tensor_map.empty();
+        for (const auto& entry : cache_tensor_map) {
+            ggml_tensor* tensor = sd::ggml_graph_cut::cache_source_tensor(entry.second);
+            if (tensor == nullptr) {
+                continue;
+            }
+            measured_cache_tensor measured;
+            measured.type = tensor->type;
+            measured.shape.assign(tensor->ne, tensor->ne + ggml_n_dims(tensor));
+            measured.alloc_bytes = ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+            if (cache_alignment > 0) {
+                measured.alloc_bytes = GGML_PAD(measured.alloc_bytes, cache_alignment);
+            }
+            measured_cache_tensors_[entry.first] = std::move(measured);
+        }
+        for (const auto& entry : measured_cache_tensors_) {
+            last_measurement_.cache_bytes += entry.second.alloc_bytes;
+        }
+        const size_t live_cache_bytes = last_measurement_.cache_bytes +
+                                        (replaces_cache_buffer ? previous_cache_bytes : 0);
+        last_measurement_.compute_bytes += live_cache_bytes;
+
+        for (const auto& kv : saved_bindings) {
+            kv.first->buffer = kv.second.buffer;
+            kv.first->data   = kv.second.data;
+            kv.first->extra  = kv.second.extra;
+        }
+        last_measurement_.valid   = true;
+        last_measurement_.desc    = get_desc();
+        last_measurement_.runner  = this;
+        last_measurement_.backend = runtime_backend;
+        last_measurement_.module  = fit_module_;
+
+        const auto split_plan = sd::ggml_graph_cut::build_plan(runtime_backend,
+                                                               gf,
+                                                               params_tensor_set_,
+                                                               get_desc().c_str());
+        if (split_plan.valid && split_plan.has_cuts && split_plan.segments.size() > 1) {
+            std::unordered_set<ggml_tensor*> seen_split_params;
+            last_measurement_.split_segment_params_bytes.reserve(split_plan.segments.size());
+            last_measurement_.split_segment_compute_bytes.reserve(split_plan.segments.size());
+            for (const auto& segment : split_plan.segments) {
+                size_t segment_bytes = 0;
+                for (ggml_tensor* raw_param : sd::ggml_graph_cut::param_tensors(gf, segment)) {
+                    ggml_tensor* param = canonical_param_tensor(raw_param);
+                    if (param != nullptr && seen_split_params.insert(param).second) {
+                        segment_bytes += ggml_nbytes(param);
+                    }
+                }
+                last_measurement_.split_segment_params_bytes.push_back(segment_bytes);
+                last_measurement_.split_segment_compute_bytes.push_back(
+                    segment.compute_buffer_size + live_cache_bytes);
+            }
+        }
+        if (measure_collector_ != nullptr) {
+            measure_collector_->push_back(last_measurement_);
+        }
     }
 
     void free_cache_buffer() {
@@ -3111,6 +3246,9 @@ public:
     }
 
     void reset_compute_ctx() {
+        if (measure_mode_) {
+            cache_tensor_map.clear();
+        }
         free_compute_ctx();
         alloc_compute_ctx();
     }
@@ -3188,10 +3326,23 @@ public:
     }
 
     ggml_tensor* get_cache_tensor_by_name(const std::string& name) {
-        if (cache_ctx == nullptr) {
+        if (cache_ctx != nullptr) {
+            return ggml_get_tensor(cache_ctx, name.c_str());
+        }
+        if (!measure_mode_) {
             return nullptr;
         }
-        return ggml_get_tensor(cache_ctx, name.c_str());
+        auto it = measured_cache_tensors_.find(name);
+        if (it == measured_cache_tensors_.end() || compute_ctx == nullptr || it->second.shape.empty()) {
+            return nullptr;
+        }
+        ggml_tensor* tensor = ggml_new_tensor(compute_ctx,
+                                              it->second.type,
+                                              static_cast<int>(it->second.shape.size()),
+                                              it->second.shape.data());
+        ggml_set_name(tensor, name.c_str());
+        tensor->data = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        return tensor;
     }
 
     // Shared VAE-CPU-fallback reroute used by both entry points (the
@@ -3304,12 +3455,33 @@ public:
         };
         RunnerDoneGuard runner_done_guard(this, auto_free);
 
+        if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
+            cache_tensor_map.clear();
+            measured_cache_tensors_.clear();
+            measure_generation_seen_ = measure_generation_;
+        }
+
         ggml_cgraph* gf = nullptr;
         if (!prepare_compute_graph(get_graph, &gf)) {
             return std::nullopt;
         }
         GGML_ASSERT(gf != nullptr);
         rebuild_params_tensor_set();
+
+        if (measure_mode_) {
+            measure_graph_memory(gf);
+            // return a correctly shaped zero tensor so downstream host-side code
+            // (condition assembly, samplers) keeps working without weight data
+            std::optional<sd::Tensor<T>> result = sd::Tensor<T>();
+            if (!no_return && ggml_graph_n_nodes(gf) > 0) {
+                ggml_tensor* out = ggml_get_tensor(compute_ctx, final_result_name.c_str());
+                if (out == nullptr) {
+                    return std::nullopt;
+                }
+                result = sd::zeros<T>(sd::shape_from_ggml(out));
+            }
+            return result;
+        }
 
         if (!assign_graph_cut_layer_split_backends(gf)) {
             free_compute_ctx();
@@ -3459,6 +3631,28 @@ public:
 
     void set_max_graph_vram_bytes(size_t max_vram_bytes) {
         max_graph_vram_bytes = max_vram_bytes;
+    }
+
+    // in measure mode compute() builds the graph, records memory requirements and
+    // returns a shaped zero tensor without loading weights or allocating buffers
+    static void set_measure_mode(bool enabled, std::vector<graph_memory_measurement>* collector = nullptr) {
+        if (enabled && !measure_mode_) {
+            ++measure_generation_;
+        }
+        measure_mode_      = enabled;
+        measure_collector_ = enabled ? collector : nullptr;
+    }
+
+    static bool measure_mode_enabled() {
+        return measure_mode_;
+    }
+
+    graph_memory_measurement get_last_measurement() const {
+        return last_measurement_;
+    }
+
+    void set_fit_module(SDBackendModule module) {
+        fit_module_ = module;
     }
 
     void set_stream_layers_enabled(bool enabled) {

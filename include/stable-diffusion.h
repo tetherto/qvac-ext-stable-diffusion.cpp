@@ -500,6 +500,46 @@ SD_API void sd_hires_params_init(sd_hires_params_t* hires_params);
 SD_API void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params);
 SD_API char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params);
 
+// the workload the fitted parameters must accommodate: compute memory depends on it
+typedef struct {
+    const char* prompt;  // representative prompt, token count affects text encoder memory
+    int width;
+    int height;
+    int video_frames;  // <= 1 for image generation
+    sd_tiling_params_t vae_tiling_params;
+    // Optional complete representative request. Set at most one. When present,
+    // it supplies conditioning, LoRAs, hires, cache, and other generation inputs;
+    // the scalar fields above remain the fallback for callers that only need a
+    // basic text-to-image/video workload.
+    const sd_img_gen_params_t* image_gen_params;
+    const sd_vid_gen_params_t* video_gen_params;
+} sd_fit_workload_t;
+
+enum sd_fit_status_t {
+    SD_FIT_SUCCESS = 0,  // found a placement projected to fit (or no changes needed)
+    SD_FIT_FAILURE = 1,  // could not find a placement projected to fit
+    SD_FIT_ERROR   = 2,  // a hard error occurred, e.g. the model could not be read
+};
+
+typedef struct {
+    bool changed;          // false = current/default placement already fits, specs below are NULL
+    char* backend;         // fitted runtime placement spec for --backend, owned by the result
+    char* params_backend;  // fitted params placement spec for --params-backend, owned by the result
+    bool vae_tiling;       // recommend enabling VAE tiling
+    bool stream_layers;    // recommend enabling graph-cut streaming layers
+    char* report;          // human readable per-device / per-module memory table
+} sd_fit_result_t;
+
+SD_API void sd_fit_workload_init(sd_fit_workload_t* workload);
+
+// fit model/context placement to free device memory using measured no-alloc dry runs;
+// reads only model metadata, never weight data; backend must be unset and params_backend
+// must be unset or "*=cpu" to request CPU parameter offload
+SD_API enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
+                                          const sd_fit_workload_t* workload,
+                                          sd_fit_result_t* result);
+SD_API void sd_fit_result_free(sd_fit_result_t* result);
+
 SD_API sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params);
 SD_API void free_sd_ctx(sd_ctx_t* sd_ctx);
 SD_API void free_sd_audio(sd_audio_t* audio);
