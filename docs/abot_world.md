@@ -29,7 +29,16 @@ a rolling attention window and a 4-step distilled sampler.
   image (text-only, `first_frame_mask = 0`) are supported at the format level
   but gated: the distilled checkpoint cannot bootstrap a coherent first frame
   from noise, so front-ends should require an image until a T2V-capable
-  checkpoint ships.
+  checkpoint ships. Scene creation zeroes every prompt-embedding row past the
+  last real token (mirroring the reference text encoder's `u[v:] = 0`); the
+  encoder's attention mask only masks attention *inside* the encoder, so
+  without this a pack carries live pad-token embeddings in all 512 context
+  rows and the walk washes out from the first generated block.
+- **Scene-pack diagnostics**: loading a pack logs `scene pack: prompt rows N
+  live / M`, where `N` is the prompt's real token count and `M` the fixed
+  512-row context. `N == M` warns loudly — the pack's padding was not zeroed
+  (see above), so the walk is conditioned on pad embeddings and output will be
+  washed out; regenerate the pack with an engine that zeroes the padding.
 
 **Not supported:** the batch `generate_image()`/`generate_video()` paths —
 those are one-shot, whereas ABot needs the stateful causal session. Both batch

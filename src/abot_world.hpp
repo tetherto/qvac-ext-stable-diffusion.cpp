@@ -101,6 +101,8 @@ struct AbotScenePack {
     sd::Tensor<float> ref_latents;          // {32, 32, C, K} (T=1 squeezed)
     sd::Tensor<float> ref_mask;             // {K}
     int ref_slots = 0;
+    // prompt rows before the zeroed padding (diagnostic; 0 = not computed)
+    int64_t text_rows_live = 0;
     // false = text-only scene: block-0 frame 0 is generated from noise
     // instead of being pinned to first_frame_latents
     bool has_first_frame = true;
@@ -233,6 +235,43 @@ struct AbotScenePack {
             return false;
         }
         prompt_embeds.resize({sh[2], sh[1], 1, 1});
+        // Real prompt rows: the producer zeroes everything past the last token
+        // (the reference's `u[v:] = 0`), so trailing all-zero rows are padding.
+        // Reported because a pack whose padding is NOT zeroed conditions the
+        // walk on pad-token embeddings and degrades generation from the first
+        // block - a silent failure that is otherwise only visible in the
+        // output pixels.
+        {
+            const int64_t emb = prompt_embeds.shape()[0];
+            const int64_t rows = prompt_embeds.shape()[1];
+            const float* pd = prompt_embeds.data();
+            int64_t live = 0;
+            for (int64_t r = rows - 1; r >= 0; r--) {
+                bool nonzero = false;
+                for (int64_t i = 0; i < emb; i++) {
+                    if (pd[r * emb + i] != 0.0f) {
+                        nonzero = true;
+                        break;
+                    }
+                }
+                if (nonzero) {
+                    live = r + 1;
+                    break;
+                }
+            }
+            text_rows_live = live;
+            if (live == rows) {
+                // Keep the canonical "prompt rows N live / M" prefix so telemetry
+                // and scripts keyed to it still catch this (worst) case.
+                LOG_WARN(
+                    "scene pack: prompt rows %lld live / %lld - padding is not zeroed, so the "
+                    "walk is conditioned on pad embeddings (expect washed-out output; the pack "
+                    "producer is missing the reference's zero-padding step)",
+                    (long long)rows, (long long)rows);
+            } else {
+                LOG_INFO("scene pack: prompt rows %lld live / %lld", (long long)live, (long long)rows);
+            }
+        }
         if (!fetch("first_frame_latents", first_frame_latents, sh) ||  // [1,1,C,H,W]
             !expect("first_frame_latents", sh, 5, {0, 1})) {
             return false;
@@ -542,6 +581,34 @@ struct AbotWorldRunner : public GGMLRunner {
     // 8-key vector to 8 channels, repeat_interleaves x4 -> 32 channels constant
     // over HxW, then PixelUnshuffle(16): output channel c corresponds to input
     // channel c / (16*16) -> value = key[(c / 256) / 4].
+    // The action planes are the largest host-built input (~51 MB per frame) and
+    // are identical for every graph of a block: same keys held, same frame
+    // count, same latent size. Refilling them per graph put ~150 MB of memset
+    // on the critical path before each denoise step, so keep the filled buffer
+    // and rebuild it only when the key really changes.
+    sd::Tensor<float> act_planes;
+    uint8_t act_planes_mask = 0;
+    int act_planes_frames   = -1;
+    int64_t act_planes_w    = 0;
+    int64_t act_planes_h    = 0;
+
+    sd::Tensor<float>& action_planes(uint8_t action_mask, int F_cur, int64_t lat_w, int64_t lat_h, int c_unsh) {
+        if (act_planes_frames == F_cur && act_planes_mask == action_mask &&
+            act_planes_w == lat_w && act_planes_h == lat_h && !act_planes.empty()) {
+            return act_planes;
+        }
+        act_planes = sd::zeros<float>({lat_w, lat_h, c_unsh, F_cur});
+        for (int f = 0; f < F_cur; f++) {
+            fill_act_plane(act_planes.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
+                           action_mask, static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
+        }
+        act_planes_mask   = action_mask;
+        act_planes_frames = F_cur;
+        act_planes_w      = lat_w;
+        act_planes_h      = lat_h;
+        return act_planes;
+    }
+
     void fill_act_plane(float* dst, uint8_t action_mask, int w_in, int h_in, int c_unsh) {
         for (int c = 0; c < c_unsh; c++) {
             int key   = (c / (cfg.act_downscale_factor * cfg.act_downscale_factor)) / 4;
@@ -641,7 +708,11 @@ struct AbotWorldRunner : public GGMLRunner {
             return gf;
         };
 
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        // keep the compute buffer and its graph allocator across steps: the walk
+        // runs 5-6 graphs per block forever, and the defaults would free and
+        // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
+        // automatically when the graph shape changes between denoise and append)
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
         if (!result.has_value()) {
             return {};
         }
@@ -747,11 +818,7 @@ struct AbotWorldRunner : public GGMLRunner {
                 memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
             }
         }
-        sd::Tensor<float> act({lat_w, lat_h, c_unsh, F_cur});
-        for (int f = 0; f < F_cur; f++) {
-            fill_act_plane(act.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
-                           action_mask, static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
-        }
+        sd::Tensor<float>& act = action_planes(action_mask, F_cur, lat_w, lat_h, c_unsh);
         sd::Tensor<float> tvec({F_cur + 1});
         for (int f = 0; f < F_cur; f++) {
             tvec.data()[f] = frame_timesteps[static_cast<size_t>(f)];
@@ -886,7 +953,11 @@ struct AbotWorldRunner : public GGMLRunner {
             return gf;
         };
 
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false);
+        // keep the compute buffer and its graph allocator across steps: the walk
+        // runs 5-6 graphs per block forever, and the defaults would free and
+        // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
+        // automatically when the graph shape changes between denoise and append)
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
         if (prof) {
             const int64_t prof_t2 = ggml_time_ms();
             const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";
@@ -1132,6 +1203,10 @@ public:
                                                           true,
                                                           VERSION_ABOT_WORLD,
                                                           model_manager);
+        // Direct convolution for the pixel decoder: im2col+GEMM materializes a
+        // large intermediate per conv, and the decoder is all small 3x3 convs.
+        // Measured 148 -> 68 ms per block decode, bit-identical output.
+        tae->set_conv2d_direct_enabled(true);
         if (!model_manager->register_runner_params("ABot-World DiT",
                                                     *runner,
                                                     "model.diffusion_model",
