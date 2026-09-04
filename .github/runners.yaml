@@ -1,0 +1,17 @@
+# Specialized GitHub Actions runner labels for qvac-ext-stable-diffusion.cpp CI.
+# Edit this file, then run: node .github/scripts/sync-runner-names.mjs
+#
+# ubuntu-latest / macos-latest / windows-latest are intentionally omitted; keep
+# them hardcoded as GitHub's rolling aliases.
+#
+# FORMAT CONTRACT: a flat `key: value # comment` list, one entry per line. The
+# parser (.github/scripts/lib/runner-names.mjs) is line-based, not YAML. A value
+# is EITHER a bare single label (`windows-2022`) OR a flow array of bare tokens
+# (`[self-hosted, Linux, X64]`). Do not quote values or nest maps (the parser
+# fails loudly).
+#
+# SCOPE: this catalog governs only where jobs RUN (runs-on / matrix.runner). It
+# does NOT manage `matrix.os` identities or `matrix.os == '...'` conditionals.
+
+# GitHub-hosted (pinned images)
+windows_2022: windows-2022 # Windows Server 2022 hosted x64
