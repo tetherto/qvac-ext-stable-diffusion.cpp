@@ -261,11 +261,13 @@ struct AbotScenePack {
             }
             text_rows_live = live;
             if (live == rows) {
+                // Keep the canonical "prompt rows N live / M" prefix so telemetry
+                // and scripts keyed to it still catch this (worst) case.
                 LOG_WARN(
-                    "scene pack: all %lld prompt rows are non-zero - padding is not zeroed, so the "
+                    "scene pack: prompt rows %lld live / %lld - padding is not zeroed, so the "
                     "walk is conditioned on pad embeddings (expect washed-out output; the pack "
                     "producer is missing the reference's zero-padding step)",
-                    (long long)rows);
+                    (long long)rows, (long long)rows);
             } else {
                 LOG_INFO("scene pack: prompt rows %lld live / %lld", (long long)live, (long long)rows);
             }
