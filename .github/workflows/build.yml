@@ -38,8 +38,19 @@ on:
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
+# Dedupe per PR and per branch: a re-push or re-dispatch supersedes the
+# in-flight run. The previous group fell back to github.run_id whenever
+# head_ref was empty — i.e. on every push and workflow_dispatch — which made
+# the group unique per run, so those runs never cancelled.
+#
+# master is deliberately left on the run_id behaviour. The `release` job runs
+# on BOTH a create_release dispatch and a plain push to master, and its
+# create/upload steps are gated on `github.ref_name == 'master'` — so keying
+# master on the ref would let one merge cancel another mid-uploadReleaseAsset
+# and leave a published release with a partial asset set. Exempting the branch
+# covers the dispatch and the push path in one rule.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/master' && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 jobs:
