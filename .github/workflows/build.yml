@@ -38,17 +38,19 @@ on:
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
-# One run per (workflow, PR/branch). The previous group fell back to
-# github.run_id whenever head_ref was empty — i.e. on every push and
-# workflow_dispatch — which made the group unique per run, so those runs never
-# cancelled. Keying on the PR number (or the ref, off-PR) puts successive
-# pushes and dispatches for the same branch in one group.
+# Dedupe per PR and per branch: a re-push or re-dispatch supersedes the
+# in-flight run. The previous group fell back to github.run_id whenever
+# head_ref was empty — i.e. on every push and workflow_dispatch — which made
+# the group unique per run, so those runs never cancelled.
 #
-# A manual dispatch with create_release=true publishes a release, so it gets a
-# group of its own and is neither cancelled nor cancelling: a later push to the
-# same branch must not supersede a release half-way through.
+# master is deliberately left on the run_id behaviour. The `release` job runs
+# on BOTH a create_release dispatch and a plain push to master, and its
+# create/upload steps are gated on `github.ref_name == 'master'` — so keying
+# master on the ref would let one merge cancel another mid-uploadReleaseAsset
+# and leave a published release with a partial asset set. Exempting the branch
+# covers the dispatch and the push path in one rule.
 concurrency:
-  group: ${{ github.workflow }}-${{ (github.event_name == 'workflow_dispatch' && inputs.create_release) && format('release-{0}', github.run_id) || (github.event.pull_request.number || github.ref) }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/master' && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 jobs:
