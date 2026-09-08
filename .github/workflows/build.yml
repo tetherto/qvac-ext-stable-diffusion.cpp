@@ -38,8 +38,28 @@ on:
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
+# Dedupe per PR and per branch: a re-push or re-dispatch supersedes the
+# in-flight run. The previous group fell back to github.run_id whenever
+# head_ref was empty — i.e. on every push and workflow_dispatch — which made
+# the group unique per run, so those runs never cancelled.
+#
+# Anything that PUBLISHES is exempt and keyed per run instead, so it can never
+# be superseded. The exemption keys on the publish predicate rather than on the
+# branch, because every publish gate here has a branch-free disjunct:
+#
+#   release job (645)     if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event.inputs.create_release == 'true'
+#   docker push (226)   push: (github.event_name == 'push' && github.ref == 'refs/heads/master') || github.event.inputs.create_release == 'true'
+#   Create release (683)  if: github.event_name == 'workflow_dispatch' || github.ref_name == 'master'
+#   Upload release (692)  if: github.event_name == 'workflow_dispatch' || github.ref_name == 'master'
+#
+# So a `create_release: true` dispatch publishes from ANY ref, not just master.
+# Keying the exemption on the branch alone would leave that path cancellable:
+# `Upload release` creates the release and then loops uploadReleaseAsset one
+# zip at a time, so a cancel in between leaves a published release with a
+# partial asset set — and the tag-immutability ruleset means the tag cannot be
+# deleted or moved to redo it cleanly.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || ((github.event.inputs.create_release == 'true' || github.ref_name == 'master') && github.run_id) || github.ref }}
   cancel-in-progress: true
 
 jobs:
