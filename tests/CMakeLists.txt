@@ -47,3 +47,9 @@ target_include_directories(test-gguf-comfy-shape PRIVATE
     "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-gguf-comfy-shape PRIVATE stable-diffusion)
 add_test(NAME test-gguf-comfy-shape COMMAND test-gguf-comfy-shape)
+
+add_executable(test-safetensors-convrot test-safetensors-convrot.cpp)
+target_include_directories(test-safetensors-convrot PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-safetensors-convrot PRIVATE stable-diffusion)
+add_test(NAME test-safetensors-convrot COMMAND test-safetensors-convrot)

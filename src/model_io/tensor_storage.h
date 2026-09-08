@@ -22,6 +22,14 @@ struct TensorStorage {
     bool is_f8_e5m2         = false;
     bool is_f64             = false;
     bool is_i64             = false;
+    // ComfyUI TensorWiseINT8 stores the I8 weight and its per-output-row F32
+    // scale separately. ConvRot metadata is carried by a U8 JSON side tensor.
+    // The loader reconstructs this format into F16/F32 before backend upload.
+    bool is_comfy_int8_tensorwise = false;
+    bool comfy_int8_convrot       = false;
+    uint32_t comfy_int8_group_size = 0;
+    uint64_t comfy_int8_scale_offset = 0;
+    uint64_t comfy_int8_scale_nbytes = 0;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
     int n_dims              = 0;
 
