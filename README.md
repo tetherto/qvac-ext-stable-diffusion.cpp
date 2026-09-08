@@ -122,6 +122,23 @@ API and command-line option may change frequently.***
 - Download pre-built binaries from the [releases page](https://github.com/leejet/stable-diffusion.cpp/releases)
 - Or build from source by following the [build guide](./docs/build.md)
 
+### CUDA on Linux
+
+Build with NVIDIA CUDA support using `-DSD_CUDA=ON`. CUDA 13 installations
+that place headers under `targets/<platform>/include` are discovered
+automatically. When the C++ compiler is Clang, it is also used as NVCC's host
+compiler unless `CMAKE_CUDA_HOST_COMPILER` is supplied explicitly. On Linux,
+an installation at `/usr/local/cuda` is preferred over an older `nvcc` found
+only through `PATH`.
+
+```sh
+cmake -S . -B build -DSD_CUDA=ON
+cmake --build build --config Release
+```
+
+See the [CUDA build guide](./docs/build.md#build-with-cuda) for prerequisites
+and explicit toolkit overrides.
+
 ### Download model weights
 
 - download weights(.ckpt or .safetensors or .gguf). For example
