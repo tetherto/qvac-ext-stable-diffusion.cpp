@@ -59,6 +59,7 @@ API and command-line option may change frequently.***
     - [Qwen Image Edit series](./docs/qwen_image_edit.md)
   - Video Models
     - [Wan2.1/Wan2.2](./docs/wan.md)
+    - [LTX-2 (T2V/I2V)](./docs/ltx2.md) (work in progress)
   - [PhotoMaker](https://github.com/TencentARC/PhotoMaker) support.
   - Control Net support with SD 1.5
   - LoRA support, same as [stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#lora)
@@ -138,6 +139,7 @@ If you want to improve performance or reduce VRAM/RAM usage, please refer to [pe
 - [🔥Qwen Image](./docs/qwen_image.md)
 - [🔥Qwen Image Edit series](./docs/qwen_image_edit.md)
 - [🔥Wan2.1/Wan2.2](./docs/wan.md)
+- [LTX-2 (T2V/I2V)](./docs/ltx2.md) (work in progress)
 - [🔥Z-Image](./docs/z_image.md)
 - [Ovis-Image](./docs/ovis_image.md)
 - [Anima](./docs/anima.md)

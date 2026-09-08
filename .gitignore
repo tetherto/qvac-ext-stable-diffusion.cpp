@@ -13,3 +13,5 @@ output*.png
 models*
 *.log
 preview.png
+__pycache__/
+*.pyc
