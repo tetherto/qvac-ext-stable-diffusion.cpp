@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "core/ggml_extend.hpp"
+#include "ggml-cpu.h"
 #include "model_io/binary_io.h"
 #include "model_loader.h"
 
@@ -60,7 +62,14 @@ int main() {
     GGML_ASSERT(weight.is_comfy_int8_tensorwise);
     GGML_ASSERT(weight.comfy_int8_convrot);
     GGML_ASSERT(weight.comfy_int8_group_size == 256);
-    GGML_ASSERT(weight.comfy_int8_scale_nbytes == 4 * sizeof(float));
+    GGML_ASSERT(weight.has_comfy_int8_scale());
+    GGML_ASSERT(weight.comfy_int8_scale.name == "layer.weight_scale");
+    GGML_ASSERT(weight.comfy_int8_scale.type == GGML_TYPE_F32);
+    GGML_ASSERT(weight.comfy_int8_scale.n_dims == 2);
+    GGML_ASSERT(weight.comfy_int8_scale.ne[0] == 1);
+    GGML_ASSERT(weight.comfy_int8_scale.ne[1] == 4);
+    GGML_ASSERT(weight.comfy_int8_scale.nbytes == 4 * sizeof(float));
+    GGML_ASSERT(weight.is_comfy_int8_convrot_weight());
     GGML_ASSERT(loader.get_tensor_storage_map().find("layer.weight_scale") == loader.get_tensor_storage_map().end());
 
     ggml_init_params params = {4096, nullptr, false};
@@ -79,6 +88,34 @@ int main() {
     // preserves the squared norm of the dequantized first row.
     GGML_ASSERT(std::fabs(energy - 1.f) < 0.002f);
     ggml_free(ctx);
+
+    ggml_init_params native_params = {ggml_tensor_overhead() * 2 + 1024 + 4 * sizeof(float) + 4096, nullptr, false};
+    ggml_context* native_ctx       = ggml_init(native_params);
+    GGML_ASSERT(native_ctx != nullptr);
+    ggml_tensor* raw_weight = ggml_new_tensor_2d(native_ctx, GGML_TYPE_I8, 256, 4);
+    ggml_tensor* raw_scale  = ggml_new_tensor_1d(native_ctx, GGML_TYPE_F32, 4);
+    GGML_ASSERT(loader.load_comfy_int8_tensorwise(weight, raw_weight, raw_scale));
+    GGML_ASSERT(static_cast<const int8_t*>(raw_weight->data)[0] == 2);
+    GGML_ASSERT(static_cast<const int8_t*>(raw_weight->data)[1] == 0);
+    GGML_ASSERT(static_cast<const float*>(raw_scale->data)[0] == 0.5f);
+    GGML_ASSERT(static_cast<const float*>(raw_scale->data)[3] == 0.5f);
+    ggml_free(native_ctx);
+
+    ggml_backend_t cpu_backend = ggml_backend_cpu_init();
+    GGML_ASSERT(cpu_backend != nullptr);
+    const auto native_selection = select_convrot_tensor_storage(cpu_backend,
+                                                                 loader.get_tensor_storage_map(),
+                                                                 "ConvRot loader test");
+    GGML_ASSERT(native_selection.at("layer.weight").comfy_int8_native_enabled);
+    GGML_ASSERT(ggml_backend_supports_convrot(cpu_backend, GGML_TYPE_F32, 256));
+
+    GGML_ASSERT(setenv("SD_CONVROT_MODE", "compat", 1) == 0);
+    const auto compatibility_selection = select_convrot_tensor_storage(cpu_backend,
+                                                                        loader.get_tensor_storage_map(),
+                                                                        "ConvRot loader test");
+    GGML_ASSERT(!compatibility_selection.at("layer.weight").comfy_int8_native_enabled);
+    GGML_ASSERT(unsetenv("SD_CONVROT_MODE") == 0);
+    ggml_backend_free(cpu_backend);
 
     const std::string unsupported_group =
         "{\"format\":\"int8_tensorwise\",\"convrot\":true,\"convrot_groupsize\":16}";

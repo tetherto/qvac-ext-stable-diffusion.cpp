@@ -13,6 +13,23 @@
 
 #define SD_MAX_DIMS 5
 
+// A safetensors sidecar is deliberately not added to the model parameter map.
+// It remains addressable from its owning tensor so compound on-disk formats can
+// upload both buffers without exposing implementation metadata as a second
+// model parameter.
+struct TensorStorageSidecar {
+    std::string name;
+    ggml_type type = GGML_TYPE_COUNT;
+    int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+    int n_dims = 0;
+    uint64_t offset = 0;
+    uint64_t nbytes = 0;
+
+    bool valid() const {
+        return !name.empty() && type != GGML_TYPE_COUNT && n_dims > 0 && n_dims <= SD_MAX_DIMS && nbytes > 0;
+    }
+};
+
 struct TensorStorage {
     std::string name;
     ggml_type type          = GGML_TYPE_F32;
@@ -24,12 +41,15 @@ struct TensorStorage {
     bool is_i64             = false;
     // ComfyUI TensorWiseINT8 stores the I8 weight and its per-output-row F32
     // scale separately. ConvRot metadata is carried by a U8 JSON side tensor.
-    // The loader reconstructs this format into F16/F32 before backend upload.
+    // Keep the scale as an associated raw sidecar: it must not be mistaken for
+    // a model-level `weight_scale` parameter, but native operators need it.
     bool is_comfy_int8_tensorwise = false;
     bool comfy_int8_convrot       = false;
+    // Set by the runner's backend policy before parameters are constructed.
+    // False selects the verified F16 compatibility reconstruction.
+    bool comfy_int8_native_enabled = false;
     uint32_t comfy_int8_group_size = 0;
-    uint64_t comfy_int8_scale_offset = 0;
-    uint64_t comfy_int8_scale_nbytes = 0;
+    TensorStorageSidecar comfy_int8_scale;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
     int n_dims              = 0;
 
@@ -67,6 +87,15 @@ struct TensorStorage {
         } else {
             return nbytes();
         }
+    }
+
+    bool has_comfy_int8_scale() const {
+        return is_comfy_int8_tensorwise && comfy_int8_scale.valid();
+    }
+
+    bool is_comfy_int8_convrot_weight() const {
+        return has_comfy_int8_scale() && comfy_int8_convrot && comfy_int8_group_size == 256 && n_dims == 2 &&
+               ne[0] > 0 && ne[1] > 0 && ne[0] % static_cast<int64_t>(comfy_int8_group_size) == 0;
     }
 
     void unsqueeze() {

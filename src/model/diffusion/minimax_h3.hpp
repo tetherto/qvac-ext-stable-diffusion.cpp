@@ -986,7 +986,9 @@ namespace MiniMaxH3 {
             : DiffusionModelRunner(backend, prefix, weight_manager),
               config(Config::detect_from_weights(tensors, prefix)),
               model(config) {
-            model.init(params_ctx, tensors, prefix);
+            model.init(params_ctx,
+                       select_convrot_tensor_storage(backend, tensors, "MiniMax-H3 diffusion model"),
+                       prefix);
         }
 
         std::string get_desc() override {

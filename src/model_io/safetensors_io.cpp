@@ -112,8 +112,7 @@ struct SafetensorsTensorInfo {
 struct ComfyInt8Info {
     bool convrot            = false;
     uint32_t group_size     = 0;
-    uint64_t scale_offset   = 0;
-    uint64_t scale_nbytes   = 0;
+    TensorStorageSidecar scale;
 };
 
 static bool read_safetensors_tensor_info(const nlohmann::json& value,
@@ -277,8 +276,14 @@ static bool read_comfy_int8_metadata(std::ifstream& file,
             set_error(error, "ComfyUI Int8 marker '" + marker_name + "' declares a group size without ConvRot");
             return false;
         }
-        info.scale_offset = data_start + scale.begin;
-        info.scale_nbytes = scale.end - scale.begin;
+        info.scale.name   = base + ".weight_scale";
+        info.scale.type   = GGML_TYPE_F32;
+        info.scale.n_dims = 2;
+        // TensorStorage uses GGML's column-first shape convention.
+        info.scale.ne[0]  = 1;
+        info.scale.ne[1]  = weight.shape[0];
+        info.scale.offset = data_start + scale.begin;
+        info.scale.nbytes = scale.end - scale.begin;
         result->emplace(weight_it->first, info);
         scale_tensor_names->emplace(scale_it->first);
     }
@@ -455,8 +460,7 @@ bool read_safetensors_file(const std::string& file_path,
             tensor_storage.is_comfy_int8_tensorwise = true;
             tensor_storage.comfy_int8_convrot       = comfy_int8->second.convrot;
             tensor_storage.comfy_int8_group_size    = comfy_int8->second.group_size;
-            tensor_storage.comfy_int8_scale_offset  = comfy_int8->second.scale_offset;
-            tensor_storage.comfy_int8_scale_nbytes  = comfy_int8->second.scale_nbytes;
+            tensor_storage.comfy_int8_scale         = comfy_int8->second.scale;
             // The runtime reconstructs an F16 matrix before backend upload.
             tensor_storage.expected_type = GGML_TYPE_F16;
         }
