@@ -130,6 +130,14 @@ int main() {
     GGML_ASSERT(native_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(ggml_backend_supports_convrot_op(cpu_backend));
 
+    // A runner for another component must not inherit this component's
+    // ConvRot requirement when both live in the shared storage map.
+    const auto other_component_selection = select_convrot_tensor_storage(nullptr,
+                                                                          loader.get_tensor_storage_map(),
+                                                                          "unrelated component",
+                                                                          "other_component.");
+    GGML_ASSERT(!other_component_selection.at("layer.weight").comfy_int8_native_enabled);
+
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "compat") == 0);
     const auto compatibility_selection = select_convrot_tensor_storage(cpu_backend,
                                                                         loader.get_tensor_storage_map(),
