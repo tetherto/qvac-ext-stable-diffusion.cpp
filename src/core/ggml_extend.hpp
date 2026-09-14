@@ -3926,6 +3926,7 @@ protected:
     // post-linear model parameter, while ConvRot's F32 vector is a private
     // sidecar input to GGML_OP_MUL_MAT_CONVROT.
     bool has_convrot_weight = false;
+    bool use_convrot_f16_compat = false;
     float scale;
     std::string prefix;
 
@@ -3933,12 +3934,14 @@ protected:
         this->prefix         = prefix;
         has_weight_scale     = false;
         has_convrot_weight   = false;
+        use_convrot_f16_compat = false;
         const auto storage_it = tensor_storage_map.find(prefix + "weight");
         if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
             storage_it->second.comfy_int8_native_enabled) {
             params["weight"]                 = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
             params["weight.convrot_scale"]   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
             has_convrot_weight                 = true;
+            use_convrot_f16_compat             = storage_it->second.name.rfind("text_encoders.llm.", 0) == 0;
             if (bias) {
                 params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
             }
@@ -3996,6 +3999,14 @@ public:
             // rest.  The operator owns the scale semantics; do not route it
             // through the ordinary `weight_scale` post-multiply path.
             out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
+            // MiniMax H3's ConvRot text encoder is calibrated for the F16
+            // compatibility arithmetic. CUDA reconstructs one F16 matrix at
+            // a time and uses its standard F16 GEMM without retaining an F16
+            // copy of the complete text encoder. Other backends may ignore
+            // this hint and keep their native compact implementation.
+            if (use_convrot_f16_compat) {
+                ggml_mul_mat_convrot_set_f16_compat(out, true);
+            }
             if (b != nullptr) {
                 out = ggml_add_inplace(ctx->ggml_ctx, out, b);
             }
