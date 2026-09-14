@@ -1620,6 +1620,19 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
         return false;
     }
 
+    // The compact native path does not dequantize on the host, so validate the
+    // sidecar before uploading it.  Otherwise a malformed zero/NaN scale
+    // reaches the backend without the compatibility loader's validation.
+    const size_t scale_count = static_cast<size_t>(output_rows);
+    for (size_t row = 0; row < scale_count; ++row) {
+        float scale;
+        memcpy(&scale, scales.data() + row * sizeof(scale), sizeof(scale));
+        if (!std::isfinite(scale) || scale <= 0.f) {
+            LOG_ERROR("native ComfyUI Int8 tensor '%s' has a non-positive or non-finite scale", tensor_storage.name.c_str());
+            return false;
+        }
+    }
+
     const auto upload = [](ggml_tensor* dst, const void* src, size_t n) {
         if (dst->buffer != nullptr && !ggml_backend_buffer_is_host(dst->buffer)) {
             ggml_backend_tensor_set(dst, src, 0, n);

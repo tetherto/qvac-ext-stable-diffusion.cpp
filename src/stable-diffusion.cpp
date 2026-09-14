@@ -3995,7 +3995,15 @@ sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
         return nullptr;
     }
 
-    if (!sd_ctx->sd->init(sd_ctx_params)) {
+    bool initialized = false;
+    try {
+        initialized = sd_ctx->sd->init(sd_ctx_params);
+    } catch (const std::exception& error) {
+        LOG_ERROR("failed to initialize Stable Diffusion context: %s", error.what());
+    } catch (...) {
+        LOG_ERROR("failed to initialize Stable Diffusion context: unknown exception");
+    }
+    if (!initialized) {
         delete sd_ctx->sd;
         sd_ctx->sd = nullptr;
         free(sd_ctx);

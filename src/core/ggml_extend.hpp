@@ -44,20 +44,49 @@
 
 #define EPS 1e-05f
 
+// Construct only the operation metadata needed for the normal backend
+// supports_op query.  This stays private to the loader policy: backend
+// capabilities are expressed through the existing ggml interface, not a new
+// public ConvRot-specific API.
+inline bool ggml_backend_supports_convrot_op(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return false;
+    }
+    std::vector<uint8_t> storage(4 * ggml_tensor_overhead() + 1024);
+    ggml_init_params params = {
+        /*.mem_size   =*/ storage.size(),
+        /*.mem_buffer =*/ storage.data(),
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context* ctx = ggml_init(params);
+    if (ctx == nullptr) {
+        return false;
+    }
+    ggml_tensor* activations = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 1);
+    ggml_tensor* weights     = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 256, 1);
+    ggml_tensor* scales      = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor* op          = ggml_mul_mat_convrot(ctx, activations, weights, scales, 256);
+    const bool supported      = ggml_backend_supports_op(backend, op);
+    ggml_free(ctx);
+    return supported;
+}
+
 // Select the compact representation before any model parameter tensor is
 // created.  The default is deliberately native: an unsupported backend is a
 // configuration error rather than a silent CPU reroute or full F16 expansion.
 // Set SD_CONVROT_MODE=compat to explicitly request the compatibility loader.
 inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend,
                                                            const String2TensorStorage& source,
-                                                           const std::string& component) {
+                                                           const std::string& component,
+                                                           const std::string& prefix = "") {
     // OrderedMap's default copy also copies its iterator index; rebuild it so
     // this independent policy view owns a valid index into its own list.
     String2TensorStorage selected;
     bool has_convrot = false;
     for (const auto& [name, storage] : source) {
         selected.insert({name, storage});
-        has_convrot = has_convrot || storage.is_comfy_int8_convrot_weight();
+        has_convrot = has_convrot ||
+                      (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight());
     }
     if (!has_convrot) {
         return selected;
@@ -74,14 +103,14 @@ inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend
                  component.c_str(), backend_name);
         return selected;
     }
-    if (!ggml_backend_supports_convrot(backend, GGML_TYPE_F32, 256)) {
+    if (!ggml_backend_supports_convrot_op(backend)) {
         throw std::runtime_error("ConvRot native support is required for " + component +
                                  " but backend '" + backend_name +
                                  "' lacks the 256-wide I8/F32 ConvRot operation; use a capable backend or set "
                                  "SD_CONVROT_MODE=compat to select the F16 compatibility path");
     }
-    for (auto& [_, storage] : selected) {
-        if (storage.is_comfy_int8_convrot_weight()) {
+    for (auto& [name, storage] : selected) {
+        if (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight()) {
             storage.comfy_int8_native_enabled = true;
         }
     }
@@ -1742,6 +1771,15 @@ struct WeightAdapter {
                                            ggml_tensor* b,
                                            const std::string& prefix,
                                            ForwardParams forward_params)                                                              = 0;
+    // Return only the adapter's output-space contribution.  Native operations
+    // such as compact ConvRot own their base-weight arithmetic and therefore
+    // cannot use forward_with_lora() without recomputing an incompatible base.
+    virtual ggml_tensor* lora_output_delta(ggml_context* ctx,
+                                            ggml_backend_t backend,
+                                            ggml_tensor* x,
+                                            ggml_tensor* w,
+                                            const std::string& prefix,
+                                            ForwardParams forward_params)                                                           = 0;
     virtual size_t get_extra_graph_size()                                                                                             = 0;
 };
 
@@ -4009,6 +4047,16 @@ public:
             }
             if (b != nullptr) {
                 out = ggml_add_inplace(ctx->ggml_ctx, out, b);
+            }
+            if (ctx->weight_adapter) {
+                WeightAdapter::ForwardParams forward_params;
+                forward_params.op_type               = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
+                forward_params.linear.force_prec_f32 = force_prec_f32;
+                forward_params.linear.scale          = scale;
+                if (ggml_tensor* delta = ctx->weight_adapter->lora_output_delta(
+                        ctx->ggml_ctx, ctx->backend, x, w, prefix, forward_params)) {
+                    out = ggml_add_inplace(ctx->ggml_ctx, out, delta);
+                }
             }
         } else if (ctx->weight_adapter) {
             WeightAdapter::ForwardParams forward_params;
