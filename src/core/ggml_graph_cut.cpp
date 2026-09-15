@@ -664,7 +664,12 @@ namespace sd::ggml_graph_cut {
             if (output == nullptr) {
                 continue;
             }
-            ggml_set_output(output);
+            // gallocr can recycle a view's backing storage after its last
+            // in-segment consumer, even if the view itself is an output.
+            // Keep the data alive until the executor copies the cut cache.
+            for (auto* tensor = output; tensor != nullptr; tensor = tensor->view_src) {
+                ggml_set_output(tensor);
+            }
         }
         for (int node_idx : segment.internal_node_indices) {
             ggml_graph_add_node(segment_graph, ggml_graph_node(gf, node_idx));
@@ -716,8 +721,8 @@ namespace sd::ggml_graph_cut {
         std::unordered_map<ggml_tensor*, int32_t> saved_output_flags;
         for (int output_node_index : segment.output_node_indices) {
             ggml_tensor* output = ggml_graph_node(gf, output_node_index);
-            if (output != nullptr && saved_output_flags.find(output) == saved_output_flags.end()) {
-                saved_output_flags[output] = output->flags;
+            for (auto* tensor = output; tensor != nullptr; tensor = tensor->view_src) {
+                saved_output_flags.emplace(tensor, tensor->flags);
             }
         }
 
