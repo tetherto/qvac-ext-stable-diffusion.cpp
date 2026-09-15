@@ -46,6 +46,24 @@ namespace sd::ggml_graph_cut {
     };
 
     struct Plan {
+        struct TensorLayout {
+            ggml_type type;
+            ggml_op op;
+            int32_t flags;
+            std::array<int64_t, GGML_MAX_DIMS> ne;
+            std::array<size_t, GGML_MAX_DIMS> nb;
+            std::array<int, GGML_MAX_SRC> src;
+            int view_src;
+            size_t view_offs;
+            std::string name;
+
+            bool operator==(const TensorLayout& other) const {
+                return type == other.type && op == other.op && flags == other.flags &&
+                       ne == other.ne && nb == other.nb && src == other.src &&
+                       view_src == other.view_src && view_offs == other.view_offs && name == other.name;
+            }
+        };
+
         struct InputShape {
             int leaf_index                        = -1;
             ggml_type type                        = GGML_TYPE_COUNT;
@@ -58,6 +76,8 @@ namespace sd::ggml_graph_cut {
         int n_nodes    = 0;
         int n_leafs    = 0;
         std::vector<InputShape> input_shapes;
+        // Index-based plans require identical graph topology, not just sizes.
+        std::vector<TensorLayout> graph_layout;
         std::vector<Segment> segments;
     };
 

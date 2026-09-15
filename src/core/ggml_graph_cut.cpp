@@ -510,6 +510,41 @@ namespace sd::ggml_graph_cut {
         return ggml_nbytes(cache_src);
     }
 
+    static std::vector<Plan::TensorLayout> graph_layout(ggml_cgraph* gf) {
+        std::vector<ggml_tensor*> tensors;
+        std::unordered_map<const ggml_tensor*, int> indices;
+        const int n_leafs = ggml_graph_n_leafs(gf);
+        const int n_nodes = ggml_graph_n_nodes(gf);
+        tensors.reserve(static_cast<size_t>(n_leafs + n_nodes));
+        for (int i = 0; i < n_leafs + n_nodes; ++i) {
+            auto* tensor    = i < n_leafs ? ggml_graph_leaf(gf, i) : ggml_graph_node(gf, i - n_leafs);
+            indices[tensor] = i;
+            tensors.push_back(tensor);
+        }
+        auto index_of = [&](const ggml_tensor* tensor) {
+            auto it = indices.find(tensor);
+            return it != indices.end() ? it->second : -1;
+        };
+        std::vector<Plan::TensorLayout> layout;
+        layout.reserve(tensors.size());
+        for (const auto* tensor : tensors) {
+            Plan::TensorLayout entry{};
+            entry.type  = tensor->type;
+            entry.op    = tensor->op;
+            entry.flags = tensor->flags;
+            std::copy_n(tensor->ne, GGML_MAX_DIMS, entry.ne.begin());
+            std::copy_n(tensor->nb, GGML_MAX_DIMS, entry.nb.begin());
+            for (int i = 0; i < GGML_MAX_SRC; ++i) {
+                entry.src[static_cast<size_t>(i)] = index_of(tensor->src[i]);
+            }
+            entry.view_src  = index_of(tensor->view_src);
+            entry.view_offs = tensor->view_offs;
+            entry.name      = tensor->name;
+            layout.push_back(std::move(entry));
+        }
+        return layout;
+    }
+
     bool plan_matches_graph(ggml_cgraph* gf, const Plan& plan) {
         GGML_ASSERT(gf != nullptr);
         if (ggml_graph_n_nodes(gf) != plan.n_nodes || ggml_graph_n_leafs(gf) != plan.n_leafs) {
@@ -529,7 +564,7 @@ namespace sd::ggml_graph_cut {
                 }
             }
         }
-        return true;
+        return graph_layout(gf) == plan.graph_layout;
     }
 
     ggml_tensor* output_tensor(ggml_cgraph* gf, const Segment& segment, size_t output_index) {
@@ -726,6 +761,7 @@ namespace sd::ggml_graph_cut {
         }
         plan.n_nodes = n_nodes;
         plan.n_leafs = ggml_graph_n_leafs(gf);
+        plan.graph_layout = graph_layout(gf);
         for (int i = 0; i < ggml_graph_n_leafs(gf); ++i) {
             ggml_tensor* leaf = ggml_graph_leaf(gf, i);
             if (is_params_tensor(params_tensor_set, leaf)) {
@@ -834,6 +870,8 @@ namespace sd::ggml_graph_cut {
         merged_plan.valid     = base_plan.valid;
         merged_plan.n_nodes   = base_plan.n_nodes;
         merged_plan.n_leafs   = base_plan.n_leafs;
+        merged_plan.input_shapes = base_plan.input_shapes;
+        merged_plan.graph_layout = base_plan.graph_layout;
 
         std::unordered_set<int> available_cut_output_node_indices;
         available_cut_output_node_indices.reserve(static_cast<size_t>(n_nodes));
