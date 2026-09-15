@@ -44,6 +44,10 @@ namespace sd {
         size_t pending_bytes(ggml_cgraph* graph) const;
         size_t resident_bytes(ggml_backend_dev_t device) const;
         bool empty() const { return committed_.empty(); }
+        bool all_outputs_captured() const {
+            for (const auto& output : outputs_) if (pending_.count(output.first) == 0) return false;
+            return true;
+        }
         void set_backend(ggml_backend_t backend) {
             GGML_ASSERT(committed_.empty() && pending_.empty() && outputs_.empty());
             backend_ = backend;

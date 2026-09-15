@@ -375,6 +375,8 @@ public:
 
     void cache(const std::string name, ggml_tensor* tensor, ggml_cgraph* graph = nullptr);
 
+    void cache_persistent(const std::string& name, ggml_tensor* tensor) { cache(name, tensor); }
+
     ggml_tensor* get_cache_tensor_by_name(const std::string& name) {
         if (auto* cached = cache_.get(name)) return cached;
         if (!measure_mode_) {
