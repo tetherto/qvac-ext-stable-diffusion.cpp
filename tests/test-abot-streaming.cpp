@@ -149,6 +149,46 @@ static bool test_disk_residency(ggml_backend_t backend, bool disk, bool segmente
     return passed;
 }
 
+static bool test_plan_cache(ggml_backend_t backend) {
+    sd::ggml_graph_cut::PlanCache cache;
+    int previous_variant = -1;
+    for (int variant : {0, 0, 1, 1, 2, 2, 3, 3, 4, 4}) {
+        ggml_init_params init = {1024 * 1024, nullptr, true};
+        auto* ctx             = ggml_init(init);
+        auto* graph           = ggml_new_graph_custom(ctx, 32, false);
+        auto* input           = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, variant == 4 ? 16 : 8);
+        auto* a               = ggml_scale(ctx, input, 0.5f);
+        auto* b               = ggml_sqr(ctx, variant == 2 ? a : input);
+        sd::ggml_graph_cut::mark_graph_cut(a, variant == 3 ? "capture" : "pre", "x");
+        auto* output = variant == 1 ? ggml_add(ctx, b, a) : ggml_add(ctx, a, b);
+        ggml_set_name(output, "ggml_runner_final_result_tensor");
+        ggml_build_forward_expand(graph, output);
+        // Same counts and input shapes, different traversal and cut indices:
+        // the denoise -> KV-capture transition must not reuse the old plan.
+        // Also cover changed edges, cut names and dimensions, and rebuild
+        // identical graphs at new addresses to verify valid cache reuse.
+        if (previous_variant >= 0) {
+            const bool expected_match = variant == previous_variant;
+            if (sd::ggml_graph_cut::plan_matches_graph(graph, cache.graph_cut_plan) != expected_match ||
+                sd::ggml_graph_cut::plan_matches_graph(graph, cache.budgeted_graph_cut_plan) != expected_match) {
+                std::cerr << "Incorrect graph-cut cache match for variant " << variant << '\n';
+                ggml_free(ctx);
+                return false;
+            }
+        }
+        auto plan = sd::ggml_graph_cut::resolve_plan(backend, graph, &cache, 1024 * 1024, {}, nullptr);
+        if (!plan.valid || !sd::ggml_graph_cut::plan_matches_graph(graph, plan) ||
+            sd::ggml_graph_cut::output_tensor(graph, cache.graph_cut_plan.segments.front(), 0) != a) {
+            std::cerr << "Graph-cut cache failed to rebuild or reuse a matching plan\n";
+            ggml_free(ctx);
+            return false;
+        }
+        previous_variant = variant;
+        ggml_free(ctx);
+    }
+    return true;
+}
+
 int main() {
     sd_abot_session_params_t params;
     sd_abot_session_params_init(&params);
@@ -160,6 +200,7 @@ int main() {
     if (!backend)
         return 1;
     bool passed = test_history(backend, false) && test_history(backend, true);
+    passed      = test_plan_cache(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {
             passed = test_disk_residency(backend, disk, segmented) && passed;
