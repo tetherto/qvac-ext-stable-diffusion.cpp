@@ -64,19 +64,25 @@ static bool load_npy_f32(const std::string& path, std::vector<float>& out) {
 // golden noise can be injected via noise_override and final latents dumped in
 // sd-abot-walk's format for compare_walk.py). Exercises whichever walk path
 // --kv-cache selects.
-static int run_walkval(const std::string& dit, const std::string& taehv, const std::string& scene,
-                       const std::string& golden, const std::string& actions_spec,
-                       const std::string& latents_out, int blocks_n,
-                       int n_threads, uint64_t seed, const std::string& backend_spec,
-                       bool kv_cache) {
+static int run_walkval(const std::string& dit, const std::string& taehv, const std::string& scene, const std::string& golden, const std::string& actions_spec, const std::string& latents_out, int blocks_n, int n_threads, uint64_t seed, const std::string& backend_spec, bool kv_cache, const std::string& params_backend, const std::string& max_vram, bool stream_layers) {
     SDBackendManager bm;
     std::string err;
-    if (!bm.init(backend_spec.c_str(), nullptr, false, false, false, false, &err)) {
+    if (!bm.init(backend_spec.c_str(), params_backend.c_str(), nullptr, false, &err)) {
         fprintf(stderr, "backend init failed: %s\n", err.c_str());
         return 1;
     }
     ABOT::AbotWorldConfig wcfg;
     wcfg.kv_cache = kv_cache;
+    sd::ggml_graph_cut::MaxVramAssignment budget;
+    budget.reset(0.f);
+    if (!budget.parse(max_vram, &err) || !budget.canonicalize_backend_keys(&err)) {
+        fprintf(stderr, "max-vram: %s\n", err.c_str());
+        return 1;
+    }
+    wcfg.max_graph_vram_bytes = budget.bytes_for_backend(bm.runtime_backend(SDBackendModule::DIFFUSION));
+    wcfg.stream_layers        = stream_layers && bm.params_backend_is_cpu(SDBackendModule::DIFFUSION);
+    wcfg.dit_params_on_disk   = bm.params_backend_is_disk(SDBackendModule::DIFFUSION);
+    wcfg.tae_params_on_disk   = bm.params_backend_is_disk(SDBackendModule::VAE);
     ABOT::AbotWalkSession session;
     if (!session.load(bm.runtime_backend(SDBackendModule::DIFFUSION),
                       bm.params_backend(SDBackendModule::DIFFUSION),
@@ -171,10 +177,7 @@ static bool write_png(const std::string& path, const uint8_t* rgb, int w, int h)
     return stbi_write_png(path.c_str(), w, h, 3, rgb, w * 3) != 0;
 }
 
-static int run_walk(const std::string& dit, const std::string& taehv, const std::string& scene,
-                    const std::string& actions_spec, const std::string& outdir,
-                    int threads, int64_t seed, const std::string& backend,
-                    bool kv_cache, bool profile, int local_attn_size) {
+static int run_walk(const std::string& dit, const std::string& taehv, const std::string& scene, const std::string& actions_spec, const std::string& outdir, int threads, int64_t seed, const std::string& backend, bool kv_cache, bool profile, int local_attn_size, const std::string& params_backend, const std::string& max_vram, bool stream_layers) {
     sd_abot_session_params_t params;
     sd_abot_session_params_init(&params);
     params.dit_model_path  = dit.c_str();
@@ -186,6 +189,9 @@ static int run_walk(const std::string& dit, const std::string& taehv, const std:
     params.kv_cache        = kv_cache;
     params.profile         = profile;
     params.local_attn_size = local_attn_size;
+    params.params_backend  = params_backend.c_str();
+    params.max_vram        = max_vram.c_str();
+    params.stream_layers   = stream_layers;
 
     sd_abot_session_t* session = sd_abot_session_new(&params);
     if (session == nullptr) {
@@ -362,6 +368,8 @@ int main(int argc, char** argv) {
     int width = 832, height = 480, local_attn_size = 0;
     int64_t seed  = 42;
     bool kv_cache = false, profile = false;
+    std::string params_backend, max_vram;
+    bool stream_layers = false;
     for (int i = 1; i < argc; i++) {
         std::string k = argv[i];
         auto next     = [&]() -> std::string { return (i + 1 < argc) ? argv[++i] : std::string(); };
@@ -375,6 +383,12 @@ int main(int argc, char** argv) {
         else if (k == "--threads") threads = std::stoi(next());
         else if (k == "--seed") seed = std::stoll(next());
         else if (k == "--backend") backend = next();
+        else if (k == "--params-backend")
+            params_backend = next();
+        else if (k == "--max-vram")
+            max_vram = next();
+        else if (k == "--stream-layers")
+            stream_layers = true;
         else if (k == "--lat-w") lat_w = std::stoi(next());
         else if (k == "--lat-h") lat_h = std::stoi(next());
         else if (k == "--lat-c") lat_c = std::stoi(next());
@@ -414,12 +428,13 @@ int main(int argc, char** argv) {
             return 2;
         }
         return run_walkval(dit, taehv, scene, golden, actions, latents_out, blocks_n,
-                           threads, static_cast<uint64_t>(seed), backend, kv_cache);
+                           threads, static_cast<uint64_t>(seed), backend, kv_cache,
+                           params_backend, max_vram, stream_layers);
     }
     if (dit.empty() || taehv.empty() || scene.empty()) {
         fprintf(stderr, "walk mode needs --dit, --taehv and --scene\n");
         return 2;
     }
     return run_walk(dit, taehv, scene, actions, outdir, threads, seed, backend,
-                    kv_cache, profile, local_attn_size);
+                    kv_cache, profile, local_attn_size, params_backend, max_vram, stream_layers);
 }

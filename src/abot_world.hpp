@@ -78,6 +78,12 @@ struct AbotWorldConfig {
     // Per-stage timing logs ([prof] lines). ABOT_PROF=1 also enables, so the
     // switch stays reachable without an API change in field debugging.
     bool profile = false;
+    // Same graph-cut executor and parameter residency as the normal sd_ctx path.
+    // The graph budget and streaming apply to the DiT, not the pixel decoder.
+    size_t max_graph_vram_bytes = 0;
+    bool stream_layers          = false;
+    bool dit_params_on_disk     = false;
+    bool tae_params_on_disk     = false;
 };
 
 static inline bool abot_prof_env() {
@@ -364,7 +370,8 @@ public:
                                 int64_t& out_h_len,
                                 int64_t& out_w_len,
                                 const KvCtxProvider& kv_ctx_provider = nullptr,
-                                const KvCaptureSink& kv_capture_sink = nullptr) {
+                                const KvCaptureSink& kv_capture_sink = nullptr,
+                                bool graph_cut                       = false) {
         auto gctx = ctx->ggml_ctx;
 
         auto patch_embedding  = std::dynamic_pointer_cast<Conv3d>(blocks["patch_embedding"]);
@@ -422,11 +429,21 @@ public:
         c              = ggml_ext_gelu(gctx, c);
         c              = text_embedding_2->forward(ctx, c);  // [dim, 512, 1]
 
+        if (graph_cut) {
+            sd::ggml_graph_cut::mark_graph_cut(x, "abot.pre", "x");
+            sd::ggml_graph_cut::mark_graph_cut(c, "abot.pre", "c");
+            sd::ggml_graph_cut::mark_graph_cut(e_tbl, "abot.pre", "e");
+            sd::ggml_graph_cut::mark_graph_cut(e0_tok, "abot.pre", "e0");
+        }
+
         // ── transformer ──
         for (int i = 0; i < config.num_layers; i++) {
             auto block = std::dynamic_pointer_cast<WAN::WanAttentionBlock>(blocks["blocks." + std::to_string(i)]);
             if (kv_ctx_provider == nullptr && kv_capture_sink == nullptr) {
                 x = block->forward(ctx, x, e0_tok, pe, c, 0, attn_mask);
+                if (graph_cut) {
+                    sd::ggml_graph_cut::mark_graph_cut(x, "abot.block." + std::to_string(i), "x");
+                }
                 continue;
             }
 
@@ -450,6 +467,9 @@ public:
                                       kv_capture_sink != nullptr ? &v_cur : nullptr);
             if (kv_capture_sink != nullptr) {
                 kv_capture_sink(i, k_cur, v_cur);
+            }
+            if (graph_cut) {
+                sd::ggml_graph_cut::mark_graph_cut(x, "abot.block." + std::to_string(i), "x");
             }
         }
 
@@ -703,7 +723,8 @@ struct AbotWorldRunner : public GGMLRunner {
 
             auto runner_ctx  = get_context();
             ggml_tensor* out = wan.forward_causal(&runner_ctx, x_in, act_in, t_in, ctx_in,
-                                                  ref_in, rm_in, pe, mk, rw, block_frames, out_h, out_w);
+                                                  ref_in, rm_in, pe, mk, rw, block_frames, out_h, out_w,
+                                                  nullptr, nullptr, cfg.max_graph_vram_bytes > 0);
             ggml_build_forward_expand(gf, out);
             return gf;
         };
@@ -712,7 +733,7 @@ struct AbotWorldRunner : public GGMLRunner {
         // runs 5-6 graphs per block forever, and the defaults would free and
         // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
         // automatically when the graph shape changes between denoise and append)
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk);
         if (!result.has_value()) {
             return {};
         }
@@ -910,46 +931,44 @@ struct AbotWorldRunner : public GGMLRunner {
             }
 
             AbotWan::KvCaptureSink sink = nullptr;
-            std::vector<std::pair<std::string, ggml_tensor*>>* captures = &pending_kv_captures;
-            captures->clear();
+            auto capture                = [&](int layer, const std::string& name, ggml_tensor* tensor) {
+                // Materialize views and keep captures alive until the producing
+                // segment completes. Session history outlives cut scratch.
+                if (tensor->view_src != nullptr) {
+                    tensor = ggml_cont(compute_ctx, tensor);
+                }
+                ggml_set_output(tensor);
+                if (cfg.max_graph_vram_bytes > 0) {
+                    sd::ggml_graph_cut::mark_graph_cut(tensor, "abot.block." + std::to_string(layer), name);
+                    cache_persistent(name, tensor);
+                } else {
+                    cache(name, tensor);
+                }
+            };
             if (mode == KvMode::INIT_CAPTURE) {
-                sink = [&, captures](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
-                    captures->push_back({kv_name(layer, true, "base"), k_cur});
-                    captures->push_back({kv_name(layer, false, "base"), v_cur});
+                sink = [&](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
+                    capture(layer, kv_name(layer, true, "base"), k_cur);
+                    capture(layer, kv_name(layer, false, "base"), v_cur);
                 };
             } else if (mode == KvMode::APPEND) {
-                sink = [&, captures](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
+                sink = [&](int layer, ggml_tensor* k_cur, ggml_tensor* v_cur) {
                     for (int f = 0; f < F_cur; f++) {
                         const std::string slot = "r" + std::to_string(ring_write_slots[static_cast<size_t>(f)]);
                         ggml_tensor* kf = ggml_ext_cont(compute_ctx,
                                                         ggml_ext_slice(compute_ctx, k_cur, 1, f * fsl, (f + 1) * fsl));
                         ggml_tensor* vf = ggml_ext_cont(compute_ctx,
                                                         ggml_ext_slice(compute_ctx, v_cur, 0, f * fsl, (f + 1) * fsl));
-                        captures->push_back({kv_name(layer, true, slot), kf});
-                        captures->push_back({kv_name(layer, false, slot), vf});
+                        capture(layer, kv_name(layer, true, slot), kf);
+                        capture(layer, kv_name(layer, false, slot), vf);
                     }
                 };
             }
 
             ggml_tensor* out = wan.forward_causal(&runner_ctx, x_in, act_in, t_in, ctx_in,
                                                   ref_in, rm_in, pe, mk, rw, Fb, out_h, out_w,
-                                                  provider, sink);
+                                                  provider, sink, cfg.max_graph_vram_bytes > 0);
             ggml_build_forward_expand(gf, out);
-            for (auto& cap : *captures) {
-                // Captured K/V are also consumed by the attention itself, so
-                // the graph allocator may hand their memory to later nodes once
-                // those consumers ran; the cache persist only happens after the
-                // full graph. Materialize views into their own storage and pin
-                // every capture as a graph output so its bytes survive to the
-                // post-compute cache copy.
-                ggml_tensor* pinned = cap.second;
-                if (pinned->view_src != nullptr) {
-                    pinned = ggml_cont(compute_ctx, pinned);
-                }
-                ggml_set_output(pinned);
-                ggml_build_forward_expand(gf, pinned);
-                this->cache(cap.first, pinned);
-            }
+            // GGMLRunner appends queued captures after naming the video result.
             return gf;
         };
 
@@ -957,7 +976,7 @@ struct AbotWorldRunner : public GGMLRunner {
         // runs 5-6 graphs per block forever, and the defaults would free and
         // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
         // automatically when the graph shape changes between denoise and append)
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk);
         if (prof) {
             const int64_t prof_t2 = ggml_time_ms();
             const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";
@@ -969,8 +988,6 @@ struct AbotWorldRunner : public GGMLRunner {
         }
         return std::move(*result);
     }
-
-    std::vector<std::pair<std::string, ggml_tensor*>> pending_kv_captures;
 
 private:
     template <typename T>
@@ -1155,6 +1172,8 @@ public:
                                                     "model.diffusion_model",
                                                     cfg,
                                                     model_manager);  // no trailing dot: GGMLBlock::init appends its own
+        runner->set_max_graph_vram_bytes(cfg.max_graph_vram_bytes);
+        runner->set_stream_layers_enabled(cfg.stream_layers);
 
 #ifdef SD_ABOT_FLASH_ATTN_DEBUG
         // Debug-only flash attention for the walk graph (ABOT_FLASH_ATTN=1 in
@@ -1208,18 +1227,18 @@ public:
         // Measured 148 -> 68 ms per block decode, bit-identical output.
         tae->set_conv2d_direct_enabled(true);
         if (!model_manager->register_runner_params("ABot-World DiT",
-                                                    *runner,
-                                                    "model.diffusion_model",
-                                                    ModelManager::ResidencyMode::ParamBackend,
-                                                    runtime_backend,
-                                                    params_backend) ||
+                                                   *runner,
+                                                   "model.diffusion_model",
+                                                   cfg.dit_params_on_disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend,
+                                                   runtime_backend,
+                                                   params_backend) ||
             !model_manager->register_runner_params("ABot-World TAE",
-                                                    *tae,
-                                                    ModelManager::ResidencyMode::ParamBackend,
-                                                    vae_backend,
-                                                    vae_params_backend) ||
+                                                   *tae,
+                                                   cfg.tae_params_on_disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend,
+                                                   vae_backend,
+                                                   vae_params_backend) ||
             !model_manager->validate_registered_tensors() ||
-            !model_manager->load_all_params_eagerly()) {
+            (!(cfg.dit_params_on_disk || cfg.tae_params_on_disk) && !model_manager->load_all_params_eagerly())) {
             LOG_ERROR("abot session: model parameter registration or loading failed");
             return false;
         }

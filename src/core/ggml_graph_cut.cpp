@@ -307,7 +307,8 @@ namespace sd::ggml_graph_cut {
         return false;
     }
 
-    static Segment make_segment_seed(const Plan& plan,
+    static Segment make_segment_seed(ggml_cgraph* gf,
+                                     const Plan& plan,
                                      size_t start_segment_index,
                                      size_t end_segment_index) {
         GGML_ASSERT(start_segment_index < plan.segments.size());
@@ -321,7 +322,10 @@ namespace sd::ggml_graph_cut {
         for (size_t seg_idx = start_segment_index; seg_idx <= end_segment_index; ++seg_idx) {
             const bool is_boundary_segment = seg_idx == end_segment_index;
             for (int output_node_index : plan.segments[seg_idx].output_node_indices) {
+                // Explicit outputs can update session state without a consumer
+                // in this graph; merging must still execute those captures.
                 if ((is_boundary_segment ||
+                     (ggml_graph_node(gf, output_node_index)->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 ||
                      is_segment_output_needed_after(plan, end_segment_index, output_node_index)) &&
                     seen_output_node_indices.insert(output_node_index).second) {
                     seed.output_node_indices.push_back(output_node_index);
@@ -838,7 +842,7 @@ namespace sd::ggml_graph_cut {
         while (start_segment_index < base_plan.segments.size()) {
             Plan single_plan;
             auto single_available_cut_output_node_indices = available_cut_output_node_indices;
-            auto single_seed                              = make_segment_seed(base_plan,
+            auto single_seed                              = make_segment_seed(gf, base_plan,
                                                                               start_segment_index,
                                                                               start_segment_index);
             build_segment(gf,
@@ -858,7 +862,7 @@ namespace sd::ggml_graph_cut {
                 const size_t next_end_segment_index = best_end_segment_index + 1;
                 Plan candidate_plan;
                 auto candidate_available_cut_output_node_indices = available_cut_output_node_indices;
-                auto candidate_seed                              = make_segment_seed(base_plan,
+                auto candidate_seed                              = make_segment_seed(gf, base_plan,
                                                                                      start_segment_index,
                                                                                      next_end_segment_index);
                 build_segment(gf,
@@ -880,7 +884,7 @@ namespace sd::ggml_graph_cut {
                 best_end_segment_index = next_end_segment_index;
             }
 
-            auto best_seed = make_segment_seed(base_plan,
+            auto best_seed = make_segment_seed(gf, base_plan,
                                                start_segment_index,
                                                best_end_segment_index);
             build_segment(gf,

@@ -47,3 +47,7 @@ target_include_directories(test-gguf-comfy-shape PRIVATE
     "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-gguf-comfy-shape PRIVATE stable-diffusion)
 add_test(NAME test-gguf-comfy-shape COMMAND test-gguf-comfy-shape)
+
+add_executable(test-abot-streaming test-abot-streaming.cpp)
+target_link_libraries(test-abot-streaming PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME test-abot-streaming COMMAND test-abot-streaming)

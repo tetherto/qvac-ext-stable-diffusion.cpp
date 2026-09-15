@@ -651,6 +651,13 @@ typedef struct {
     bool offload_params_to_cpu;
     bool kv_cache;
     bool profile;
+    // Walk parameter placement (diffusion = DiT, vae = taehv). Explicit
+    // assignments override the offload_params_to_cpu default.
+    const char* params_backend;
+    // DiT graph-cut budget in GiB, or per-device assignments; 0 disables.
+    const char* max_vram;
+    // Retain/evict DiT segments within the budget; requires CPU parameters.
+    bool stream_layers;
 } sd_abot_session_params_t;
 SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);
 SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params);
