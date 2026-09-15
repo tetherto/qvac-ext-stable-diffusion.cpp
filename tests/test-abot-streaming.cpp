@@ -149,6 +149,52 @@ static bool test_disk_residency(ggml_backend_t backend, bool disk, bool segmente
     return passed;
 }
 
+static bool test_view_output(ggml_backend_t backend) {
+    ggml_init_params init = {1024 * 1024, nullptr, true};
+    auto* ctx             = ggml_init(init);
+    auto* graph           = ggml_new_graph_custom(ctx, 32, false);
+    auto* input           = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 8);
+    auto* root            = ggml_scale(ctx, input, 2.f);
+    auto* view            = ggml_reshape_2d(ctx, root, 4, 2);
+    auto* consumed        = ggml_scale(ctx, view, 3.f);
+    // A merged segment consumes a cut view before copying it to the cache.
+    // The later allocation must not reuse its still-live backing buffer.
+    auto* tail = ggml_cont(ctx, consumed);
+    ggml_build_forward_expand(graph, tail);
+    sd::ggml_graph_cut::Segment segment;
+    sd::ggml_graph_cut::Segment::InputRef ref;
+    ref.type       = sd::ggml_graph_cut::Segment::INPUT_EXTERNAL;
+    ref.leaf_index = 0;
+    segment.input_refs.push_back(ref);
+    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+        segment.internal_node_indices.push_back(i);
+        if (ggml_graph_node(graph, i) == view || ggml_graph_node(graph, i) == tail)
+            segment.output_node_indices.push_back(i);
+    }
+    const auto root_flags = root->flags;
+    const auto view_flags = view->flags;
+    sd::ggml_graph_cut::measure_segment_compute_buffer(backend, graph, segment, nullptr);
+    bool passed               = root->flags == root_flags && view->flags == view_flags;
+    ggml_context* segment_ctx = nullptr;
+    auto* cut_graph           = sd::ggml_graph_cut::build_segment_graph(graph, segment, &segment_ctx);
+    auto* allocator           = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    passed                    = ggml_gallocr_alloc_graph(allocator, cut_graph) && passed;
+    std::vector<float> values(8, 0.5f);
+    if (passed) {
+        ggml_backend_tensor_set(input, values.data(), 0, values.size() * sizeof(float));
+        passed = ggml_backend_graph_compute(backend, cut_graph) == GGML_STATUS_SUCCESS;
+        ggml_backend_tensor_get(view, values.data(), 0, values.size() * sizeof(float));
+        for (float value : values)
+            passed = std::fabs(value - 1.f) < 1e-6f && passed;
+    }
+    ggml_gallocr_free(allocator);
+    ggml_free(segment_ctx);
+    ggml_free(ctx);
+    if (!passed)
+        std::cerr << "Merged segment overwrote a cut view's backing buffer\n";
+    return passed;
+}
+
 static bool test_plan_cache(ggml_backend_t backend) {
     sd::ggml_graph_cut::PlanCache cache;
     int previous_variant = -1;
@@ -201,6 +247,7 @@ int main() {
         return 1;
     bool passed = test_history(backend, false) && test_history(backend, true);
     passed      = test_plan_cache(backend) && passed;
+    passed      = test_view_output(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {
             passed = test_disk_residency(backend, disk, segmented) && passed;
