@@ -5,7 +5,10 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <map>
 #include <ostream>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -93,8 +96,198 @@ static ggml_type safetensors_dtype_to_ggml_type(const std::string& dtype) {
         ttype = GGML_TYPE_I32;
     } else if (dtype == "I64") {
         ttype = GGML_TYPE_I32;
+    } else if (dtype == "I8") {
+        ttype = GGML_TYPE_I8;
     }
     return ttype;
+}
+
+struct SafetensorsTensorInfo {
+    std::string dtype;
+    std::vector<int64_t> shape;
+    uint64_t begin = 0;
+    uint64_t end   = 0;
+};
+
+struct ComfyInt8Info {
+    bool convrot            = false;
+    uint32_t group_size     = 0;
+    TensorStorageSidecar scale;
+};
+
+static bool read_safetensors_tensor_info(const nlohmann::json& value,
+                                         const std::string& name,
+                                         uint64_t data_size,
+                                         SafetensorsTensorInfo* result,
+                                         std::string* error) {
+    try {
+        if (!value.is_object() || !value.contains("dtype") || !value["dtype"].is_string() ||
+            !value.contains("shape") || !value["shape"].is_array() ||
+            !value.contains("data_offsets") || !value["data_offsets"].is_array() ||
+            value["data_offsets"].size() != 2) {
+            set_error(error, "invalid safetensors descriptor for tensor '" + name + "'");
+            return false;
+        }
+
+        SafetensorsTensorInfo info;
+        info.dtype = value["dtype"].get<std::string>();
+        if (value["shape"].size() > SD_MAX_DIMS) {
+            set_error(error, "too many dimensions for tensor '" + name + "'");
+            return false;
+        }
+        uint64_t elements = 1;
+        for (const auto& dimension : value["shape"]) {
+            int64_t size = dimension.get<int64_t>();
+            if (size <= 0 || elements > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) /
+                                              static_cast<uint64_t>(size)) {
+                set_error(error, "invalid dimension for tensor '" + name + "'");
+                return false;
+            }
+            elements *= static_cast<uint64_t>(size);
+            info.shape.push_back(size);
+        }
+        info.begin = value["data_offsets"][0].get<uint64_t>();
+        info.end   = value["data_offsets"][1].get<uint64_t>();
+        if (info.begin > info.end || info.end > data_size) {
+            set_error(error, "data offsets out of bounds for tensor '" + name + "'");
+            return false;
+        }
+        *result = std::move(info);
+        return true;
+    } catch (const std::exception&) {
+        set_error(error, "invalid safetensors descriptor for tensor '" + name + "'");
+        return false;
+    }
+}
+
+static bool is_power_of_four(uint64_t value) {
+    if (value < 4) {
+        return false;
+    }
+    while (value % 4 == 0) {
+        value /= 4;
+    }
+    return value == 1;
+}
+
+static bool read_comfy_int8_metadata(std::ifstream& file,
+                                     const std::map<std::string, SafetensorsTensorInfo>& tensors,
+                                     uint64_t data_start,
+                                     std::map<std::string, ComfyInt8Info>* result,
+                                     std::set<std::string>* scale_tensor_names,
+                                     std::string* error) {
+    result->clear();
+    scale_tensor_names->clear();
+    constexpr const char* marker_suffix = ".comfy_quant";
+    constexpr size_t marker_suffix_len  = 12;
+
+    for (const auto& [marker_name, marker] : tensors) {
+        if (!ends_with(marker_name, marker_suffix)) {
+            continue;
+        }
+        if (marker.dtype != "U8") {
+            set_error(error, "ComfyUI quantization marker '" + marker_name + "' must use U8 storage");
+            return false;
+        }
+        if (marker.end - marker.begin > 4096) {
+            set_error(error, "ComfyUI quantization marker '" + marker_name + "' is too large");
+            return false;
+        }
+        uint64_t marker_elements = 1;
+        for (int64_t dimension : marker.shape) {
+            if (marker_elements > std::numeric_limits<uint64_t>::max() /
+                                      static_cast<uint64_t>(dimension)) {
+                set_error(error, "ComfyUI quantization marker '" + marker_name + "' shape overflows");
+                return false;
+            }
+            marker_elements *= static_cast<uint64_t>(dimension);
+        }
+        if (marker_elements != marker.end - marker.begin) {
+            set_error(error, "ComfyUI quantization marker '" + marker_name + "' has an invalid byte length");
+            return false;
+        }
+
+        std::string marker_json(static_cast<size_t>(marker.end - marker.begin), '\0');
+        file.clear();
+        file.seekg(static_cast<std::streamoff>(data_start + marker.begin));
+        file.read(marker_json.data(), static_cast<std::streamsize>(marker_json.size()));
+        if (!file) {
+            set_error(error, "failed to read ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+
+        nlohmann::json config;
+        try {
+            config = nlohmann::json::parse(marker_json);
+        } catch (const std::exception&) {
+            set_error(error, "invalid JSON in ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+        if (!config.is_object() || !config.contains("format") || !config["format"].is_string()) {
+            set_error(error, "invalid ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+        if (config["format"].get<std::string>() != "int8_tensorwise") {
+            continue;
+        }
+
+        const std::string base = marker_name.substr(0, marker_name.size() - marker_suffix_len);
+        const auto weight_it   = tensors.find(base + ".weight");
+        const auto scale_it    = tensors.find(base + ".weight_scale");
+        if (weight_it == tensors.end() || scale_it == tensors.end()) {
+            set_error(error, "ComfyUI Int8 marker '" + marker_name + "' is missing its weight or weight_scale tensor");
+            return false;
+        }
+        const SafetensorsTensorInfo& weight = weight_it->second;
+        const SafetensorsTensorInfo& scale  = scale_it->second;
+        if (weight.dtype != "I8" || weight.shape.size() != 2 || scale.dtype != "F32" ||
+            scale.shape.size() != 2 || scale.shape[0] != weight.shape[0] || scale.shape[1] != 1) {
+            set_error(error, "ComfyUI Int8 marker '" + marker_name + "' has incompatible weight and scale tensors");
+            return false;
+        }
+        const uint64_t output_rows = static_cast<uint64_t>(weight.shape[0]);
+        if (output_rows > std::numeric_limits<uint64_t>::max() / sizeof(float) ||
+            scale.end - scale.begin != output_rows * sizeof(float)) {
+            set_error(error, "ComfyUI Int8 marker '" + marker_name + "' has incompatible weight and scale tensors");
+            return false;
+        }
+
+        ComfyInt8Info info;
+        if (config.contains("convrot")) {
+            if (!config["convrot"].is_boolean()) {
+                set_error(error, "ComfyUI Int8 marker '" + marker_name + "' has a non-boolean convrot field");
+                return false;
+            }
+            info.convrot = config["convrot"].get<bool>();
+        }
+        if (info.convrot) {
+            if (!config.contains("convrot_groupsize") || !config["convrot_groupsize"].is_number_unsigned()) {
+                set_error(error, "ComfyUI Int8 marker '" + marker_name + "' has no valid ConvRot group size");
+                return false;
+            }
+            uint64_t group_size = config["convrot_groupsize"].get<uint64_t>();
+            if (group_size != 256 || !is_power_of_four(group_size) ||
+                static_cast<uint64_t>(weight.shape[1]) % group_size != 0) {
+                set_error(error, "ComfyUI Int8 marker '" + marker_name + "' uses an unsupported ConvRot group size");
+                return false;
+            }
+            info.group_size = static_cast<uint32_t>(group_size);
+        } else if (config.contains("convrot_groupsize")) {
+            set_error(error, "ComfyUI Int8 marker '" + marker_name + "' declares a group size without ConvRot");
+            return false;
+        }
+        info.scale.name   = base + ".weight_scale";
+        info.scale.type   = GGML_TYPE_F32;
+        info.scale.n_dims = 2;
+        // TensorStorage uses GGML's column-first shape convention.
+        info.scale.ne[0]  = 1;
+        info.scale.ne[1]  = weight.shape[0];
+        info.scale.offset = data_start + scale.begin;
+        info.scale.nbytes = scale.end - scale.begin;
+        result->emplace(weight_it->first, info);
+        scale_tensor_names->emplace(scale_it->first);
+    }
+    return true;
 }
 
 // https://huggingface.co/docs/safetensors/index
@@ -163,29 +356,41 @@ bool read_safetensors_file(const std::string& file_path,
         }
     }
 
-    tensor_storages.clear();
-    for (auto& item : header_.items()) {
-        std::string name           = item.key();
-        nlohmann::json tensor_info = item.value();
-        // LOG_DEBUG("%s %s\n", name.c_str(), tensor_info.dump().c_str());
-
-        if (name == "__metadata__") {
+    const uint64_t data_size = file_size_ - data_start;
+    std::map<std::string, SafetensorsTensorInfo> tensor_infos;
+    for (const auto& item : header_.items()) {
+        if (item.key() == "__metadata__") {
             continue;
         }
-
-        std::string dtype    = tensor_info["dtype"];
-        nlohmann::json shape = tensor_info["shape"];
-
-        if (dtype == "U8") {
-            continue;
-        }
-
-        size_t begin = tensor_info["data_offsets"][0].get<size_t>();
-        size_t end   = tensor_info["data_offsets"][1].get<size_t>();
-        if (begin > end || end > file_size_ - data_start) {
-            set_error(error, "data offsets out of bounds for tensor '" + name + "'");
+        SafetensorsTensorInfo info;
+        if (!read_safetensors_tensor_info(item.value(), item.key(), data_size, &info, error)) {
             return false;
         }
+        tensor_infos.emplace(item.key(), std::move(info));
+    }
+    std::map<std::string, ComfyInt8Info> comfy_int8_tensors;
+    std::set<std::string> comfy_int8_scale_tensors;
+    if (!read_comfy_int8_metadata(file,
+                                  tensor_infos,
+                                  data_start,
+                                  &comfy_int8_tensors,
+                                  &comfy_int8_scale_tensors,
+                                  error)) {
+        return false;
+    }
+
+    tensor_storages.clear();
+    for (const auto& [name, tensor_info] : tensor_infos) {
+        // LOG_DEBUG("%s %s\n", name.c_str(), tensor_info.dump().c_str());
+
+        const std::string& dtype = tensor_info.dtype;
+
+        if (dtype == "U8" || comfy_int8_scale_tensors.find(name) != comfy_int8_scale_tensors.end()) {
+            continue;
+        }
+
+        const uint64_t begin = tensor_info.begin;
+        const uint64_t end   = tensor_info.end;
 
         ggml_type type = safetensors_dtype_to_ggml_type(dtype);
         if (type == GGML_TYPE_COUNT) {
@@ -193,18 +398,17 @@ bool read_safetensors_file(const std::string& file_path,
             return false;
         }
 
-        if (shape.size() > SD_MAX_DIMS) {
-            set_error(error, "invalid tensor '" + name + "'");
-            return false;
-        }
-
-        int n_dims              = (int)shape.size();
+        int n_dims              = static_cast<int>(tensor_info.shape.size());
         int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
         for (int i = 0; i < n_dims; i++) {
-            ne[i] = shape[i].get<int64_t>();
+            ne[i] = tensor_info.shape[i];
         }
 
         if (n_dims == 5) {
+            if (ne[0] > std::numeric_limits<int64_t>::max() / ne[1]) {
+                set_error(error, "tensor dimensions overflow for '" + name + "'");
+                return false;
+            }
             n_dims = 4;
             ne[0]  = ne[0] * ne[1];
             ne[1]  = ne[2];
@@ -220,7 +424,7 @@ bool read_safetensors_file(const std::string& file_path,
         TensorStorage tensor_storage(name, type, ne, n_dims, 0, data_start + begin);
         tensor_storage.reverse_ne();
 
-        size_t tensor_data_size = end - begin;
+        uint64_t tensor_data_size = end - begin;
 
         bool tensor_size_ok;
         if (dtype == "F8_E4M3") {
@@ -245,6 +449,20 @@ bool read_safetensors_file(const std::string& file_path,
         if (!tensor_size_ok) {
             set_error(error, "size mismatch for tensor '" + name + "' (" + dtype + ")");
             return false;
+        }
+
+        auto comfy_int8 = comfy_int8_tensors.find(name);
+        if (dtype == "I8") {
+            if (comfy_int8 == comfy_int8_tensors.end()) {
+                set_error(error, "unsupported Int8 safetensors tensor '" + name + "' without a ComfyUI Int8 marker");
+                return false;
+            }
+            tensor_storage.is_comfy_int8_tensorwise = true;
+            tensor_storage.comfy_int8_convrot       = comfy_int8->second.convrot;
+            tensor_storage.comfy_int8_group_size    = comfy_int8->second.group_size;
+            tensor_storage.comfy_int8_scale         = comfy_int8->second.scale;
+            // The runtime reconstructs an F16 matrix before backend upload.
+            tensor_storage.expected_type = GGML_TYPE_F16;
         }
 
         tensor_storages.push_back(tensor_storage);

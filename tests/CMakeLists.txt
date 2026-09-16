@@ -2,6 +2,14 @@ add_executable(test-ltx-rope test-ltx-rope.cpp)
 target_link_libraries(test-ltx-rope PRIVATE stable-diffusion)
 add_test(NAME test-ltx-rope COMMAND test-ltx-rope)
 
+add_executable(test-minimax-h3-rope test_minimax_h3_rope.cpp)
+target_link_libraries(test-minimax-h3-rope PRIVATE stable-diffusion)
+add_test(NAME test-minimax-h3-rope COMMAND test-minimax-h3-rope)
+
+add_executable(test-h3-swiglu test_h3_swiglu.cpp)
+target_link_libraries(test-h3-swiglu PRIVATE stable-diffusion ggml-cpu)
+add_test(NAME test-h3-swiglu COMMAND test-h3-swiglu)
+
 add_executable(test-vae-routing test-vae-routing.cpp)
 target_link_libraries(test-vae-routing PRIVATE stable-diffusion)
 add_test(NAME test-vae-routing COMMAND test-vae-routing)
@@ -47,3 +55,9 @@ target_include_directories(test-gguf-comfy-shape PRIVATE
     "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-gguf-comfy-shape PRIVATE stable-diffusion)
 add_test(NAME test-gguf-comfy-shape COMMAND test-gguf-comfy-shape)
+
+add_executable(test-safetensors-convrot test-safetensors-convrot.cpp)
+target_include_directories(test-safetensors-convrot PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-safetensors-convrot PRIVATE stable-diffusion zip ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME test-safetensors-convrot COMMAND test-safetensors-convrot)

@@ -83,6 +83,12 @@ public:
                            int n_threads = 0,
                            bool use_mmap = false);
     bool load_tensor(const TensorStorage& tensor_storage, ggml_tensor* dst_tensor);
+    // Upload the raw I8 weight and its associated F32 scale sidecar.  This is
+    // intentionally separate from load_tensor(), whose TensorWiseINT8 path is
+    // the explicit F16/F32 compatibility reconstruction.
+    bool load_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
+                                    ggml_tensor* dst_weight,
+                                    ggml_tensor* dst_scale);
 
     std::vector<std::string> get_tensor_names() const {
         std::vector<std::string> names;

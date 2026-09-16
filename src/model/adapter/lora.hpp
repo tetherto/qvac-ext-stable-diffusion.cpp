@@ -1300,6 +1300,22 @@ public:
         return out;
     }
 
+    ggml_tensor* lora_output_delta(ggml_context* ctx,
+                                   ggml_backend_t backend,
+                                   ggml_tensor* x,
+                                   ggml_tensor* w,
+                                   const std::string& prefix,
+                                   WeightAdapter::ForwardParams forward_params) override {
+        ggml_tensor* delta = nullptr;
+        for (auto& lora_model : lora_models) {
+            ggml_tensor* current = lora_model->get_out_diff(ctx, backend, x, w, forward_params, prefix + "weight");
+            if (current != nullptr) {
+                delta = delta == nullptr ? current : ggml_add_inplace(ctx, delta, current);
+            }
+        }
+        return delta;
+    }
+
     size_t get_extra_graph_size() override {
         size_t lora_tensor_num = 0;
         for (auto& lora_model : lora_models) {

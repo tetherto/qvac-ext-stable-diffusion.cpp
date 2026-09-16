@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdlib>
@@ -152,6 +153,84 @@ void i64_to_i32_vec(int64_t* src, int32_t* dst, int64_t n) {
     for (int64_t i = 0; i < n; i++) {
         dst[i] = (int32_t)src[i];
     }
+}
+
+static void apply_regular_hadamard_4(float* values, size_t stride) {
+    const float a = values[0 * stride];
+    const float b = values[1 * stride];
+    const float c = values[2 * stride];
+    const float d = values[3 * stride];
+    values[0 * stride] = (a + b + c - d) * 0.5f;
+    values[1 * stride] = (a + b - c + d) * 0.5f;
+    values[2 * stride] = (a - b + c + d) * 0.5f;
+    values[3 * stride] = (-a + b + c + d) * 0.5f;
+}
+
+static bool dequantize_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
+                                              const int8_t* quantized,
+                                              const float* scales,
+                                              void* dst,
+                                              ggml_type dst_type,
+                                              std::string* error) {
+    if (!tensor_storage.is_comfy_int8_tensorwise || tensor_storage.n_dims != 2 ||
+        tensor_storage.ne[0] <= 0 || tensor_storage.ne[1] <= 0) {
+        *error = "invalid ComfyUI Int8 tensor metadata";
+        return false;
+    }
+    if (dst_type != GGML_TYPE_F16 && dst_type != GGML_TYPE_F32) {
+        *error = "ComfyUI Int8 compatibility loading requires an F16 or F32 destination";
+        return false;
+    }
+
+    const size_t columns = static_cast<size_t>(tensor_storage.ne[0]);
+    const size_t rows    = static_cast<size_t>(tensor_storage.ne[1]);
+    if (rows > std::numeric_limits<size_t>::max() / columns || !tensor_storage.has_comfy_int8_scale() ||
+        tensor_storage.comfy_int8_scale.type != GGML_TYPE_F32 || tensor_storage.comfy_int8_scale.n_dims != 2 ||
+        tensor_storage.comfy_int8_scale.ne[0] != 1 || tensor_storage.comfy_int8_scale.ne[1] != static_cast<int64_t>(rows) ||
+        tensor_storage.comfy_int8_scale.nbytes != rows * sizeof(float)) {
+        *error = "invalid ComfyUI Int8 tensor dimensions or scale size";
+        return false;
+    }
+    const size_t group_size = tensor_storage.comfy_int8_convrot
+                                  ? static_cast<size_t>(tensor_storage.comfy_int8_group_size)
+                                  : std::min<size_t>(columns, 4096);
+    if (group_size == 0 || columns % group_size != 0) {
+        *error = "invalid ComfyUI Int8 ConvRot group size";
+        return false;
+    }
+
+    std::vector<float> values(group_size);
+    for (size_t row = 0; row < rows; ++row) {
+        const float scale = scales[row];
+        if (!std::isfinite(scale) || scale <= 0.f) {
+            *error = "ComfyUI Int8 tensor has a non-positive or non-finite scale";
+            return false;
+        }
+        for (size_t column = 0; column < columns; column += group_size) {
+            const size_t offset = row * columns + column;
+            for (size_t i = 0; i < group_size; ++i) {
+                values[i] = static_cast<float>(quantized[offset + i]) * scale;
+            }
+            if (tensor_storage.comfy_int8_convrot) {
+                for (size_t stride = 1; stride < group_size; stride *= 4) {
+                    const size_t block = stride * 4;
+                    for (size_t base = 0; base < group_size; base += block) {
+                        for (size_t i = 0; i < stride; ++i) {
+                            apply_regular_hadamard_4(values.data() + base + i, stride);
+                        }
+                    }
+                }
+            }
+            if (dst_type == GGML_TYPE_F16) {
+                auto* output = static_cast<ggml_fp16_t*>(dst) + offset;
+                ggml_fp32_to_fp16_row(values.data(), output, static_cast<int64_t>(group_size));
+            } else {
+                auto* output = static_cast<float*>(dst) + offset;
+                memcpy(output, values.data(), group_size * sizeof(float));
+            }
+        }
+    }
+    return true;
 }
 
 void convert_tensor(void* src,
@@ -1240,10 +1319,42 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                         return true;
                     };
 
+                    auto read_comfy_int8_scales = [&](char* buf, size_t n) -> bool {
+                        if (zip != nullptr) {
+                            LOG_ERROR("ComfyUI Int8 tensor '%s' cannot be stored in a zip file", tensor_storage.name.c_str());
+                            return false;
+                        }
+                        if (mmapped) {
+                            if (!mmapped->copy_data(buf, n, tensor_storage.comfy_int8_scale.offset)) {
+                                LOG_ERROR("read ComfyUI Int8 scales failed: '%s'", file_path.c_str());
+                                return false;
+                            }
+                        } else {
+                            file.clear();
+                            file.seekg(static_cast<std::streamoff>(tensor_storage.comfy_int8_scale.offset));
+                            file.read(buf, static_cast<std::streamsize>(n));
+                            if (!file) {
+                                LOG_ERROR("read ComfyUI Int8 scales failed: '%s'", file_path.c_str());
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+
                     char* read_buf    = nullptr;
                     char* target_buf  = nullptr;
                     char* convert_buf = nullptr;
-                    if (dst_tensor->buffer == nullptr || ggml_backend_buffer_is_host(dst_tensor->buffer)) {
+                    const bool is_comfy_int8 = tensor_storage.is_comfy_int8_tensorwise;
+                    if (is_comfy_int8) {
+                        read_buffer.resize(nbytes_to_read);
+                        read_buf = reinterpret_cast<char*>(read_buffer.data());
+                        if (dst_tensor->buffer == nullptr || ggml_backend_buffer_is_host(dst_tensor->buffer)) {
+                            target_buf = reinterpret_cast<char*>(dst_tensor->data);
+                        } else {
+                            convert_buffer.resize(ggml_nbytes(dst_tensor));
+                            target_buf = reinterpret_cast<char*>(convert_buffer.data());
+                        }
+                    } else if (dst_tensor->buffer == nullptr || ggml_backend_buffer_is_host(dst_tensor->buffer)) {
                         if (tensor_storage.type == dst_tensor->type) {
                             GGML_ASSERT(ggml_nbytes(dst_tensor) == tensor_storage.nbytes());
                             if (tensor_storage.is_f64 || tensor_storage.is_i64) {
@@ -1279,7 +1390,27 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                     read_time_ms.fetch_add(t1 - t0);
 
                     t0 = ggml_time_ms();
-                    if (tensor_storage.is_f8_e4m3) {
+                    if (is_comfy_int8) {
+                        std::vector<uint8_t> scale_buffer(tensor_storage.comfy_int8_scale.nbytes);
+                        if (!read_comfy_int8_scales(reinterpret_cast<char*>(scale_buffer.data()), scale_buffer.size())) {
+                            failed = true;
+                            break;
+                        }
+                        std::string dequantization_error;
+                        if (!dequantize_comfy_int8_tensorwise(tensor_storage,
+                                                              reinterpret_cast<const int8_t*>(read_buf),
+                                                              reinterpret_cast<const float*>(scale_buffer.data()),
+                                                              target_buf,
+                                                              dst_tensor->type,
+                                                              &dequantization_error)) {
+                            LOG_ERROR("ComfyUI Int8 tensor '%s' cannot be reconstructed: %s",
+                                      tensor_storage.name.c_str(),
+                                      dequantization_error.c_str());
+                            failed = true;
+                            break;
+                        }
+                        convert_buf = target_buf;
+                    } else if (tensor_storage.is_f8_e4m3) {
                         f8_e4m3_to_f16_vec((uint8_t*)read_buf, (uint16_t*)target_buf, tensor_storage.nelements());
                     } else if (tensor_storage.is_f8_e5m2) {
                         f8_e5m2_to_f16_vec((uint8_t*)read_buf, (uint16_t*)target_buf, tensor_storage.nelements());
@@ -1288,7 +1419,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                     } else if (tensor_storage.is_i64) {
                         i64_to_i32_vec((int64_t*)read_buf, (int32_t*)target_buf, tensor_storage.nelements());
                     }
-                    if (tensor_storage.type != dst_tensor->type) {
+                    if (!is_comfy_int8 && tensor_storage.type != dst_tensor->type) {
                         if (convert_buf == nullptr) {
                             LOG_ERROR("read tensor data failed: too less memory for conversion");
                             failed = true;
@@ -1303,7 +1434,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                                        tensor_storage.nelements() / tensor_storage.ne[0],
                                        tensor_storage.ne[0],
                                        std::move(imatrix));
-                    } else {
+                    } else if (!is_comfy_int8) {
                         convert_buf = read_buf;
                     }
                     t1 = ggml_time_ms();
@@ -1319,7 +1450,8 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                         copy_to_backend_time_ms.fetch_add(t1 - t0);
                     }
 
-                    bytes_processed.fetch_add((uint64_t)nbytes_to_read);
+                    bytes_processed.fetch_add((uint64_t)nbytes_to_read +
+                                              (is_comfy_int8 ? tensor_storage.comfy_int8_scale.nbytes : 0));
                 }
                 if (zip != nullptr) {
                     zip_close(zip);
@@ -1424,6 +1556,92 @@ bool ModelLoader::load_tensor(const TensorStorage& tensor_storage, ggml_tensor* 
         return false;
     }
 
+    return true;
+}
+
+bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
+                                              ggml_tensor* dst_weight,
+                                              ggml_tensor* dst_scale) {
+    if (!tensor_storage.is_comfy_int8_convrot_weight()) {
+        LOG_ERROR("native ComfyUI Int8 load requested for invalid ConvRot tensor '%s'", tensor_storage.name.c_str());
+        return false;
+    }
+    if (dst_weight == nullptr || dst_scale == nullptr || dst_weight->data == nullptr || dst_scale->data == nullptr) {
+        LOG_ERROR("native ComfyUI Int8 load has null destination for '%s'", tensor_storage.name.c_str());
+        return false;
+    }
+    if (dst_weight->type != GGML_TYPE_I8 || ggml_n_dims(dst_weight) != 2 || dst_weight->ne[0] != tensor_storage.ne[0] ||
+        dst_weight->ne[1] != tensor_storage.ne[1] || ggml_nbytes(dst_weight) != static_cast<size_t>(tensor_storage.nbytes())) {
+        LOG_ERROR("native ComfyUI Int8 weight destination is incompatible for '%s'", tensor_storage.name.c_str());
+        return false;
+    }
+    const int64_t output_rows = tensor_storage.ne[1];
+    const bool scale_shape_ok = dst_scale->type == GGML_TYPE_F32 &&
+                                ((ggml_n_dims(dst_scale) == 1 && dst_scale->ne[0] == output_rows) ||
+                                 (ggml_n_dims(dst_scale) == 2 && dst_scale->ne[0] == 1 && dst_scale->ne[1] == output_rows));
+    if (!scale_shape_ok || ggml_nbytes(dst_scale) != tensor_storage.comfy_int8_scale.nbytes) {
+        LOG_ERROR("native ComfyUI Int8 scale destination is incompatible for '%s'", tensor_storage.name.c_str());
+        return false;
+    }
+    if (tensor_storage.file_index >= file_paths_.size()) {
+        LOG_ERROR("native ComfyUI Int8 source file is unavailable for '%s'", tensor_storage.name.c_str());
+        return false;
+    }
+    if (tensor_storage.index_in_zip >= 0) {
+        LOG_ERROR("native ComfyUI Int8 tensor '%s' cannot be loaded from a zip container", tensor_storage.name.c_str());
+        return false;
+    }
+
+    const size_t weight_nbytes = static_cast<size_t>(tensor_storage.nbytes());
+    const size_t scale_nbytes  = static_cast<size_t>(tensor_storage.comfy_int8_scale.nbytes);
+    std::vector<uint8_t> weights(weight_nbytes);
+    std::vector<uint8_t> scales(scale_nbytes);
+    std::ifstream file(file_paths_[tensor_storage.file_index], std::ios::binary);
+    if (!file.is_open()) {
+        LOG_ERROR("failed to open native ComfyUI Int8 source '%s'", file_paths_[tensor_storage.file_index].c_str());
+        return false;
+    }
+    const auto read_at = [&](uint64_t offset, uint8_t* dst, size_t n, const char* what) -> bool {
+        if (offset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            LOG_ERROR("native ComfyUI Int8 %s offset overflows for '%s'", what, tensor_storage.name.c_str());
+            return false;
+        }
+        file.clear();
+        file.seekg(static_cast<std::streamoff>(offset));
+        file.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(n));
+        if (!file) {
+            LOG_ERROR("failed to read native ComfyUI Int8 %s for '%s'", what, tensor_storage.name.c_str());
+            return false;
+        }
+        return true;
+    };
+    if (!read_at(tensor_storage.offset, weights.data(), weights.size(), "weight") ||
+        !read_at(tensor_storage.comfy_int8_scale.offset, scales.data(), scales.size(), "scale")) {
+        return false;
+    }
+
+    // The compact native path does not dequantize on the host, so validate the
+    // sidecar before uploading it.  Otherwise a malformed zero/NaN scale
+    // reaches the backend without the compatibility loader's validation.
+    const size_t scale_count = static_cast<size_t>(output_rows);
+    for (size_t row = 0; row < scale_count; ++row) {
+        float scale;
+        memcpy(&scale, scales.data() + row * sizeof(scale), sizeof(scale));
+        if (!std::isfinite(scale) || scale <= 0.f) {
+            LOG_ERROR("native ComfyUI Int8 tensor '%s' has a non-positive or non-finite scale", tensor_storage.name.c_str());
+            return false;
+        }
+    }
+
+    const auto upload = [](ggml_tensor* dst, const void* src, size_t n) {
+        if (dst->buffer != nullptr && !ggml_backend_buffer_is_host(dst->buffer)) {
+            ggml_backend_tensor_set(dst, src, 0, n);
+        } else {
+            memcpy(dst->data, src, n);
+        }
+    };
+    upload(dst_weight, weights.data(), weights.size());
+    upload(dst_scale, scales.data(), scales.size());
     return true;
 }
 

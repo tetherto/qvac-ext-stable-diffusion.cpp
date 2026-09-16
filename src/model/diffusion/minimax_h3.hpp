@@ -162,10 +162,7 @@ namespace MiniMaxH3 {
         ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
             auto fc1 = std::dynamic_pointer_cast<Linear>(blocks["fc1"]);
             auto fc2 = std::dynamic_pointer_cast<Linear>(blocks["fc2"]);
-            auto uv  = ggml_ext_chunk(ctx->ggml_ctx, fc1->forward(ctx, x), 2, 0);
-            return fc2->forward(ctx, ggml_mul(ctx->ggml_ctx,
-                                              ggml_silu(ctx->ggml_ctx, uv[0]),
-                                              uv[1]));
+            return fc2->forward(ctx, ggml_swiglu(ctx->ggml_ctx, fc1->forward(ctx, x)));
         }
     };
 
@@ -176,13 +173,30 @@ namespace MiniMaxH3 {
 
     static ggml_tensor* apply_partial_rope(ggml_context* ctx,
                                            ggml_tensor* x,
-                                           ggml_tensor* pe) {
+                                           ggml_tensor* pe,
+                                           ggml_backend_t backend = nullptr) {
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
-        auto rotated = Rope::apply_rope(ctx,
-                                        ggml_ext_slice(ctx, x, 0, 0, rot_dim),
-                                        pe,
-                                        false);
+        auto input = ggml_ext_slice(ctx, x, 0, 0, rot_dim);
+        ggml_tensor* rotated = nullptr;
+        static const bool fused_disabled = std::getenv("GGML_ROPE_FLUX_DISABLE") != nullptr;
+        if (backend != nullptr && !fused_disabled) {
+            // H3 pairs the first and second halves of the rotary dimensions;
+            // ROPE_FLUX pairs adjacent values. Pack/unpack that ordering around
+            // the fused operation, without expanding PE across every head.
+            auto paired = ggml_reshape_4d(ctx, input, rot_dim / 2, 2, x->ne[1], x->ne[2] * x->ne[3]);
+            paired = ggml_cont(ctx, ggml_permute(ctx, paired, 1, 0, 2, 3));
+            paired = ggml_reshape_4d(ctx, paired, rot_dim, x->ne[1], x->ne[2], x->ne[3]);
+            auto fused = ggml_rope_flux(ctx, paired, pe);
+            if (ggml_backend_supports_op(backend, fused)) {
+                rotated = ggml_reshape_4d(ctx, fused, 2, rot_dim / 2, x->ne[2], x->ne[1] * x->ne[3]);
+                rotated = ggml_cont(ctx, ggml_permute(ctx, rotated, 1, 0, 2, 3));
+                rotated = ggml_reshape_3d(ctx, rotated, rot_dim, x->ne[2], x->ne[1] * x->ne[3]);
+            }
+        }
+        if (rotated == nullptr) {
+            rotated = Rope::apply_rope(ctx, input, pe, false);
+        }
         if (rot_dim == x->ne[0]) {
             return rotated;
         }
@@ -223,8 +237,8 @@ namespace MiniMaxH3 {
             q                = q_norm->forward(ctx, q);
             k                = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx->ggml_ctx, q, pe);
-                k = apply_partial_rope(ctx->ggml_ctx, k, pe);
+                q = apply_partial_rope(ctx->ggml_ctx, q, pe, ctx->backend);
+                k = apply_partial_rope(ctx->ggml_ctx, k, pe, ctx->backend);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);
@@ -986,7 +1000,9 @@ namespace MiniMaxH3 {
             : DiffusionModelRunner(backend, prefix, weight_manager),
               config(Config::detect_from_weights(tensors, prefix)),
               model(config) {
-            model.init(params_ctx, tensors, prefix);
+            model.init(params_ctx,
+                       select_convrot_tensor_storage(backend, tensors, "MiniMax-H3 diffusion model", prefix),
+                       prefix);
         }
 
         std::string get_desc() override {
