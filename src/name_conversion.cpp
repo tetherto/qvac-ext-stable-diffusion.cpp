@@ -910,8 +910,8 @@ std::string convert_diffusers_vae_to_original_sd1(std::string name) {
         {"mid.attn_1.", "mid_block.attentions.0."},
     };
 
-    static std::vector<std::pair<std::string, std::string>> vae_conversion_map_layer;
-    if (vae_conversion_map_layer.empty()) {
+    static const auto vae_conversion_map_layer = [] {
+        std::vector<std::pair<std::string, std::string>> vae_conversion_map_layer;
         for (int i = 0; i < 4; ++i) {
             // --- encoder down blocks ---
             for (int j = 0; j < 2; ++j) {
@@ -944,7 +944,8 @@ std::string convert_diffusers_vae_to_original_sd1(std::string name) {
             std::string sd_mid_res_prefix = "mid.block_" + std::to_string(i + 1) + ".";
             vae_conversion_map_layer.emplace_back(sd_mid_res_prefix, hf_mid_res_prefix);
         }
-    }
+        return vae_conversion_map_layer;
+    }();
 
     static const std::vector<std::pair<std::string, std::string>> vae_conversion_map_attn = {
         {"norm.", "group_norm."},
