@@ -1,6 +1,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <random>
 
 #include "core/ggml_extend.hpp"
 #include "gguf.h"
@@ -116,11 +117,16 @@ struct AbotDiskTestRunner : GGMLRunner {
     }
 };
 
-static bool test_disk_residency(ggml_backend_t backend, bool disk, bool segmented) {
+static bool test_disk_residency(ggml_backend_t backend, ggml_backend_t params_backend, bool disk, bool segmented) {
     AbotDiskTestRunner runner(backend);
     // Declare manager after runner: its teardown still needs the tensors.
-    auto manager    = std::make_shared<ModelManager>();
-    const auto path = std::filesystem::temp_directory_path() / "sd-abot-streaming-weights.gguf";
+    auto manager         = std::make_shared<ModelManager>();
+    const auto directory = std::filesystem::temp_directory_path() /
+                           ("sd-abot-streaming-" + std::to_string(std::random_device{}()) +
+                            "-" + std::to_string(std::random_device{}()));
+    if (!std::filesystem::create_directory(directory))
+        return false;
+    const auto path = directory / "weights.gguf";
     auto* gguf      = gguf_init_empty();
     std::vector<float> values(8, 0.5f);
     for (const auto& weight : runner.weights) {
@@ -133,11 +139,15 @@ static bool test_disk_residency(ggml_backend_t backend, bool disk, bool segmente
         weight.second->data = nullptr;
     const auto mode = disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend;
     bool passed     = written && manager->loader().init_from_file(path.string()) &&
-                      manager->register_param_tensors("test", runner.weights, mode, backend, backend) &&
+                      manager->register_param_tensors("test", runner.weights, mode, backend, params_backend) &&
                       manager->validate_registered_tensors();
     for (int step = 0; passed && step < 3; ++step) {
         auto result = runner.run(manager, segmented);
-        passed      = result && result->numel() == 8 && std::fabs(result->data()[0] - 0.5f) < 1e-6f;
+        passed      = result && result->numel() == 8;
+        if (passed) {
+            for (int i = 0; i < 8; ++i)
+                passed = std::isfinite(result->data()[i]) && std::fabs(result->data()[i] - 0.5f) < 1e-6f && passed;
+        }
         for (const auto& weight : runner.weights) {
             passed = passed && ((weight.second->buffer == nullptr) == disk);
         }
@@ -146,6 +156,7 @@ static bool test_disk_residency(ggml_backend_t backend, bool disk, bool segmente
         std::cerr << "Parameter residency failed: disk=" << disk << ", segmented=" << segmented << '\n';
     manager.reset();
     std::filesystem::remove(path);
+    std::filesystem::remove(directory);
     return passed;
 }
 
@@ -235,24 +246,29 @@ static bool test_plan_cache(ggml_backend_t backend) {
     return true;
 }
 
-int main() {
+int main(int argc, char** argv) {
     sd_abot_session_params_t params;
     sd_abot_session_params_init(&params);
     if (params.params_backend || params.max_vram || params.stream_layers || params.offload_params_to_cpu || params.kv_cache) {
         std::cerr << "ABot memory controls must remain opt-in\n";
         return 1;
     }
-    auto* backend = sd_backend_cpu_init();
-    if (!backend)
+    SDBackendManager backends;
+    std::string error;
+    if (argc > 2 || !backends.init(argc == 2 ? argv[1] : "cpu", "diffusion=cpu", nullptr, false, &error)) {
+        std::cerr << "Expected an available backend name: " << error << '\n';
         return 1;
+    }
+    auto* backend        = backends.runtime_backend(SDBackendModule::DIFFUSION);
+    auto* params_backend = backends.params_backend(SDBackendModule::DIFFUSION);
+    std::cout << "Testing streaming on " << ggml_backend_name(backend) << '\n';
     bool passed = test_history(backend, false) && test_history(backend, true);
     passed      = test_plan_cache(backend) && passed;
     passed      = test_view_output(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {
-            passed = test_disk_residency(backend, disk, segmented) && passed;
+            passed = test_disk_residency(backend, params_backend, disk, segmented) && passed;
         }
     }
-    ggml_backend_free(backend);
     return passed ? 0 : 1;
 }
