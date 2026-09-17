@@ -20,6 +20,7 @@
 #include "stable-diffusion.h"
 
 #include "conditioning/conditioner.hpp"
+#include "core/debug_trace.hpp"
 #include "core/backend_fit.h"
 #include "core/fit_params.h"
 #include "extensions/generation_extension.h"
@@ -2715,6 +2716,9 @@ public:
                                          ? denoiser->noise_scaling(sigmas[0], noise, init_latent)
                                          : init_latent;
         sd::Tensor<float> denoised = x_t;
+        sd_debug_trace::tensor("diffusion", "sampler.initial_latent", 0, init_latent);
+        sd_debug_trace::tensor("diffusion", "sampler.initial_noise", 0, noise);
+        sd_debug_trace::tensor("diffusion", "sampler.x_enter", 0, x_t);
 
         auto denoise = [&](const sd::Tensor<float>& x, float sigma, int step) -> sd::guidance::GuiderOutput {
             if (get_cancel_flag() == SD_CANCEL_ALL) {
@@ -2732,6 +2736,8 @@ public:
                 pretty_progress(0, (int)steps, 0);
                 last_progress_us = ggml_time_us();
             }
+            sd_debug_trace::tensor("diffusion", "step.latent_enter", step, x);
+            sd_debug_trace::scalar("diffusion", "step.sigma", step, sigma);
 
             std::vector<float> scaling = denoiser->get_scalings(sigma);
             GGML_ASSERT(scaling.size() == 3);
@@ -2915,6 +2921,7 @@ public:
             if (cond_out.empty()) {
                 return {};
             }
+            sd_debug_trace::tensor("diffusion", "step.prediction_cond", step, cond_out);
 
             if (!uncond.empty()) {
                 if (!step_cache.is_step_skipped()) {
@@ -2975,6 +2982,7 @@ public:
             if (guided.pred.empty()) {
                 return {};
             }
+            sd_debug_trace::tensor("diffusion", "step.prediction_guided", step, guided.pred);
 
             denoised = guided.pred * c_out + x * c_skip;
             sd::guidance::GuiderOutput output;
@@ -2996,6 +3004,7 @@ public:
             }
             report_sample_progress(step, steps, &last_progress_us);
             output.pred = denoised;
+            sd_debug_trace::tensor("diffusion", "step.denoised", step, denoised);
             return output;
         };
 
@@ -3017,6 +3026,7 @@ public:
         if (inverse_noise_scaling) {
             x0 = denoiser->inverse_noise_scaling(sigmas[sigmas.size() - 1], x0);
         }
+        sd_debug_trace::tensor("diffusion", "sampler.final_latent", static_cast<int>(steps), x0);
 
         if (control_net) {
             control_net->free_control_ctx();
@@ -7034,6 +7044,7 @@ static ImageGenerationEmbeds prepare_video_generation_embeds(sd_ctx_t* sd_ctx,
                                                              const sd_vid_gen_params_t* sd_vid_gen_params,
                                                              const GenerationRequest& request,
                                                              const ImageGenerationLatents& latents) {
+    sd_debug_trace::initialize();
     ConditionerRunnerDoneOnExit conditioner_runner_done{sd_ctx->sd->cond_stage_model.get()};
 
     ImageGenerationEmbeds embeds;
@@ -7079,6 +7090,10 @@ static ImageGenerationEmbeds prepare_video_generation_embeds(sd_ctx_t* sd_ctx,
     int64_t t1 = ggml_time_ms();
     LOG_INFO("get_learned_condition completed, taking %.2fs", (t1 - prepare_start_ms) * 1.0f / 1000);
 
+    sd_debug_trace::tensor("te", "conditioning.cross_attention", -1, embeds.cond.c_crossattn);
+    sd_debug_trace::tensor("te", "conditioning.vector", -1, embeds.cond.c_vector);
+    sd_debug_trace::tensor("te", "conditioning.concat", -1, embeds.cond.c_concat);
+
     return embeds;
 }
 
@@ -7099,6 +7114,7 @@ static sd_image_t* decode_video_outputs(sd_ctx_t* sd_ctx,
         video_latent.shape()[3] > sd_ctx->sd->get_latent_channel()) {
         video_latent = sd::ops::slice(video_latent, 3, 0, sd_ctx->sd->get_latent_channel());
     }
+    sd_debug_trace::tensor("video_vae", "video_vae.input", -1, video_latent);
     LOG_DEBUG("decode_video_outputs latent %dx%dx%dx%d",
               (int)video_latent.shape()[0],
               (int)video_latent.shape()[1],
@@ -7113,6 +7129,7 @@ static sd_image_t* decode_video_outputs(sd_ctx_t* sd_ctx,
         LOG_ERROR("decode_first_stage failed for video");
         return nullptr;
     }
+    sd_debug_trace::tensor("video_vae", "video_vae.decoded_pre_clamp", -1, vid);
     LOG_DEBUG("decode_video_outputs decoded %dx%dx%dx%d",
               (int)vid.shape()[0],
               (int)vid.shape()[1],
@@ -7497,6 +7514,8 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
 
     sd::Tensor<float> x_t   = latents.init_latent;
     sd::Tensor<float> noise = sd::Tensor<float>::randn_like(x_t, sd_ctx->sd->rng);
+    sd_debug_trace::tensor("diffusion", "video.initial_latent", 0, x_t);
+    sd_debug_trace::tensor("diffusion", "video.initial_noise", 0, noise);
 
     if (plan.high_noise_sample_steps > 0) {
         if (sd_ctx->sd->get_cancel_flag() == SD_CANCEL_ALL) {
@@ -7587,6 +7606,11 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
         return false;
     }
     LOG_INFO("sampling completed, taking %.2fs", (sampling_end - sampling_start) * 1.0f / 1000);
+    sd_debug_trace::tensor("diffusion", "video.final_packed_latent", static_cast<int>(plan.sample_steps), final_latent);
+    if (std::getenv("SD_TRACE_STOP_AFTER_LATENT") != nullptr) {
+        LOG_INFO("SD_TRACE_STOP_AFTER_LATENT requested; stopping before decoder execution");
+        return false;
+    }
 
     if (latent_upscale_enabled) {
         if (sd_ctx->sd->get_cancel_flag() == SD_CANCEL_ALL) {
@@ -7749,6 +7773,7 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
                                                             latents.audio_length,
                                                             sd_ctx->sd->get_latent_channel());
         if (!audio_latent.empty()) {
+            sd_debug_trace::tensor("audio_vae", "audio_vae.input", -1, audio_latent);
             LOG_DEBUG("decode audio latent %dx%dx%dx%d",
                       (int)audio_latent.shape()[0],
                       (int)audio_latent.shape()[1],

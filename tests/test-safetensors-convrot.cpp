@@ -66,9 +66,19 @@ ggml_backend_t init_cpu_backend() {
     return ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
 }
 
+class InspectableLinear : public Linear {
+public:
+    using Linear::Linear;
+    bool fast_h256_enabled() const { return use_convrot_fast_h256; }
+};
+
 }  // namespace
 
 int main() {
+    GGML_ASSERT(convrot_q8_decomp_backend_safe("CUDA0"));
+    GGML_ASSERT(convrot_q8_decomp_backend_safe("Vulkan0"));
+    GGML_ASSERT(!convrot_q8_decomp_backend_safe("MTL0"));
+
     const std::filesystem::path path = std::filesystem::temp_directory_path() /
                                        "stable-diffusion-convrot-test.safetensors";
     const std::string marker =
@@ -150,6 +160,41 @@ int main() {
     GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
+
+    auto h256_hint_for_mode = [&](const char* mode) {
+        if (mode == nullptr) {
+            GGML_ASSERT(unset_test_environment("SD_CONVROT_H256_MODE") == 0);
+        } else {
+            GGML_ASSERT(set_test_environment("SD_CONVROT_H256_MODE", mode) == 0);
+        }
+        ggml_init_params graph_params = {1024 * 1024, nullptr, true};
+        ggml_context* graph_ctx       = ggml_init(graph_params);
+        GGML_ASSERT(graph_ctx != nullptr);
+        InspectableLinear linear(256, 4, false);
+        linear.init(graph_ctx, q8_selection, "layer");
+        GGML_ASSERT(linear.fast_h256_enabled() == (mode != nullptr && strcmp(mode, "fast") == 0));
+        ggml_tensor* input = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 256, 2);
+        GGMLRunnerContext runner_ctx;
+        runner_ctx.ggml_ctx = graph_ctx;
+        ggml_tensor* output = linear.forward(&runner_ctx, input);
+        GGML_ASSERT(output != nullptr && output->op == GGML_OP_MUL_MAT);
+        ggml_tensor* rotated = output->src[1];
+        if (rotated->op != GGML_OP_MUL_MAT) {
+            rotated = rotated->src[0];
+        }
+        GGML_ASSERT(rotated != nullptr && rotated->op == GGML_OP_MUL_MAT);
+        int32_t hint = GGML_HINT_NONE;
+        memcpy(&hint, rotated->op_params + sizeof(int32_t), sizeof(hint));
+        ggml_free(graph_ctx);
+        return hint;
+    };
+    GGML_ASSERT(h256_hint_for_mode(nullptr) == GGML_HINT_NONE);
+    GGML_ASSERT(h256_hint_for_mode("dense") == GGML_HINT_NONE);
+    // The accessor assertion in h256_hint_for_mode verifies that "fast"
+    // selects the opt-in path. The backend-specific hint itself is covered by
+    // test-mul-mat-convrot-h256-hint.
+    (void) h256_hint_for_mode("fast");
+    GGML_ASSERT(unset_test_environment("SD_CONVROT_H256_MODE") == 0);
 
     // A runner for another component must not inherit this component's
     // ConvRot requirement when both live in the shared storage map.
