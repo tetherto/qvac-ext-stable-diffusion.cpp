@@ -2,8 +2,9 @@
 #include <filesystem>
 #include <iostream>
 #include <random>
-
+#include "abot_world.hpp"
 #include "core/ggml_extend.hpp"
+#include "ggml-cpu.h"
 #include "gguf.h"
 #include "model_manager.h"
 
@@ -237,6 +238,28 @@ struct AbotPlanCacheTestRunner : GGMLRunner {
                sd::ggml_graph_cut::plan_matches_graph(graph, plan);
     }
 
+    bool resolve_append_layout(const std::vector<int>& write_slots) {
+        reset_compute_ctx();
+        auto get_graph = [&]() {
+            auto* graph = new_graph_custom(32);
+            auto* input = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_F32, 8);
+            auto* x     = ggml_scale(compute_ctx, input, 0.5f);
+            for (int slot : write_slots) {
+                x = ggml_scale(compute_ctx, x, 0.5f);
+                sd::ggml_graph_cut::mark_graph_cut(x, "append", "r" + std::to_string(slot));
+            }
+            ggml_build_forward_expand(graph, ggml_scale(compute_ctx, x, 2.f));
+            return graph;
+        };
+        auto* graph = get_compute_graph(get_graph);
+        rebuild_params_tensor_set();
+        set_graph_cut_plan_cache_key(ABOT::AbotWorldRunner::kv_plan_cache_key(
+            ABOT::AbotWorldRunner::KvMode::APPEND, write_slots));
+        GraphCutPlan plan;
+        return resolve_graph_cut_plan(graph, &plan) && plan.valid &&
+               sd::ggml_graph_cut::plan_matches_graph(graph, plan);
+    }
+
     size_t phase_cache_count() const { return graph_cut_plan_caches_.size(); }
 };
 
@@ -255,6 +278,51 @@ static bool test_phase_plan_caches(ggml_backend_t backend) {
         return false;
     }
     return true;
+}
+
+static bool test_abot_append_plan_cache_keys(ggml_backend_t backend) {
+    AbotPlanCacheTestRunner runner(backend);
+    int next_slot = 0;
+    for (int block = 0; block < 2 * ABOT::AbotWorldRunner::kv_ring_slots; ++block) {
+        std::vector<int> write_slots;
+        for (int frame = 0; frame < 3; ++frame) {
+            write_slots.push_back(next_slot);
+            next_slot = (next_slot + 1) % ABOT::AbotWorldRunner::kv_ring_slots;
+        }
+        if (!runner.resolve_append_layout(write_slots)) {
+            std::cerr << "Failed to resolve ABot APPEND ring layout " << block << '\n';
+            return false;
+        }
+    }
+    if (runner.phase_cache_count() != ABOT::AbotWorldRunner::kv_ring_slots) {
+        std::cerr << "ABot APPEND plans were not reused after ring wraparound\n";
+        return false;
+    }
+    return true;
+}
+
+static bool test_abot_decode_overlap_guard(ggml_backend_t dit_backend) {
+    ggml_backend_t vae_backend = ggml_backend_cpu_init();
+    if (vae_backend == nullptr) {
+        std::cerr << "Failed to create the secondary backend for overlap tests\n";
+        return false;
+    }
+    const bool passed =
+        ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
+                                                     vae_backend, vae_backend, false, false) &&
+        !ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, vae_backend,
+                                                      vae_backend, vae_backend, false, false) &&
+        !ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
+                                                      vae_backend, dit_backend, false, false) &&
+        !ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
+                                                      dit_backend, dit_backend, false, false) &&
+        !ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
+                                                      vae_backend, vae_backend, true, false);
+    ggml_backend_free(vae_backend);
+    if (!passed) {
+        std::cerr << "ABot decode overlap accepted shared or staged manager state\n";
+    }
+    return passed;
 }
 
 static bool test_plan_cache(ggml_backend_t backend) {
@@ -335,6 +403,7 @@ int main(int argc, char** argv) {
     std::cout << "Testing streaming on " << ggml_backend_name(backend) << '\n';
     bool passed = test_history(backend, false) && test_history(backend, true);
     passed      = test_plan_cache(backend) && test_phase_plan_caches(backend) && passed;
+    passed      = test_abot_append_plan_cache_keys(backend) && test_abot_decode_overlap_guard(backend) && passed;
     passed      = test_view_output(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {

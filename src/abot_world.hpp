@@ -758,6 +758,20 @@ struct AbotWorldRunner : public GGMLRunner {
         APPEND,        // rows = current clean block (t=0); reads cache, captures ring
     };
 
+    static size_t kv_plan_cache_key(KvMode mode, const std::vector<int>& ring_write_slots) {
+        size_t key = static_cast<size_t>(mode) + 1;
+        if (mode != KvMode::APPEND) {
+            return key;
+        }
+        const size_t radix = kv_ring_slots + 1;
+        key *= radix;
+        for (int slot : ring_write_slots) {
+            GGML_ASSERT(slot >= 0 && slot < kv_ring_slots);
+            key = key * radix + static_cast<size_t>(slot + 1);
+        }
+        return key;
+    }
+
     static std::string kv_name(int layer, bool is_k, const std::string& slot) {
         char buf[64];
         snprintf(buf, sizeof(buf), "abot.kv.l%02d.%s.%s", layer, is_k ? "k" : "v", slot.c_str());
@@ -819,7 +833,7 @@ struct AbotWorldRunner : public GGMLRunner {
                                       const std::array<int64_t, kv_ring_slots>& ring_abs,
                                       const std::vector<int>& ring_write_slots,        // APPEND: slot per frame
                                       int n_threads) {
-        set_graph_cut_plan_cache_key(static_cast<size_t>(mode) + 1);
+        set_graph_cut_plan_cache_key(kv_plan_cache_key(mode, ring_write_slots));
         const int Fb    = cfg.num_frame_per_block;
         const int F_cur = static_cast<int>(frame_latents.size());
         const int ds    = cfg.act_downscale_factor;
@@ -1055,6 +1069,18 @@ struct AbotTinyVideoAutoEncoder : public TinyVideoAutoEncoder {
 
 class AbotWalkSession {
 public:
+    static bool can_overlap_kv_decode(ggml_backend_t runtime_backend,
+                                      ggml_backend_t params_backend,
+                                      ggml_backend_t vae_backend,
+                                      ggml_backend_t vae_params_backend,
+                                      bool dit_params_on_disk,
+                                      bool tae_params_on_disk) {
+        return vae_backend != runtime_backend &&
+               params_backend == runtime_backend &&
+               vae_params_backend == vae_backend &&
+               !dit_params_on_disk && !tae_params_on_disk;
+    }
+
     AbotWorldConfig cfg;
     AbotRng rng;
     int n_threads = 8;
@@ -1083,8 +1109,8 @@ public:
     bool kv_enabled = false;
     // ggml backends are not thread-safe: the decode/append overlap is only
     // legal when DiT and taehv run on distinct backend instances (e.g.
-    // "diffusion=cuda0,vae=cuda1") and neither graph mutates shared disk
-    // residency state.
+    // "diffusion=cuda0,vae=cuda1") and both parameter sets already reside on
+    // their runtime backends.
     bool kv_decode_overlap_safe = false;
     std::array<int64_t, AbotWorldRunner::kv_ring_slots> kv_ring_abs{};
     int kv_ring_next = 0;
@@ -1209,11 +1235,15 @@ public:
             }
             kv_enabled = true;
             kv_ring_abs.fill(-1);
-            kv_decode_overlap_safe = vae_backend != runtime_backend &&
-                                     !cfg.dit_params_on_disk && !cfg.tae_params_on_disk;
+            kv_decode_overlap_safe = can_overlap_kv_decode(runtime_backend,
+                                                           params_backend,
+                                                           vae_backend,
+                                                           vae_params_backend,
+                                                           cfg.dit_params_on_disk,
+                                                           cfg.tae_params_on_disk);
             LOG_INFO("abot session: KV cache enabled (ring %d frames, decode overlap %s)",
                      AbotWorldRunner::kv_ring_slots,
-                     kv_decode_overlap_safe ? "on" : "off: shared backend or disk parameters");
+                     kv_decode_overlap_safe ? "on" : "off: shared or staged parameter backend");
         }
         if (!model_loader.init_from_file(taehv_path, "tae.")) {  // same prefixing as new_sd_ctx's taesd path
             LOG_ERROR("abot session: cannot open taehv '%s'", taehv_path.c_str());
