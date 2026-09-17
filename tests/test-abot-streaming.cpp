@@ -14,6 +14,8 @@ struct AbotHistoryTestRunner : GGMLRunner {
 
     std::string get_desc() override { return "ABot history streaming test"; }
 
+    size_t persistent_pool_count() const { return persistent_cache_pools_.size(); }
+
     std::optional<sd::Tensor<float>> run(bool segmented, bool merge, bool append, int step) {
         auto input     = sd::Tensor<float>::from_vector(std::vector<float>(8, 0.25f + step));
         auto get_graph = [&]() {
@@ -76,6 +78,10 @@ static bool test_history(ggml_backend_t backend, bool merge) {
                 return false;
             }
         }
+    }
+    if (streaming.persistent_pool_count() != 1) {
+        std::cerr << "Persistent history tensors were not pooled\n";
+        return false;
     }
     return true;
 }
@@ -206,6 +212,51 @@ static bool test_view_output(ggml_backend_t backend) {
     return passed;
 }
 
+struct AbotPlanCacheTestRunner : GGMLRunner {
+    using GGMLRunner::GGMLRunner;
+
+    std::string get_desc() override { return "ABot phase plan cache test"; }
+
+    bool resolve_phase(size_t phase) {
+        reset_compute_ctx();
+        auto get_graph = [&]() {
+            auto* graph = new_graph_custom(32);
+            auto* input = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_F32, 8);
+            auto* a     = ggml_scale(compute_ctx, input, 0.5f);
+            auto* b     = phase == 1 ? ggml_sqr(compute_ctx, a) : ggml_sqr(compute_ctx, input);
+            sd::ggml_graph_cut::mark_graph_cut(a, phase == 2 ? "append" : "denoise", "x");
+            auto* output = phase == 0 ? ggml_add(compute_ctx, a, b) : ggml_add(compute_ctx, b, a);
+            ggml_build_forward_expand(graph, output);
+            return graph;
+        };
+        auto* graph = get_compute_graph(get_graph);
+        rebuild_params_tensor_set();
+        set_graph_cut_plan_cache_key(phase);
+        GraphCutPlan plan;
+        return resolve_graph_cut_plan(graph, &plan) && plan.valid &&
+               sd::ggml_graph_cut::plan_matches_graph(graph, plan);
+    }
+
+    size_t phase_cache_count() const { return graph_cut_plan_caches_.size(); }
+};
+
+static bool test_phase_plan_caches(ggml_backend_t backend) {
+    AbotPlanCacheTestRunner runner(backend);
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        for (size_t phase = 0; phase < 3; ++phase) {
+            if (!runner.resolve_phase(phase)) {
+                std::cerr << "Failed to resolve ABot graph phase " << phase << '\n';
+                return false;
+            }
+        }
+    }
+    if (runner.phase_cache_count() != 3) {
+        std::cerr << "ABot graph phases did not retain separate plan caches\n";
+        return false;
+    }
+    return true;
+}
+
 static bool test_plan_cache(ggml_backend_t backend) {
     sd::ggml_graph_cut::PlanCache cache;
     int previous_variant = -1;
@@ -247,8 +298,18 @@ static bool test_plan_cache(ggml_backend_t backend) {
 }
 
 int main(int argc, char** argv) {
-    sd_abot_session_params_t params;
-    sd_abot_session_params_init(&params);
+    struct {
+        sd_abot_session_params_t params;
+        uint64_t canary;
+    } legacy = {{}, UINT64_C(0x8a7b6c5d4e3f2011)};
+    sd_abot_session_params_init(&legacy.params);
+    if (legacy.canary != UINT64_C(0x8a7b6c5d4e3f2011) ||
+        legacy.params.n_threads != -1 || legacy.params.seed != 42) {
+        std::cerr << "Legacy ABot parameter initialization changed its ABI\n";
+        return 1;
+    }
+    sd_abot_session_params_v2_t params;
+    sd_abot_session_params_v2_init(&params);
     if (params.params_backend || params.max_vram || params.stream_layers || params.offload_params_to_cpu || params.kv_cache) {
         std::cerr << "ABot memory controls must remain opt-in\n";
         return 1;
@@ -259,11 +320,21 @@ int main(int argc, char** argv) {
         std::cerr << "Expected an available backend name: " << error << '\n';
         return 1;
     }
+    auto disk_vae_params                = params;
+    disk_vae_params.dit_model_path      = "unused-dit";
+    disk_vae_params.taehv_path          = "unused-taehv";
+    disk_vae_params.scene_path          = "unused-scene";
+    disk_vae_params.backend             = "cpu";
+    disk_vae_params.params_backend      = "vae=disk";
+    if (sd_abot_session_new_v2(&disk_vae_params) != nullptr) {
+        std::cerr << "ABot accepted unsupported vae=disk residency\n";
+        return 1;
+    }
     auto* backend        = backends.runtime_backend(SDBackendModule::DIFFUSION);
     auto* params_backend = backends.params_backend(SDBackendModule::DIFFUSION);
     std::cout << "Testing streaming on " << ggml_backend_name(backend) << '\n';
     bool passed = test_history(backend, false) && test_history(backend, true);
-    passed      = test_plan_cache(backend) && passed;
+    passed      = test_plan_cache(backend) && test_phase_plan_caches(backend) && passed;
     passed      = test_view_output(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {

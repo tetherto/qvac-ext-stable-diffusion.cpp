@@ -7814,7 +7814,27 @@ struct sd_abot_session_t { SDBackendManager backend_manager; ABOT::AbotWalkSessi
 void sd_abot_session_params_init(sd_abot_session_params_t* p) {
     if (!p) return; *p = {}; p->n_threads = -1; p->seed = 42;
 }
+void sd_abot_session_params_v2_init(sd_abot_session_params_v2_t* p) {
+    if (!p) return; *p = {}; p->n_threads = -1; p->seed = 42;
+}
 sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
+    if (!p) return nullptr;
+    sd_abot_session_params_v2_t p2;
+    sd_abot_session_params_v2_init(&p2);
+    p2.dit_model_path            = p->dit_model_path;
+    p2.taehv_path                = p->taehv_path;
+    p2.scene_path                = p->scene_path;
+    p2.backend                   = p->backend;
+    p2.n_threads                 = p->n_threads;
+    p2.seed                      = p->seed;
+    p2.num_frame_per_block       = p->num_frame_per_block;
+    p2.local_attn_size           = p->local_attn_size;
+    p2.offload_params_to_cpu     = p->offload_params_to_cpu;
+    p2.kv_cache                  = p->kv_cache;
+    p2.profile                   = p->profile;
+    return sd_abot_session_new_v2(&p2);
+}
+sd_abot_session_t* sd_abot_session_new_v2(const sd_abot_session_params_v2_t* p) {
     try {
         if (!p || !p->dit_model_path || !p->taehv_path || !p->scene_path) return nullptr;
         auto s = std::make_unique<sd_abot_session_t>(); std::string error;
@@ -7832,6 +7852,10 @@ sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
         }
         if (!s->backend_manager.init(SAFE_STR(p->backend), params_backend.c_str(), nullptr, false, &error)) {
             LOG_ERROR("sd_abot_session_new: backend init failed: %s", error.c_str()); return nullptr;
+        }
+        if (s->backend_manager.params_backend_is_disk(SDBackendModule::VAE)) {
+            LOG_ERROR("sd_abot_session_new: vae=disk is unsupported for the ABot decoder");
+            return nullptr;
         }
         if (!max_vram.canonicalize_backend_keys(&error)) {
             LOG_ERROR("sd_abot_session_new: %s", error.c_str());

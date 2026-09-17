@@ -1820,21 +1820,19 @@ protected:
 
     std::map<ggml_tensor*, const void*> backend_tensor_data_map;
     std::map<std::string, ggml_tensor*> cache_tensor_map;  // name -> tensor
-    // Session state has a different lifetime from graph-cut scratch tensors.
-    // Each allocation stays stable while later segments read the old history.
-    struct PersistentCacheEntry {
+    struct PersistentCachePool {
         ggml_context* ctx            = nullptr;
         ggml_backend_buffer_t buffer = nullptr;
-        ggml_tensor* tensor          = nullptr;
 
-        ~PersistentCacheEntry() {
+        ~PersistentCachePool() {
             if (buffer != nullptr)
                 ggml_backend_buffer_free(buffer);
             if (ctx != nullptr)
                 ggml_free(ctx);
         }
     };
-    std::map<std::string, std::unique_ptr<PersistentCacheEntry>> persistent_cache_;
+    std::vector<std::unique_ptr<PersistentCachePool>> persistent_cache_pools_;
+    std::map<std::string, ggml_tensor*> persistent_cache_;
     std::map<std::string, ggml_tensor*> pending_persistent_cache_;
     std::vector<std::pair<ggml_tensor*, std::string>> debug_tensors;
     const std::string final_result_name = "ggml_runner_final_result_tensor";
@@ -1844,7 +1842,8 @@ protected:
     bool circular_x_enabled    = false;
     bool circular_y_enabled    = false;
 
-    sd::ggml_graph_cut::PlanCache graph_cut_plan_cache_;
+    std::map<size_t, sd::ggml_graph_cut::PlanCache> graph_cut_plan_caches_;
+    size_t graph_cut_plan_cache_key_ = 0;
     std::unordered_set<const ggml_tensor*> params_tensor_set_;
     std::unordered_map<const ggml_tensor*, ggml_backend_t> graph_cut_layer_split_assignments_;
     std::unordered_map<const ggml_tensor*, ggml_backend_t> graph_cut_layer_split_node_assignments_;
@@ -2709,7 +2708,7 @@ protected:
 
         *plan_out = sd::ggml_graph_cut::resolve_plan(runtime_backend,
                                                      gf,
-                                                     &graph_cut_plan_cache_,
+                                                     &graph_cut_plan_caches_[graph_cut_plan_cache_key_],
                                                      planner_budget,
                                                      params_tensor_set_,
                                                      get_desc().c_str());
@@ -2736,7 +2735,7 @@ protected:
         GGML_ASSERT(gf != nullptr);
         *plan_out = sd::ggml_graph_cut::resolve_plan(runtime_backend,
                                                      gf,
-                                                     &graph_cut_plan_cache_,
+                                                     &graph_cut_plan_caches_[graph_cut_plan_cache_key_],
                                                      0,
                                                      params_tensor_set_,
                                                      get_desc().c_str());
@@ -3217,6 +3216,10 @@ protected:
         return output;
     }
 
+    void set_graph_cut_plan_cache_key(size_t key) {
+        graph_cut_plan_cache_key_ = key;
+    }
+
 public:
     void runner_done() {
         free_compute_buffer();
@@ -3366,33 +3369,49 @@ public:
         for (int i = 0; i < ggml_graph_n_nodes(gf); ++i) {
             computed.insert(ggml_graph_node(gf, i));
         }
+
+        std::vector<std::pair<std::string, ggml_tensor*>> missing;
+        for (const auto& pending : pending_persistent_cache_) {
+            if (persistent_cache_.count(pending.first) == 0) {
+                missing.emplace_back(pending.first, pending.second);
+            }
+        }
+        if (!missing.empty()) {
+            auto pool            = std::make_unique<PersistentCachePool>();
+            ggml_init_params init = {missing.size() * ggml_tensor_overhead(), nullptr, true};
+            pool->ctx             = ggml_init(init);
+            if (pool->ctx == nullptr)
+                return false;
+            std::vector<std::pair<std::string, ggml_tensor*>> created;
+            created.reserve(missing.size());
+            for (const auto& item : missing) {
+                ggml_tensor* tensor = ggml_dup_tensor(pool->ctx, item.second);
+                ggml_set_name(tensor, item.first.c_str());
+                created.emplace_back(item.first, tensor);
+            }
+            pool->buffer = ggml_backend_alloc_ctx_tensors(pool->ctx, runtime_backend);
+            if (pool->buffer == nullptr) {
+                LOG_ERROR("%s failed to allocate session cache pool", get_desc().c_str());
+                return false;
+            }
+            for (const auto& item : created) {
+                persistent_cache_.emplace(item.first, item.second);
+            }
+            persistent_cache_pools_.push_back(std::move(pool));
+        }
+
         for (auto it = pending_persistent_cache_.begin(); it != pending_persistent_cache_.end();) {
             ggml_tensor* src = it->second;
             if (computed.count(src) == 0) {
                 ++it;
                 continue;
             }
-            auto& entry = persistent_cache_[it->first];
-            if (!entry) {
-                auto created          = std::make_unique<PersistentCacheEntry>();
-                ggml_init_params init = {ggml_tensor_overhead(), nullptr, true};
-                created->ctx          = ggml_init(init);
-                if (created->ctx == nullptr)
-                    return false;
-                created->tensor = ggml_dup_tensor(created->ctx, src);
-                ggml_set_name(created->tensor, it->first.c_str());
-                created->buffer = ggml_backend_alloc_ctx_tensors(created->ctx, runtime_backend);
-                if (created->buffer == nullptr) {
-                    LOG_ERROR("%s failed to allocate session cache '%s'", get_desc().c_str(), it->first.c_str());
-                    return false;
-                }
-                entry = std::move(created);
-            }
-            if (entry->tensor->type != src->type || !ggml_are_same_shape(entry->tensor, src)) {
+            ggml_tensor* dst = persistent_cache_.at(it->first);
+            if (dst->type != src->type || !ggml_are_same_shape(dst, src)) {
                 LOG_ERROR("%s session cache shape changed: %s", get_desc().c_str(), it->first.c_str());
                 return false;
             }
-            ggml_backend_tensor_copy(src, entry->tensor);
+            ggml_backend_tensor_copy(src, dst);
             it = pending_persistent_cache_.erase(it);
         }
         ggml_backend_synchronize(runtime_backend);
@@ -3401,8 +3420,8 @@ public:
 
     ggml_tensor* get_cache_tensor_by_name(const std::string& name) {
         auto persistent = persistent_cache_.find(name);
-        if (persistent != persistent_cache_.end() && persistent->second) {
-            return persistent->second->tensor;
+        if (persistent != persistent_cache_.end()) {
+            return persistent->second;
         }
         if (cache_ctx != nullptr) {
             return ggml_get_tensor(cache_ctx, name.c_str());

@@ -178,8 +178,8 @@ static bool write_png(const std::string& path, const uint8_t* rgb, int w, int h)
 }
 
 static int run_walk(const std::string& dit, const std::string& taehv, const std::string& scene, const std::string& actions_spec, const std::string& outdir, int threads, int64_t seed, const std::string& backend, bool kv_cache, bool profile, int local_attn_size, const std::string& params_backend, const std::string& max_vram, bool stream_layers) {
-    sd_abot_session_params_t params;
-    sd_abot_session_params_init(&params);
+    sd_abot_session_params_v2_t params;
+    sd_abot_session_params_v2_init(&params);
     params.dit_model_path  = dit.c_str();
     params.taehv_path      = taehv.c_str();
     params.scene_path      = scene.c_str();
@@ -193,7 +193,7 @@ static int run_walk(const std::string& dit, const std::string& taehv, const std:
     params.max_vram        = max_vram.c_str();
     params.stream_layers   = stream_layers;
 
-    sd_abot_session_t* session = sd_abot_session_new(&params);
+    sd_abot_session_t* session = sd_abot_session_new_v2(&params);
     if (session == nullptr) {
         fprintf(stderr, "session creation failed\n");
         return 1;

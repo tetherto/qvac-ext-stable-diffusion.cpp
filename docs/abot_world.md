@@ -49,7 +49,7 @@ it consistently.
 
 ## Walk memory controls
 
-`sd_abot_session_params_t` uses the same parameter manager and graph-cut
+`sd_abot_session_params_v2_t` uses the same parameter manager and graph-cut
 executor as the normal `sd_ctx` path (including MiniMax-H3):
 
 - `params_backend` selects where walk weights live: `diffusion` is the DiT;
@@ -66,6 +66,13 @@ executor as the normal `sd_ctx` path (including MiniMax-H3):
 - `params_backend="diffusion=disk"` uses the existing lazy disk residency:
   weights are read for each graph or cut segment and released afterwards.
   On GPU this is separate from CPU-backed `stream_layers` residency.
+  `vae=disk` is rejected because the taehv decoder retains its prepared
+  weights across walk steps.
+
+The original `sd_abot_session_params_t` and constructor remain available for
+binary compatibility. New callers that use these memory controls initialize
+`sd_abot_session_params_v2_t` with `sd_abot_session_params_v2_init()` and call
+`sd_abot_session_new_v2()`.
 
 Both recomputed history and `kv_cache=true` work with cuts. Cached K/V stay
 alive across segment scratch resets and successive walk steps. These settings

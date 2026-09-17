@@ -648,6 +648,7 @@ struct AbotWorldRunner : public GGMLRunner {
                                    const std::vector<int64_t>& frame_abs_ids,  // F_vis absolute walk frame ids
                                    int block_frames,
                                    int n_threads) {
+        set_graph_cut_plan_cache_key(0);
         const int F_vis = static_cast<int>(frame_latents.size());
         const int ds    = cfg.act_downscale_factor;
         const int w_in  = static_cast<int>(lat_w) / ds * ds;  // == lat_w (multiple of 16 grid)
@@ -818,6 +819,7 @@ struct AbotWorldRunner : public GGMLRunner {
                                       const std::array<int64_t, kv_ring_slots>& ring_abs,
                                       const std::vector<int>& ring_write_slots,        // APPEND: slot per frame
                                       int n_threads) {
+        set_graph_cut_plan_cache_key(static_cast<size_t>(mode) + 1);
         const int Fb    = cfg.num_frame_per_block;
         const int F_cur = static_cast<int>(frame_latents.size());
         const int ds    = cfg.act_downscale_factor;
@@ -1081,8 +1083,8 @@ public:
     bool kv_enabled = false;
     // ggml backends are not thread-safe: the decode/append overlap is only
     // legal when DiT and taehv run on distinct backend instances (e.g.
-    // "diffusion=cuda0,vae=cuda1"); on a shared instance (single-GPU Metal)
-    // concurrent graph submission wedges the command queue.
+    // "diffusion=cuda0,vae=cuda1") and neither graph mutates shared disk
+    // residency state.
     bool kv_decode_overlap_safe = false;
     std::array<int64_t, AbotWorldRunner::kv_ring_slots> kv_ring_abs{};
     int kv_ring_next = 0;
@@ -1207,10 +1209,11 @@ public:
             }
             kv_enabled = true;
             kv_ring_abs.fill(-1);
-            kv_decode_overlap_safe = vae_backend != runtime_backend;
+            kv_decode_overlap_safe = vae_backend != runtime_backend &&
+                                     !cfg.dit_params_on_disk && !cfg.tae_params_on_disk;
             LOG_INFO("abot session: KV cache enabled (ring %d frames, decode overlap %s)",
                      AbotWorldRunner::kv_ring_slots,
-                     kv_decode_overlap_safe ? "on" : "off: shared DiT/taehv backend");
+                     kv_decode_overlap_safe ? "on" : "off: shared backend or disk parameters");
         }
         if (!model_loader.init_from_file(taehv_path, "tae.")) {  // same prefixing as new_sd_ctx's taesd path
             LOG_ERROR("abot session: cannot open taehv '%s'", taehv_path.c_str());
