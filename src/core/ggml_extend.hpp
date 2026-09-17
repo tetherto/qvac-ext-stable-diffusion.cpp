@@ -5,8 +5,8 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -21,6 +21,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -42,6 +43,93 @@
 #include "weight_manager.h"
 
 #define EPS 1e-05f
+
+// Construct only the operation metadata needed for the normal backend
+// supports_op query.  This stays private to the loader policy: backend
+// capabilities are expressed through the existing ggml interface, not a new
+// public ConvRot-specific API.
+inline bool ggml_backend_supports_convrot_op(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return false;
+    }
+    std::vector<uint8_t> storage(4 * ggml_tensor_overhead() + 1024);
+    ggml_init_params params = {
+        /*.mem_size   =*/ storage.size(),
+        /*.mem_buffer =*/ storage.data(),
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context* ctx = ggml_init(params);
+    if (ctx == nullptr) {
+        return false;
+    }
+    ggml_tensor* activations = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 1);
+    ggml_tensor* weights     = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, 256, 1);
+    ggml_tensor* scales      = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor* op          = ggml_mul_mat_convrot(ctx, activations, weights, scales, 256);
+    const bool supported      = ggml_backend_supports_op(backend, op);
+    ggml_free(ctx);
+    return supported;
+}
+
+// Select the compact representation before any model parameter tensor is
+// created.  The default is deliberately native: an unsupported backend is a
+// configuration error rather than a silent CPU reroute or full F16 expansion.
+// Set SD_CONVROT_MODE=compat to explicitly request the compatibility loader.
+inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend,
+                                                           const String2TensorStorage& source,
+                                                           const std::string& component,
+                                                           const std::string& prefix = "") {
+    // OrderedMap's default copy also copies its iterator index; rebuild it so
+    // this independent policy view owns a valid index into its own list.
+    String2TensorStorage selected;
+    bool has_convrot = false;
+    for (const auto& [name, storage] : source) {
+        selected.insert({name, storage});
+        has_convrot = has_convrot ||
+                      (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight());
+    }
+    if (!has_convrot) {
+        return selected;
+    }
+
+    const char* mode = std::getenv("SD_CONVROT_MODE");
+    const bool compatibility_mode = mode != nullptr && std::strcmp(mode, "compat") == 0;
+    const bool q8_decomp_mode     = mode != nullptr && std::strcmp(mode, "q8") == 0;
+    if (mode != nullptr && !compatibility_mode && !q8_decomp_mode && std::strcmp(mode, "native") != 0) {
+        throw std::runtime_error("invalid SD_CONVROT_MODE; expected 'native', 'q8', or 'compat'");
+    }
+    const char* backend_name = backend != nullptr ? ggml_backend_name(backend) : "unknown";
+    if (compatibility_mode) {
+        LOG_INFO("ConvRot: using explicitly selected F16 compatibility path for %s on backend %s",
+                 component.c_str(), backend_name);
+        return selected;
+    }
+    if (q8_decomp_mode) {
+        for (auto& [name, storage] : selected) {
+            if (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight()) {
+                storage.comfy_int8_native_enabled    = true;
+                storage.comfy_int8_q8_decomp_enabled = true;
+            }
+        }
+        LOG_INFO("ConvRot: selected Q8_0 activation-rotation decomposition for %s on backend %s",
+                 component.c_str(), backend_name);
+        return selected;
+    }
+    if (!ggml_backend_supports_convrot_op(backend)) {
+        throw std::runtime_error("ConvRot native support is required for " + component +
+                                 " but backend '" + backend_name +
+                                 "' lacks the 256-wide I8/F32 ConvRot operation; use a capable backend or set "
+                                 "SD_CONVROT_MODE=compat to select the F16 compatibility path");
+    }
+    for (auto& [name, storage] : selected) {
+        if (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight()) {
+            storage.comfy_int8_native_enabled = true;
+        }
+    }
+    LOG_INFO("ConvRot: selected native compact I8/F32 path for %s on backend %s",
+             component.c_str(), backend_name);
+    return selected;
+}
 
 #ifndef __STATIC_INLINE__
 #define __STATIC_INLINE__ static inline
@@ -1695,6 +1783,15 @@ struct WeightAdapter {
                                            ggml_tensor* b,
                                            const std::string& prefix,
                                            ForwardParams forward_params)                                                              = 0;
+    // Return only the adapter's output-space contribution.  Native operations
+    // such as compact ConvRot own their base-weight arithmetic and therefore
+    // cannot use forward_with_lora() without recomputing an incompatible base.
+    virtual ggml_tensor* lora_output_delta(ggml_context* ctx,
+                                            ggml_backend_t backend,
+                                            ggml_tensor* x,
+                                            ggml_tensor* w,
+                                            const std::string& prefix,
+                                            ForwardParams forward_params)                                                           = 0;
     virtual size_t get_extra_graph_size()                                                                                             = 0;
 };
 
@@ -3875,12 +3972,39 @@ protected:
     bool force_prec_f32;
     bool allow_weight_scale;
     bool has_weight_scale = false;
+    // This is distinct from `weight_scale`: the latter is a regular
+    // post-linear model parameter, while ConvRot's F32 vector is a private
+    // sidecar input to GGML_OP_MUL_MAT_CONVROT.
+    bool has_convrot_weight = false;
+    bool use_convrot_f16_compat = false;
+    bool use_convrot_q8_decomp = false;
     float scale;
     std::string prefix;
 
     void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") override {
         this->prefix         = prefix;
         has_weight_scale     = false;
+        has_convrot_weight   = false;
+        use_convrot_f16_compat = false;
+        use_convrot_q8_decomp  = false;
+        const auto storage_it = tensor_storage_map.find(prefix + "weight");
+        if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
+            storage_it->second.comfy_int8_native_enabled) {
+            has_convrot_weight = true;
+            if (storage_it->second.comfy_int8_q8_decomp_enabled) {
+                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, in_features, out_features);
+                params["weight.convrot_h256"]  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 256);
+                use_convrot_q8_decomp            = true;
+            } else {
+                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
+                params["weight.convrot_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+                use_convrot_f16_compat           = storage_it->second.name.rfind("text_encoders.llm.", 0) == 0;
+            }
+            if (bias) {
+                params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+            }
+            return;
+        }
         enum ggml_type wtype = get_type(prefix + "weight", tensor_storage_map, GGML_TYPE_F32);
         if (in_features % ggml_blck_size(wtype) != 0 || force_f32) {
             wtype = GGML_TYPE_F32;
@@ -3928,7 +4052,41 @@ public:
         }
         ggml_tensor* linear_bias = has_weight_scale ? nullptr : b;
         ggml_tensor* out         = nullptr;
-        if (ctx->weight_adapter) {
+        if (has_convrot_weight) {
+            if (use_convrot_q8_decomp) {
+                // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate each
+                // 256-wide activation block once, then use the optimized stock
+                // Q8_0 matmul. Backends that recognize the hint replace this
+                // tiny dense matmul with the radix-4 transform.
+                ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
+                ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
+                                                         ggml_nelements(contiguous) / 256);
+                ggml_tensor* rotated    = ggml_mul_mat(ctx->ggml_ctx, params["weight.convrot_h256"], blocks);
+                ggml_mul_mat_set_hint(rotated, GGML_HINT_SRC0_IS_CONVROT_H256);
+                rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+                out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+            } else {
+                // ConvRot weights and their tensor-wise scales remain compact
+                // at rest. The operator owns the scale semantics.
+                out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
+                if (use_convrot_f16_compat) {
+                    ggml_mul_mat_convrot_set_f16_compat(out, true);
+                }
+            }
+            if (b != nullptr) {
+                out = ggml_add_inplace(ctx->ggml_ctx, out, b);
+            }
+            if (ctx->weight_adapter) {
+                WeightAdapter::ForwardParams forward_params;
+                forward_params.op_type               = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
+                forward_params.linear.force_prec_f32 = force_prec_f32;
+                forward_params.linear.scale          = scale;
+                if (ggml_tensor* delta = ctx->weight_adapter->lora_output_delta(
+                        ctx->ggml_ctx, ctx->backend, x, w, prefix, forward_params)) {
+                    out = ggml_add_inplace(ctx->ggml_ctx, out, delta);
+                }
+            }
+        } else if (ctx->weight_adapter) {
             WeightAdapter::ForwardParams forward_params;
             forward_params.op_type               = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
             forward_params.linear.force_prec_f32 = force_prec_f32;

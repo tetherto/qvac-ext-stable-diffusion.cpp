@@ -37,6 +37,48 @@ static std::string lora_id(const ModelManager::LoraSpec& lora) {
     return lora.is_high_noise ? "|high_noise|" + lora.path : lora.path;
 }
 
+// `weight.convrot_scale` is an internal parameter name owned by a native
+// ConvRot Linear.  It maps to the scale sidecar associated with the preceding
+// safetensors `weight`, never to an ordinary model `weight_scale` tensor.
+static bool convrot_scale_weight_name(const std::string& name, std::string* weight_name) {
+    static constexpr const char* suffix = ".convrot_scale";
+    static constexpr size_t suffix_len  = 14;
+    if (!ends_with(name, suffix) || name.size() == suffix_len) {
+        return false;
+    }
+    if (weight_name != nullptr) {
+        *weight_name = name.substr(0, name.size() - suffix_len);
+    }
+    return true;
+}
+
+static bool convrot_h256_weight_name(const std::string& name, std::string* weight_name) {
+    static constexpr const char* suffix = ".convrot_h256";
+    static constexpr size_t suffix_len  = 13;
+    if (!ends_with(name, suffix) || name.size() == suffix_len) {
+        return false;
+    }
+    if (weight_name != nullptr) {
+        *weight_name = name.substr(0, name.size() - suffix_len);
+    }
+    return true;
+}
+
+static void convrot_h256(float* values) {
+    for (size_t stride = 1; stride < 256; stride *= 4) {
+        for (size_t base = 0; base < 256; base += 4 * stride) {
+            for (size_t i = 0; i < stride; ++i) {
+                float* v = values + base + i;
+                const float a = v[0], b = v[stride], c = v[2 * stride], d = v[3 * stride];
+                v[0]          = (a + b + c - d) * 0.5f;
+                v[stride]     = (a + b - c + d) * 0.5f;
+                v[2 * stride] = (a - b + c + d) * 0.5f;
+                v[3 * stride] = (-a + b + c + d) * 0.5f;
+            }
+        }
+    }
+}
+
 static bool backend_supports_host_buffer(ggml_backend_t backend) {
     if (backend == nullptr) {
         return false;
@@ -680,6 +722,30 @@ bool ModelManager::validate_tensor(const TensorState& state) const {
     }
 
     const auto& tensor_storage_map = model_loader_.get_tensor_storage_map();
+    std::string convrot_weight_name;
+    if (convrot_h256_weight_name(state.name, &convrot_weight_name)) {
+        const auto weight_it = tensor_storage_map.find(convrot_weight_name);
+        if (weight_it == tensor_storage_map.end() || !weight_it->second.is_comfy_int8_convrot_weight() ||
+            state.tensor->type != GGML_TYPE_F32 || state.tensor->ne[0] != 256 || state.tensor->ne[1] != 256) {
+            LOG_ERROR("%s ConvRot H256 parameter '%s' is invalid", state.desc.c_str(), state.name.c_str());
+            return false;
+        }
+        return true;
+    }
+    if (convrot_scale_weight_name(state.name, &convrot_weight_name)) {
+        const auto weight_it = tensor_storage_map.find(convrot_weight_name);
+        if (weight_it == tensor_storage_map.end() || !weight_it->second.is_comfy_int8_convrot_weight()) {
+            LOG_ERROR("%s ConvRot scale '%s' has no associated marked weight", state.desc.c_str(), state.name.c_str());
+            return false;
+        }
+        const TensorStorage& weight = weight_it->second;
+        if (state.tensor->type != GGML_TYPE_F32 || ggml_n_dims(state.tensor) != 1 ||
+            state.tensor->ne[0] != weight.ne[1] || ggml_nbytes(state.tensor) != weight.comfy_int8_scale.nbytes) {
+            LOG_ERROR("%s ConvRot scale '%s' has incompatible shape or type", state.desc.c_str(), state.name.c_str());
+            return false;
+        }
+        return true;
+    }
     auto ts_it                     = tensor_storage_map.find(state.name);
     if (ts_it == tensor_storage_map.end()) {
         LOG_ERROR("%s tensor '%s' not in model metadata", state.desc.c_str(), state.name.c_str());
@@ -745,6 +811,18 @@ bool ModelManager::can_mmap_storage(const TensorState& state) const {
         return false;
     }
     if (state.compute_backend == nullptr || state.params_backend == nullptr) {
+        return false;
+    }
+    std::string convrot_weight_name;
+    if (convrot_h256_weight_name(state.name, &convrot_weight_name)) {
+        return false;
+    }
+    if (convrot_scale_weight_name(state.name, &convrot_weight_name)) {
+        return false;
+    }
+    const auto storage_it = model_loader_.get_tensor_storage_map().find(state.name);
+    if (storage_it != model_loader_.get_tensor_storage_map().end() && storage_it->second.is_comfy_int8_tensorwise) {
+        // The I8 bytes must be uploaded together with their sidecar scale.
         return false;
     }
     return sd_backend_is_cpu(state.compute_backend) ||
@@ -863,6 +941,32 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
 
     std::set<std::string> loaded_names;
     std::mutex loaded_names_mutex;
+    // H256 is a small internal parameter, not a tensor in the model file.
+    // Initialize it after parameter buffers are allocated and exclude it from
+    // the loader's target-name filter.
+    for (const auto& pair : states_by_name) {
+        std::string weight_name;
+        if (!convrot_h256_weight_name(pair.first, &weight_name)) {
+            continue;
+        }
+        ggml_tensor* h = pair.second != nullptr ? pair.second->tensor : nullptr;
+        if (h == nullptr || h->type != GGML_TYPE_F32 || h->ne[0] != 256 || h->ne[1] != 256) {
+            LOG_ERROR("invalid internal ConvRot H256 tensor '%s'", pair.first.c_str());
+            return false;
+        }
+        std::vector<float> matrix(256 * 256, 0.0f);
+        for (size_t row = 0; row < 256; ++row) {
+            matrix[row * 256 + row] = 1.0f;
+            convrot_h256(matrix.data() + row * 256);
+        }
+        if (h->buffer != nullptr && !ggml_backend_buffer_is_host(h->buffer)) {
+            ggml_backend_tensor_set(h, matrix.data(), 0, matrix.size() * sizeof(float));
+        } else {
+            memcpy(h->data, matrix.data(), matrix.size() * sizeof(float));
+        }
+        loaded_names.insert(pair.first);
+        target_tensor_names.erase(pair.first);
+    }
     auto on_new_tensor_cb = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) -> bool {
         const std::string& name = tensor_storage.name;
         *dst_tensor             = nullptr;
@@ -876,6 +980,40 @@ bool ModelManager::load_tensors(const std::vector<TensorState*>& states) {
         if (state == nullptr || state->tensor == nullptr) {
             LOG_ERROR("model manager tensor '%s' is null", name.c_str());
             return false;
+        }
+
+        if (tensor_storage.is_comfy_int8_convrot_weight() && state->tensor->type == GGML_TYPE_Q8_0) {
+            if (!model_loader_.load_comfy_int8_tensorwise(tensor_storage, state->tensor, nullptr)) {
+                return false;
+            }
+            std::lock_guard<std::mutex> lock(loaded_names_mutex);
+            loaded_names.insert(name);
+            return true;
+        }
+
+        // Only the native Linear registers an I8 destination plus its private
+        // sidecar parameter.  The explicit compatibility policy deliberately
+        // registers an F16 destination and must continue through load_tensor,
+        // where the marked bytes are reconstructed to F16.
+        if (tensor_storage.is_comfy_int8_convrot_weight() && state->tensor->type == GGML_TYPE_I8) {
+            const std::string scale_name = name + ".convrot_scale";
+            const auto scale_it          = states_by_name.find(scale_name);
+            if (scale_it == states_by_name.end() || scale_it->second == nullptr ||
+                scale_it->second->tensor == nullptr) {
+                LOG_ERROR("native ConvRot tensor '%s' is missing its dedicated scale parameter", name.c_str());
+                return false;
+            }
+            if (!model_loader_.load_comfy_int8_tensorwise(tensor_storage, state->tensor, scale_it->second->tensor)) {
+                return false;
+            }
+            {
+                std::lock_guard<std::mutex> lock(loaded_names_mutex);
+                loaded_names.insert(name);
+                loaded_names.insert(scale_name);
+            }
+            // The raw uploader has already initialized both tensors.  Do not
+            // let ModelLoader select its F16 compatibility reconstruction.
+            return true;
         }
 
         if (state->tensor->ne[0] != tensor_storage.ne[0] ||

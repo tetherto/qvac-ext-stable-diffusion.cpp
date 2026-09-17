@@ -83,6 +83,11 @@ public:
                            int n_threads = 0,
                            bool use_mmap = false);
     bool load_tensor(const TensorStorage& tensor_storage, ggml_tensor* dst_tensor);
+    // Upload the raw I8 weight and its associated F32 scale sidecar, or repack
+    // it into Q8_0 when dst_weight requests the decomposition representation.
+    bool load_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
+                                    ggml_tensor* dst_weight,
+                                    ggml_tensor* dst_scale);
 
     std::vector<std::string> get_tensor_names() const {
         std::vector<std::string> names;
