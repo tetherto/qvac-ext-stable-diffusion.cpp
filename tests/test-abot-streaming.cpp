@@ -4,7 +4,6 @@
 #include <random>
 #include "abot_world.hpp"
 #include "core/ggml_extend.hpp"
-#include "ggml-cpu.h"
 #include "gguf.h"
 #include "model_manager.h"
 
@@ -301,12 +300,11 @@ static bool test_abot_append_plan_cache_keys(ggml_backend_t backend) {
     return true;
 }
 
-static bool test_abot_decode_overlap_guard(ggml_backend_t dit_backend) {
-    ggml_backend_t vae_backend = ggml_backend_cpu_init();
-    if (vae_backend == nullptr) {
-        std::cerr << "Failed to create the secondary backend for overlap tests\n";
-        return false;
-    }
+static bool test_abot_decode_overlap_guard() {
+    int dit_backend_token = 0;
+    int vae_backend_token = 0;
+    auto dit_backend = reinterpret_cast<ggml_backend_t>(&dit_backend_token);
+    auto vae_backend = reinterpret_cast<ggml_backend_t>(&vae_backend_token);
     const bool passed =
         ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
                                                      vae_backend, vae_backend, false, false) &&
@@ -318,7 +316,6 @@ static bool test_abot_decode_overlap_guard(ggml_backend_t dit_backend) {
                                                       dit_backend, dit_backend, false, false) &&
         !ABOT::AbotWalkSession::can_overlap_kv_decode(dit_backend, dit_backend,
                                                       vae_backend, vae_backend, true, false);
-    ggml_backend_free(vae_backend);
     if (!passed) {
         std::cerr << "ABot decode overlap accepted shared or staged manager state\n";
     }
@@ -403,7 +400,7 @@ int main(int argc, char** argv) {
     std::cout << "Testing streaming on " << ggml_backend_name(backend) << '\n';
     bool passed = test_history(backend, false) && test_history(backend, true);
     passed      = test_plan_cache(backend) && test_phase_plan_caches(backend) && passed;
-    passed      = test_abot_append_plan_cache_keys(backend) && test_abot_decode_overlap_guard(backend) && passed;
+    passed      = test_abot_append_plan_cache_keys(backend) && test_abot_decode_overlap_guard() && passed;
     passed      = test_view_output(backend) && passed;
     for (bool disk : {false, true}) {
         for (bool segmented : {false, true}) {
