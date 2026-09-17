@@ -234,7 +234,9 @@ protected:
     bool circular_x_enabled    = false;
     bool circular_y_enabled    = false;
 
-    sd::ggml_graph_cut::PlanCache graph_cut_plan_cache_;
+    std::map<size_t, sd::ggml_graph_cut::PlanCache> graph_cut_plan_caches_;
+    size_t graph_cut_plan_cache_key_ = 0;
+    void set_graph_cut_plan_cache_key(size_t key) { graph_cut_plan_cache_key_ = key; }
     std::unordered_set<const ggml_tensor*> params_tensor_set_;
     std::unordered_map<const ggml_tensor*, ggml_backend_t> graph_cut_layer_split_assignments_;
     std::unordered_map<const ggml_tensor*, ggml_backend_t> graph_cut_layer_split_node_assignments_;
@@ -436,7 +438,7 @@ public:
     void set_sage_attention_enabled(bool enabled) {
         if (sage_attn_enabled != enabled) {
             free_cache_ctx_and_buffer();
-            graph_cut_plan_cache_.graph_cut_plans.clear();
+            graph_cut_plan_caches_.clear();
             sage_attn_enabled = enabled;
         }
     }

@@ -354,7 +354,7 @@ const GGMLRunner::GraphCutPlan& GGMLRunner::resolve_graph_cut_plan(ggml_cgraph* 
     GGML_ASSERT(gf != nullptr);
     return sd::ggml_graph_cut::resolve_plan(runtime_backend,
                                             gf,
-                                            &graph_cut_plan_cache_,
+                                            &graph_cut_plan_caches_[graph_cut_plan_cache_key_],
                                             params_tensor_set_,
                                             get_desc().c_str());
 }
@@ -663,7 +663,7 @@ void GGMLRunner::switch_runtime_backend(ggml_backend_t backend) {
     workspace_.set_backend(backend);
     cache_.set_backend(backend);
     cut_cache_.set_backend(backend);
-    graph_cut_plan_cache_.graph_cut_plans.clear();
+    graph_cut_plan_caches_.clear();
     graph_cut_layer_split_assignments_.clear();
     graph_cut_layer_split_node_assignments_.clear();
     runtime_backend = backend;
