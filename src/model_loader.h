@@ -83,9 +83,8 @@ public:
                            int n_threads = 0,
                            bool use_mmap = false);
     bool load_tensor(const TensorStorage& tensor_storage, ggml_tensor* dst_tensor);
-    // Upload the raw I8 weight and its associated F32 scale sidecar.  This is
-    // intentionally separate from load_tensor(), whose TensorWiseINT8 path is
-    // the explicit F16/F32 compatibility reconstruction.
+    // Upload the raw I8 weight and its associated F32 scale sidecar, or repack
+    // it into Q8_0 when dst_weight requests the decomposition representation.
     bool load_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
                                     ggml_tensor* dst_weight,
                                     ggml_tensor* dst_scale);

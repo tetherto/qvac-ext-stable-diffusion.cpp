@@ -48,6 +48,9 @@ struct TensorStorage {
     // Set by the runner's backend policy before parameters are constructed.
     // False selects the verified F16 compatibility reconstruction.
     bool comfy_int8_native_enabled = false;
+    // Repack the raw row-scaled I8 data as Q8_0 and move the symmetric H256
+    // transform to the activations before an ordinary ggml_mul_mat.
+    bool comfy_int8_q8_decomp_enabled = false;
     uint32_t comfy_int8_group_size = 0;
     TensorStorageSidecar comfy_int8_scale;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};

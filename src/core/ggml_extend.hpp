@@ -94,12 +94,24 @@ inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend
 
     const char* mode = std::getenv("SD_CONVROT_MODE");
     const bool compatibility_mode = mode != nullptr && std::strcmp(mode, "compat") == 0;
-    if (mode != nullptr && !compatibility_mode && std::strcmp(mode, "native") != 0) {
-        throw std::runtime_error("invalid SD_CONVROT_MODE; expected 'native' or 'compat'");
+    const bool q8_decomp_mode     = mode != nullptr && std::strcmp(mode, "q8") == 0;
+    if (mode != nullptr && !compatibility_mode && !q8_decomp_mode && std::strcmp(mode, "native") != 0) {
+        throw std::runtime_error("invalid SD_CONVROT_MODE; expected 'native', 'q8', or 'compat'");
     }
     const char* backend_name = backend != nullptr ? ggml_backend_name(backend) : "unknown";
     if (compatibility_mode) {
         LOG_INFO("ConvRot: using explicitly selected F16 compatibility path for %s on backend %s",
+                 component.c_str(), backend_name);
+        return selected;
+    }
+    if (q8_decomp_mode) {
+        for (auto& [name, storage] : selected) {
+            if (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight()) {
+                storage.comfy_int8_native_enabled    = true;
+                storage.comfy_int8_q8_decomp_enabled = true;
+            }
+        }
+        LOG_INFO("ConvRot: selected Q8_0 activation-rotation decomposition for %s on backend %s",
                  component.c_str(), backend_name);
         return selected;
     }
@@ -3965,6 +3977,7 @@ protected:
     // sidecar input to GGML_OP_MUL_MAT_CONVROT.
     bool has_convrot_weight = false;
     bool use_convrot_f16_compat = false;
+    bool use_convrot_q8_decomp = false;
     float scale;
     std::string prefix;
 
@@ -3973,13 +3986,20 @@ protected:
         has_weight_scale     = false;
         has_convrot_weight   = false;
         use_convrot_f16_compat = false;
+        use_convrot_q8_decomp  = false;
         const auto storage_it = tensor_storage_map.find(prefix + "weight");
         if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
             storage_it->second.comfy_int8_native_enabled) {
-            params["weight"]                 = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
-            params["weight.convrot_scale"]   = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
-            has_convrot_weight                 = true;
-            use_convrot_f16_compat             = storage_it->second.name.rfind("text_encoders.llm.", 0) == 0;
+            has_convrot_weight = true;
+            if (storage_it->second.comfy_int8_q8_decomp_enabled) {
+                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, in_features, out_features);
+                params["weight.convrot_h256"]  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 256);
+                use_convrot_q8_decomp            = true;
+            } else {
+                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
+                params["weight.convrot_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+                use_convrot_f16_compat           = storage_it->second.name.rfind("text_encoders.llm.", 0) == 0;
+            }
             if (bias) {
                 params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
             }
@@ -4033,17 +4053,25 @@ public:
         ggml_tensor* linear_bias = has_weight_scale ? nullptr : b;
         ggml_tensor* out         = nullptr;
         if (has_convrot_weight) {
-            // ConvRot weights and their tensor-wise scales remain compact at
-            // rest.  The operator owns the scale semantics; do not route it
-            // through the ordinary `weight_scale` post-multiply path.
-            out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
-            // MiniMax H3's ConvRot text encoder is calibrated for the F16
-            // compatibility arithmetic. CUDA reconstructs one F16 matrix at
-            // a time and uses its standard F16 GEMM without retaining an F16
-            // copy of the complete text encoder. Other backends may ignore
-            // this hint and keep their native compact implementation.
-            if (use_convrot_f16_compat) {
-                ggml_mul_mat_convrot_set_f16_compat(out, true);
+            if (use_convrot_q8_decomp) {
+                // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate each
+                // 256-wide activation block once, then use the optimized stock
+                // Q8_0 matmul. Backends that recognize the hint replace this
+                // tiny dense matmul with the radix-4 transform.
+                ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
+                ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
+                                                         ggml_nelements(contiguous) / 256);
+                ggml_tensor* rotated    = ggml_mul_mat(ctx->ggml_ctx, params["weight.convrot_h256"], blocks);
+                ggml_mul_mat_set_hint(rotated, GGML_HINT_SRC0_IS_CONVROT_H256);
+                rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+                out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+            } else {
+                // ConvRot weights and their tensor-wise scales remain compact
+                // at rest. The operator owns the scale semantics.
+                out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
+                if (use_convrot_f16_compat) {
+                    ggml_mul_mat_convrot_set_f16_compat(out, true);
+                }
             }
             if (b != nullptr) {
                 out = ggml_add_inplace(ctx->ggml_ctx, out, b);

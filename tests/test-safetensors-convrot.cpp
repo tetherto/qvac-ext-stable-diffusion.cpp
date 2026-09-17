@@ -122,6 +122,19 @@ int main() {
     GGML_ASSERT(static_cast<const float*>(raw_scale->data)[3] == 0.5f);
     ggml_free(native_ctx);
 
+    const size_t q8_bytes = ggml_row_size(GGML_TYPE_Q8_0, 256) * 4;
+    ggml_init_params q8_params = {ggml_tensor_overhead() + q8_bytes + 4096, nullptr, false};
+    ggml_context* q8_ctx       = ggml_init(q8_params);
+    GGML_ASSERT(q8_ctx != nullptr);
+    ggml_tensor* q8_weight = ggml_new_tensor_2d(q8_ctx, GGML_TYPE_Q8_0, 256, 4);
+    GGML_ASSERT(loader.load_comfy_int8_tensorwise(weight, q8_weight, nullptr));
+    ggml_fp16_t packed_scale;
+    memcpy(&packed_scale, q8_weight->data, sizeof(packed_scale));
+    GGML_ASSERT(ggml_fp16_to_fp32(packed_scale) == 0.5f);
+    GGML_ASSERT(static_cast<const int8_t*>(q8_weight->data)[sizeof(packed_scale)] == 2);
+    GGML_ASSERT(static_cast<const int8_t*>(q8_weight->data)[sizeof(packed_scale) + 1] == 0);
+    ggml_free(q8_ctx);
+
     ggml_backend_t cpu_backend = init_cpu_backend();
     GGML_ASSERT(cpu_backend != nullptr);
     const auto native_selection = select_convrot_tensor_storage(cpu_backend,
@@ -129,6 +142,14 @@ int main() {
                                                                  "ConvRot loader test");
     GGML_ASSERT(native_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(ggml_backend_supports_convrot_op(cpu_backend));
+
+    GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "q8") == 0);
+    const auto q8_selection = select_convrot_tensor_storage(cpu_backend,
+                                                             loader.get_tensor_storage_map(),
+                                                             "ConvRot loader test");
+    GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_native_enabled);
+    GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
+    GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
 
     // A runner for another component must not inherit this component's
     // ConvRot requirement when both live in the shared storage map.

@@ -1566,20 +1566,27 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
         LOG_ERROR("native ComfyUI Int8 load requested for invalid ConvRot tensor '%s'", tensor_storage.name.c_str());
         return false;
     }
-    if (dst_weight == nullptr || dst_scale == nullptr || dst_weight->data == nullptr || dst_scale->data == nullptr) {
+    const bool q8_decomp = dst_weight != nullptr && dst_weight->type == GGML_TYPE_Q8_0;
+    if (dst_weight == nullptr || dst_weight->data == nullptr ||
+        (!q8_decomp && (dst_scale == nullptr || dst_scale->data == nullptr))) {
         LOG_ERROR("native ComfyUI Int8 load has null destination for '%s'", tensor_storage.name.c_str());
         return false;
     }
-    if (dst_weight->type != GGML_TYPE_I8 || ggml_n_dims(dst_weight) != 2 || dst_weight->ne[0] != tensor_storage.ne[0] ||
-        dst_weight->ne[1] != tensor_storage.ne[1] || ggml_nbytes(dst_weight) != static_cast<size_t>(tensor_storage.nbytes())) {
+    const bool weight_shape_ok = ggml_n_dims(dst_weight) == 2 && dst_weight->ne[0] == tensor_storage.ne[0] &&
+                                 dst_weight->ne[1] == tensor_storage.ne[1];
+    const bool weight_storage_ok = q8_decomp
+        ? ggml_nbytes(dst_weight) == ggml_row_size(GGML_TYPE_Q8_0, tensor_storage.ne[0]) * static_cast<size_t>(tensor_storage.ne[1])
+        : dst_weight->type == GGML_TYPE_I8 && ggml_nbytes(dst_weight) == static_cast<size_t>(tensor_storage.nbytes());
+    if (!weight_shape_ok || !weight_storage_ok) {
         LOG_ERROR("native ComfyUI Int8 weight destination is incompatible for '%s'", tensor_storage.name.c_str());
         return false;
     }
     const int64_t output_rows = tensor_storage.ne[1];
-    const bool scale_shape_ok = dst_scale->type == GGML_TYPE_F32 &&
-                                ((ggml_n_dims(dst_scale) == 1 && dst_scale->ne[0] == output_rows) ||
-                                 (ggml_n_dims(dst_scale) == 2 && dst_scale->ne[0] == 1 && dst_scale->ne[1] == output_rows));
-    if (!scale_shape_ok || ggml_nbytes(dst_scale) != tensor_storage.comfy_int8_scale.nbytes) {
+    const bool scale_shape_ok = q8_decomp ||
+                                (dst_scale->type == GGML_TYPE_F32 &&
+                                 ((ggml_n_dims(dst_scale) == 1 && dst_scale->ne[0] == output_rows) ||
+                                  (ggml_n_dims(dst_scale) == 2 && dst_scale->ne[0] == 1 && dst_scale->ne[1] == output_rows)));
+    if (!q8_decomp && (!scale_shape_ok || ggml_nbytes(dst_scale) != tensor_storage.comfy_int8_scale.nbytes)) {
         LOG_ERROR("native ComfyUI Int8 scale destination is incompatible for '%s'", tensor_storage.name.c_str());
         return false;
     }
@@ -1640,8 +1647,30 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
             memcpy(dst->data, src, n);
         }
     };
-    upload(dst_weight, weights.data(), weights.size());
-    upload(dst_scale, scales.data(), scales.size());
+    if (q8_decomp) {
+        const size_t qk       = static_cast<size_t>(ggml_blck_size(GGML_TYPE_Q8_0));
+        const size_t block_sz = ggml_type_size(GGML_TYPE_Q8_0);
+        const size_t row_sz   = ggml_row_size(GGML_TYPE_Q8_0, tensor_storage.ne[0]);
+        if (qk != 32 || block_sz < sizeof(ggml_fp16_t) + qk) {
+            LOG_ERROR("unexpected Q8_0 layout while repacking '%s'", tensor_storage.name.c_str());
+            return false;
+        }
+        std::vector<uint8_t> packed(ggml_nbytes(dst_weight), 0);
+        for (size_t row = 0; row < scale_count; ++row) {
+            float scale;
+            memcpy(&scale, scales.data() + row * sizeof(scale), sizeof(scale));
+            const ggml_fp16_t d = ggml_fp32_to_fp16(scale);
+            for (size_t column = 0; column < static_cast<size_t>(tensor_storage.ne[0]); column += qk) {
+                uint8_t* block = packed.data() + row * row_sz + (column / qk) * block_sz;
+                memcpy(block, &d, sizeof(d));
+                memcpy(block + sizeof(d), weights.data() + row * static_cast<size_t>(tensor_storage.ne[0]) + column, qk);
+            }
+        }
+        upload(dst_weight, packed.data(), packed.size());
+    } else {
+        upload(dst_weight, weights.data(), weights.size());
+        upload(dst_scale, scales.data(), scales.size());
+    }
     return true;
 }
 
