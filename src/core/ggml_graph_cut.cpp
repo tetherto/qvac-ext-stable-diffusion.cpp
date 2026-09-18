@@ -307,7 +307,8 @@ namespace sd::ggml_graph_cut {
         return false;
     }
 
-    static Segment make_segment_seed(const Plan& plan,
+    static Segment make_segment_seed(ggml_cgraph* gf,
+                                     const Plan& plan,
                                      size_t start_segment_index,
                                      size_t end_segment_index) {
         GGML_ASSERT(start_segment_index < plan.segments.size());
@@ -321,7 +322,10 @@ namespace sd::ggml_graph_cut {
         for (size_t seg_idx = start_segment_index; seg_idx <= end_segment_index; ++seg_idx) {
             const bool is_boundary_segment = seg_idx == end_segment_index;
             for (int output_node_index : plan.segments[seg_idx].output_node_indices) {
+                // Explicit outputs can update session state without a consumer
+                // in this graph; merging must still execute those captures.
                 if ((is_boundary_segment ||
+                     (ggml_graph_node(gf, output_node_index)->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 ||
                      is_segment_output_needed_after(plan, end_segment_index, output_node_index)) &&
                     seen_output_node_indices.insert(output_node_index).second) {
                     seed.output_node_indices.push_back(output_node_index);
@@ -506,6 +510,41 @@ namespace sd::ggml_graph_cut {
         return ggml_nbytes(cache_src);
     }
 
+    static std::vector<Plan::TensorLayout> graph_layout(ggml_cgraph* gf) {
+        std::vector<ggml_tensor*> tensors;
+        std::unordered_map<const ggml_tensor*, int> indices;
+        const int n_leafs = ggml_graph_n_leafs(gf);
+        const int n_nodes = ggml_graph_n_nodes(gf);
+        tensors.reserve(static_cast<size_t>(n_leafs + n_nodes));
+        for (int i = 0; i < n_leafs + n_nodes; ++i) {
+            auto* tensor    = i < n_leafs ? ggml_graph_leaf(gf, i) : ggml_graph_node(gf, i - n_leafs);
+            indices[tensor] = i;
+            tensors.push_back(tensor);
+        }
+        auto index_of = [&](const ggml_tensor* tensor) {
+            auto it = indices.find(tensor);
+            return it != indices.end() ? it->second : -1;
+        };
+        std::vector<Plan::TensorLayout> layout;
+        layout.reserve(tensors.size());
+        for (const auto* tensor : tensors) {
+            Plan::TensorLayout entry{};
+            entry.type  = tensor->type;
+            entry.op    = tensor->op;
+            entry.flags = tensor->flags;
+            std::copy_n(tensor->ne, GGML_MAX_DIMS, entry.ne.begin());
+            std::copy_n(tensor->nb, GGML_MAX_DIMS, entry.nb.begin());
+            for (int i = 0; i < GGML_MAX_SRC; ++i) {
+                entry.src[static_cast<size_t>(i)] = index_of(tensor->src[i]);
+            }
+            entry.view_src  = index_of(tensor->view_src);
+            entry.view_offs = tensor->view_offs;
+            entry.name      = tensor->name;
+            layout.push_back(std::move(entry));
+        }
+        return layout;
+    }
+
     bool plan_matches_graph(ggml_cgraph* gf, const Plan& plan) {
         GGML_ASSERT(gf != nullptr);
         if (ggml_graph_n_nodes(gf) != plan.n_nodes || ggml_graph_n_leafs(gf) != plan.n_leafs) {
@@ -525,7 +564,7 @@ namespace sd::ggml_graph_cut {
                 }
             }
         }
-        return true;
+        return graph_layout(gf) == plan.graph_layout;
     }
 
     ggml_tensor* output_tensor(ggml_cgraph* gf, const Segment& segment, size_t output_index) {
@@ -625,7 +664,12 @@ namespace sd::ggml_graph_cut {
             if (output == nullptr) {
                 continue;
             }
-            ggml_set_output(output);
+            // gallocr can recycle a view's backing storage after its last
+            // in-segment consumer, even if the view itself is an output.
+            // Keep the data alive until the executor copies the cut cache.
+            for (auto* tensor = output; tensor != nullptr; tensor = tensor->view_src) {
+                ggml_set_output(tensor);
+            }
         }
         for (int node_idx : segment.internal_node_indices) {
             ggml_graph_add_node(segment_graph, ggml_graph_node(gf, node_idx));
@@ -677,8 +721,8 @@ namespace sd::ggml_graph_cut {
         std::unordered_map<ggml_tensor*, int32_t> saved_output_flags;
         for (int output_node_index : segment.output_node_indices) {
             ggml_tensor* output = ggml_graph_node(gf, output_node_index);
-            if (output != nullptr && saved_output_flags.find(output) == saved_output_flags.end()) {
-                saved_output_flags[output] = output->flags;
+            for (auto* tensor = output; tensor != nullptr; tensor = tensor->view_src) {
+                saved_output_flags.emplace(tensor, tensor->flags);
             }
         }
 
@@ -722,6 +766,7 @@ namespace sd::ggml_graph_cut {
         }
         plan.n_nodes = n_nodes;
         plan.n_leafs = ggml_graph_n_leafs(gf);
+        plan.graph_layout = graph_layout(gf);
         for (int i = 0; i < ggml_graph_n_leafs(gf); ++i) {
             ggml_tensor* leaf = ggml_graph_leaf(gf, i);
             if (is_params_tensor(params_tensor_set, leaf)) {
@@ -830,6 +875,8 @@ namespace sd::ggml_graph_cut {
         merged_plan.valid     = base_plan.valid;
         merged_plan.n_nodes   = base_plan.n_nodes;
         merged_plan.n_leafs   = base_plan.n_leafs;
+        merged_plan.input_shapes = base_plan.input_shapes;
+        merged_plan.graph_layout = base_plan.graph_layout;
 
         std::unordered_set<int> available_cut_output_node_indices;
         available_cut_output_node_indices.reserve(static_cast<size_t>(n_nodes));
@@ -838,7 +885,7 @@ namespace sd::ggml_graph_cut {
         while (start_segment_index < base_plan.segments.size()) {
             Plan single_plan;
             auto single_available_cut_output_node_indices = available_cut_output_node_indices;
-            auto single_seed                              = make_segment_seed(base_plan,
+            auto single_seed                              = make_segment_seed(gf, base_plan,
                                                                               start_segment_index,
                                                                               start_segment_index);
             build_segment(gf,
@@ -858,7 +905,7 @@ namespace sd::ggml_graph_cut {
                 const size_t next_end_segment_index = best_end_segment_index + 1;
                 Plan candidate_plan;
                 auto candidate_available_cut_output_node_indices = available_cut_output_node_indices;
-                auto candidate_seed                              = make_segment_seed(base_plan,
+                auto candidate_seed                              = make_segment_seed(gf, base_plan,
                                                                                      start_segment_index,
                                                                                      next_end_segment_index);
                 build_segment(gf,
@@ -880,7 +927,7 @@ namespace sd::ggml_graph_cut {
                 best_end_segment_index = next_end_segment_index;
             }
 
-            auto best_seed = make_segment_seed(base_plan,
+            auto best_seed = make_segment_seed(gf, base_plan,
                                                start_segment_index,
                                                best_end_segment_index);
             build_segment(gf,

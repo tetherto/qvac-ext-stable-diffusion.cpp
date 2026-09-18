@@ -7814,18 +7814,70 @@ struct sd_abot_session_t { SDBackendManager backend_manager; ABOT::AbotWalkSessi
 void sd_abot_session_params_init(sd_abot_session_params_t* p) {
     if (!p) return; *p = {}; p->n_threads = -1; p->seed = 42;
 }
+void sd_abot_session_params_v2_init(sd_abot_session_params_v2_t* p) {
+    if (!p) return; *p = {}; p->n_threads = -1; p->seed = 42;
+}
 sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* p) {
+    if (!p) return nullptr;
+    sd_abot_session_params_v2_t p2;
+    sd_abot_session_params_v2_init(&p2);
+    p2.dit_model_path            = p->dit_model_path;
+    p2.taehv_path                = p->taehv_path;
+    p2.scene_path                = p->scene_path;
+    p2.backend                   = p->backend;
+    p2.n_threads                 = p->n_threads;
+    p2.seed                      = p->seed;
+    p2.num_frame_per_block       = p->num_frame_per_block;
+    p2.local_attn_size           = p->local_attn_size;
+    p2.offload_params_to_cpu     = p->offload_params_to_cpu;
+    p2.kv_cache                  = p->kv_cache;
+    p2.profile                   = p->profile;
+    return sd_abot_session_new_v2(&p2);
+}
+sd_abot_session_t* sd_abot_session_new_v2(const sd_abot_session_params_v2_t* p) {
     try {
         if (!p || !p->dit_model_path || !p->taehv_path || !p->scene_path) return nullptr;
         auto s = std::make_unique<sd_abot_session_t>(); std::string error;
-        if (!s->backend_manager.init(SAFE_STR(p->backend), nullptr, p->offload_params_to_cpu, false, false, false, &error)) {
+        sd::ggml_graph_cut::MaxVramAssignment max_vram;
+        max_vram.reset(0.f);
+        if (!max_vram.parse(SAFE_STR(p->max_vram), &error)) {
+            LOG_ERROR("sd_abot_session_new: %s", error.c_str());
+            return nullptr;
+        }
+        std::string params_backend = p->offload_params_to_cpu ? "*=cpu" : "";
+        if (p->params_backend && p->params_backend[0]) {
+            if (!params_backend.empty())
+                params_backend += ",";
+            params_backend += p->params_backend;
+        }
+        if (!s->backend_manager.init(SAFE_STR(p->backend), params_backend.c_str(), nullptr, false, &error)) {
             LOG_ERROR("sd_abot_session_new: backend init failed: %s", error.c_str()); return nullptr;
+        }
+        if (s->backend_manager.params_backend_is_disk(SDBackendModule::VAE)) {
+            LOG_ERROR("sd_abot_session_new: vae=disk is unsupported for the ABot decoder");
+            return nullptr;
+        }
+        if (!max_vram.canonicalize_backend_keys(&error)) {
+            LOG_ERROR("sd_abot_session_new: %s", error.c_str());
+            return nullptr;
         }
         ABOT::AbotWorldConfig cfg;
         if (p->num_frame_per_block > 0) cfg.num_frame_per_block = p->num_frame_per_block;
         if (p->local_attn_size > 0) cfg.local_attn_size = p->local_attn_size;
         cfg.profile = p->profile;
         cfg.kv_cache = p->kv_cache;
+        cfg.max_graph_vram_bytes = max_vram.bytes_for_backend(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION));
+        cfg.stream_layers        = p->stream_layers;
+        cfg.dit_params_on_disk   = s->backend_manager.params_backend_is_disk(SDBackendModule::DIFFUSION);
+        cfg.tae_params_on_disk   = s->backend_manager.params_backend_is_disk(SDBackendModule::VAE);
+        if (cfg.stream_layers && !s->backend_manager.params_backend_is_cpu(SDBackendModule::DIFFUSION)) {
+            LOG_WARN("stream_layers has no effect unless diffusion params backend is cpu; ignoring");
+            cfg.stream_layers = false;
+        }
+        LOG_INFO("ABot-World DiT: runtime=%s, params=%s, graph budget=%.2f MiB, stream_layers=%s",
+                 ggml_backend_name(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION)),
+                 cfg.dit_params_on_disk ? "disk" : ggml_backend_name(s->backend_manager.params_backend(SDBackendModule::DIFFUSION)),
+                 cfg.max_graph_vram_bytes / (1024.0 * 1024.0), cfg.stream_layers ? "true" : "false");
         const int threads = p->n_threads > 0 ? p->n_threads : sd_get_num_physical_cores();
         if (!s->session.load(s->backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
                              s->backend_manager.params_backend(SDBackendModule::DIFFUSION),

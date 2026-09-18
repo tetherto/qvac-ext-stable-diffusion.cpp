@@ -654,6 +654,29 @@ typedef struct {
 } sd_abot_session_params_t;
 SD_API void sd_abot_session_params_init(sd_abot_session_params_t* params);
 SD_API sd_abot_session_t* sd_abot_session_new(const sd_abot_session_params_t* params);
+
+typedef struct {
+    const char* dit_model_path;
+    const char* taehv_path;
+    const char* scene_path;
+    const char* backend;
+    int n_threads;
+    int64_t seed;
+    int num_frame_per_block;
+    int local_attn_size;
+    bool offload_params_to_cpu;
+    bool kv_cache;
+    bool profile;
+    // Walk parameter placement (diffusion = DiT, vae = taehv). Explicit
+    // assignments override the offload_params_to_cpu default.
+    const char* params_backend;
+    // DiT graph-cut budget in GiB, or per-device assignments; 0 disables.
+    const char* max_vram;
+    // Retain/evict DiT segments within the budget; requires CPU parameters.
+    bool stream_layers;
+} sd_abot_session_params_v2_t;
+SD_API void sd_abot_session_params_v2_init(sd_abot_session_params_v2_t* params);
+SD_API sd_abot_session_t* sd_abot_session_new_v2(const sd_abot_session_params_v2_t* params);
 SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session, uint32_t action_mask, int* num_frames_out);
 SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
 SD_API void sd_abot_session_free(sd_abot_session_t* session);
