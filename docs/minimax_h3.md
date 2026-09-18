@@ -22,6 +22,26 @@ present. If the vision tower is stored separately, pass it with `--llm_vision`.
 Both the original time-embedder DiT and the smaller AdaLN curve-table variant
 are detected from their weights.
 
+### TensorWise INT8 ConvRot execution
+
+ComfyUI TensorWise INT8 ConvRot safetensors use the fastest validated path for
+each backend automatically:
+
+- CUDA repacks the weights as Q8_0 and applies a dense H256 activation
+  transform. The direct CUDA radix-4 transform is intentionally not selected:
+  its small rounding difference is amplified by the H3 text encoder and can
+  change the generated scene.
+- Vulkan and Metal repack the weights as Q8_0, apply the standalone
+  `GGML_OP_CONVROT` activation transform, and use the regular quantized matmul.
+- Other backends use the standalone transform when supported and otherwise
+  fall back to the native compact ConvRot operation.
+
+`SD_CONVROT_MODE` can override automatic selection for diagnosis: `native`,
+`q8`/`auto`, `dense`, `op`, or `compat`. An unavailable `op` request falls back
+to native execution. `SD_CONVROT_H256_MODE=fast` remains a diagnostic-only CUDA
+override; it is not the default because it does not preserve H3 prompt
+conditioning.
+
 ### Download weights
 
 - Download minimax_h3_fl2va/minimax_h3_ref2va

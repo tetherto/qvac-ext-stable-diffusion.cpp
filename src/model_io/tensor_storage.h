@@ -51,6 +51,9 @@ struct TensorStorage {
     // Repack the raw row-scaled I8 data as Q8_0 and move the symmetric H256
     // transform to the activations before an ordinary ggml_mul_mat.
     bool comfy_int8_q8_decomp_enabled = false;
+    // Use GGML_OP_CONVROT for the activation transform instead of materializing
+    // and multiplying by a dense H256 matrix.
+    bool comfy_int8_convrot_op_enabled = false;
     uint32_t comfy_int8_group_size = 0;
     TensorStorageSidecar comfy_int8_scale;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};

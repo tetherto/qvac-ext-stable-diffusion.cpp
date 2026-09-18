@@ -70,14 +70,22 @@ class InspectableLinear : public Linear {
 public:
     using Linear::Linear;
     bool fast_h256_enabled() const { return use_convrot_fast_h256; }
+    bool rotation_op_enabled() const { return use_convrot_rotation_op; }
 };
 
 }  // namespace
 
 int main() {
-    GGML_ASSERT(convrot_q8_decomp_backend_safe("CUDA0"));
-    GGML_ASSERT(convrot_q8_decomp_backend_safe("Vulkan0"));
-    GGML_ASSERT(!convrot_q8_decomp_backend_safe("MTL0"));
+    GGML_ASSERT(select_convrot_execution_path("CUDA0", true, nullptr) == ConvRotExecutionPath::DENSE_H256);
+    GGML_ASSERT(select_convrot_execution_path("Vulkan0", true, nullptr) == ConvRotExecutionPath::ROTATION_OP);
+    GGML_ASSERT(select_convrot_execution_path("MTL0", true, nullptr) == ConvRotExecutionPath::ROTATION_OP);
+    GGML_ASSERT(select_convrot_execution_path("CPU", true, nullptr) == ConvRotExecutionPath::ROTATION_OP);
+    GGML_ASSERT(select_convrot_execution_path("unknown", false, nullptr) == ConvRotExecutionPath::NATIVE);
+    GGML_ASSERT(select_convrot_execution_path("CUDA0", true, "native") == ConvRotExecutionPath::NATIVE);
+    GGML_ASSERT(select_convrot_execution_path("CUDA0", true, "dense") == ConvRotExecutionPath::DENSE_H256);
+    GGML_ASSERT(select_convrot_execution_path("Vulkan0", true, "op") == ConvRotExecutionPath::ROTATION_OP);
+    GGML_ASSERT(select_convrot_execution_path("Vulkan0", false, "op") == ConvRotExecutionPath::NATIVE);
+    GGML_ASSERT(select_convrot_execution_path("CUDA0", true, "compat") == ConvRotExecutionPath::COMPAT);
 
     const std::filesystem::path path = std::filesystem::temp_directory_path() /
                                        "stable-diffusion-convrot-test.safetensors";
@@ -147,11 +155,20 @@ int main() {
 
     ggml_backend_t cpu_backend = init_cpu_backend();
     GGML_ASSERT(cpu_backend != nullptr);
+    GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "native") == 0);
     const auto native_selection = select_convrot_tensor_storage(cpu_backend,
                                                                  loader.get_tensor_storage_map(),
                                                                  "ConvRot loader test");
     GGML_ASSERT(native_selection.at("layer.weight").comfy_int8_native_enabled);
+    GGML_ASSERT(!native_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
     GGML_ASSERT(ggml_backend_supports_convrot_op(cpu_backend));
+    GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
+
+    const auto automatic_selection = select_convrot_tensor_storage(cpu_backend,
+                                                                    loader.get_tensor_storage_map(),
+                                                                    "ConvRot loader test");
+    GGML_ASSERT(automatic_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
+    GGML_ASSERT(automatic_selection.at("layer.weight").comfy_int8_convrot_op_enabled);
 
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "q8") == 0);
     const auto q8_selection = select_convrot_tensor_storage(cpu_backend,
@@ -159,6 +176,29 @@ int main() {
                                                              "ConvRot loader test");
     GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
+    GGML_ASSERT(q8_selection.at("layer.weight").comfy_int8_convrot_op_enabled);
+    GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
+
+    ggml_init_params op_graph_params = {1024 * 1024, nullptr, true};
+    ggml_context* op_graph_ctx       = ggml_init(op_graph_params);
+    GGML_ASSERT(op_graph_ctx != nullptr);
+    InspectableLinear op_linear(256, 4, false);
+    op_linear.init(op_graph_ctx, automatic_selection, "layer");
+    GGML_ASSERT(op_linear.rotation_op_enabled());
+    ggml_tensor* op_input = ggml_new_tensor_2d(op_graph_ctx, GGML_TYPE_F32, 256, 2);
+    GGMLRunnerContext op_runner_ctx;
+    op_runner_ctx.ggml_ctx = op_graph_ctx;
+    ggml_tensor* op_output = op_linear.forward(&op_runner_ctx, op_input);
+    GGML_ASSERT(op_output != nullptr && op_output->op == GGML_OP_MUL_MAT);
+    GGML_ASSERT(op_output->src[1] != nullptr && op_output->src[1]->op == GGML_OP_CONVROT);
+    ggml_free(op_graph_ctx);
+
+    GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "dense") == 0);
+    const auto dense_selection = select_convrot_tensor_storage(cpu_backend,
+                                                                loader.get_tensor_storage_map(),
+                                                                "ConvRot loader test");
+    GGML_ASSERT(dense_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
+    GGML_ASSERT(!dense_selection.at("layer.weight").comfy_int8_convrot_op_enabled);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
 
     auto h256_hint_for_mode = [&](const char* mode) {
@@ -171,7 +211,7 @@ int main() {
         ggml_context* graph_ctx       = ggml_init(graph_params);
         GGML_ASSERT(graph_ctx != nullptr);
         InspectableLinear linear(256, 4, false);
-        linear.init(graph_ctx, q8_selection, "layer");
+        linear.init(graph_ctx, dense_selection, "layer");
         GGML_ASSERT(linear.fast_h256_enabled() == (mode != nullptr && strcmp(mode, "fast") == 0));
         ggml_tensor* input = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 256, 2);
         GGMLRunnerContext runner_ctx;
