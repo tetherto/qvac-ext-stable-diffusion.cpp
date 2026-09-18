@@ -354,7 +354,7 @@ const GGMLRunner::GraphCutPlan& GGMLRunner::resolve_graph_cut_plan(ggml_cgraph* 
     GGML_ASSERT(gf != nullptr);
     return sd::ggml_graph_cut::resolve_plan(runtime_backend,
                                             gf,
-                                            &graph_cut_plan_cache_,
+                                            &graph_cut_plan_caches_[graph_cut_plan_cache_key_],
                                             params_tensor_set_,
                                             get_desc().c_str());
 }
@@ -663,7 +663,7 @@ void GGMLRunner::switch_runtime_backend(ggml_backend_t backend) {
     workspace_.set_backend(backend);
     cache_.set_backend(backend);
     cut_cache_.set_backend(backend);
-    graph_cut_plan_cache_.graph_cut_plans.clear();
+    graph_cut_plan_caches_.clear();
     graph_cut_layer_split_assignments_.clear();
     graph_cut_layer_split_node_assignments_.clear();
     runtime_backend = backend;
@@ -1370,6 +1370,11 @@ std::optional<Tensor<float>> GGMLRunner::execute_graph(ggml_cgraph* graph, int n
         }
         // Final outputs and their callbacks may still be views of consumed cuts.
         cut_cache_.prune(segment.future_cut_names);
+    }
+    if (!cache_.all_outputs_captured()) {
+        LOG_ERROR("%s graph cut did not produce all persistent cache outputs", get_desc().c_str());
+        last_compute_status_ = GGML_STATUS_FAILED;
+        return std::nullopt;
     }
     if (segments_changed || peak_compute_bytes != logged_compute_bytes_) {
         for (const auto& entry : peak_compute_bytes) {

@@ -47,6 +47,44 @@ the capability queries (`sd_ctx_supports_image_generation` /
 `sd_ctx_supports_video_generation`) report `false`, so front-ends pre-screen
 it consistently.
 
+## Walk memory controls
+
+`sd_abot_session_params_v2_t` uses the same parameter manager and graph-cut
+executor as the normal `sd_ctx` path (including MiniMax-H3):
+
+- `params_backend` selects where walk weights live: `diffusion` is the DiT;
+  `vae` is the taehv pixel decoder. For example, `diffusion=cpu,vae=cpu`
+  keeps weights in RAM. `offload_params_to_cpu` supplies a `*=cpu` default;
+  later explicit assignments override it.
+- `max_vram` is a DiT graph budget in GiB, or a per-device assignment such as
+  `cuda0=6,vulkan0=4`. `0` disables graph cuts. Negative values reserve that
+  much headroom from free device memory. This is not a total VRAM cap: leave
+  room for attention history, decoder execution, and other allocations.
+- `stream_layers=true` retains leading DiT segments within the budget and
+  transfers/evicts the remainder. It requires CPU-backed DiT parameters, an
+  active graph budget, and GPU execution. The default remains disabled.
+- `params_backend="diffusion=disk"` uses the existing lazy disk residency:
+  weights are read for each graph or cut segment and released afterwards.
+  On GPU this is separate from CPU-backed `stream_layers` residency.
+  `vae=disk` is rejected because the taehv decoder retains its prepared
+  weights across walk steps.
+
+The original `sd_abot_session_params_t` and constructor remain available for
+binary compatibility. New callers that use these memory controls initialize
+`sd_abot_session_params_v2_t` with `sd_abot_session_params_v2_init()` and call
+`sd_abot_session_new_v2()`.
+
+Both recomputed history and `kv_cache=true` work with cuts. Cached K/V stay
+alive across segment scratch resets and successive walk steps. These settings
+do not change the separate `sd_abot_scene_create` API; taehv placement is
+configurable, but its decoder is not cut by the DiT graph budget.
+
+The `sd-abot-session` walk and walkval harnesses accept `--params-backend`,
+`--max-vram`, and `--stream-layers`. For example, add
+`--backend vulkan --params-backend diffusion=cpu --max-vram 2 --stream-layers --kv-cache`
+to a walk command. Debug logs report the graph-cut budget and each executed
+segment's `residency=RESIDENT` or `residency=STREAMED`.
+
 ## Detection
 
 A GGUF/safetensors checkpoint is classified `VERSION_ABOT_WORLD` when it is a
@@ -74,6 +112,9 @@ The DiT checkpoint converts to GGUF with standard tooling
 
 ## Validation
 
+- `ctest` includes `test-abot-streaming`: model-free execution on CPU compares
+  multiple history capture/reuse/update steps against monolithic execution,
+  including merged cuts and a cache shape distinct from the returned result.
 - `script/validate_abot_world.sh` loads an ABot GGUF, asserts detection +
   clean tensor load + the guarded batch rejection, and (optionally, with
   `WAN_*` env vars) confirms a stock Wan model is unaffected.
