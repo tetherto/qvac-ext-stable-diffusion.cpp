@@ -71,10 +71,67 @@ inline bool ggml_backend_supports_convrot_op(ggml_backend_t backend) {
     return supported;
 }
 
+inline bool ggml_backend_supports_convrot_rotation_op(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return false;
+    }
+    std::vector<uint8_t> storage(3 * ggml_tensor_overhead() + 1024);
+    ggml_init_params params = {
+        /*.mem_size   =*/ storage.size(),
+        /*.mem_buffer =*/ storage.data(),
+        /*.no_alloc   =*/ true,
+    };
+    ggml_context* ctx = ggml_init(params);
+    if (ctx == nullptr) {
+        return false;
+    }
+    ggml_tensor* activations = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 1);
+    ggml_tensor* op          = ggml_convrot(ctx, activations, 256);
+    const bool supported     = ggml_backend_supports_op(backend, op);
+    ggml_free(ctx);
+    return supported;
+}
+
+enum class ConvRotExecutionPath {
+    NATIVE,
+    DENSE_H256,
+    ROTATION_OP,
+    COMPAT,
+};
+
+inline ConvRotExecutionPath select_convrot_execution_path(const char* backend_name,
+                                                           bool rotation_op_supported,
+                                                           const char* mode) {
+    if (mode != nullptr && std::strcmp(mode, "compat") == 0) {
+        return ConvRotExecutionPath::COMPAT;
+    }
+    if (mode != nullptr && std::strcmp(mode, "native") == 0) {
+        return ConvRotExecutionPath::NATIVE;
+    }
+    if (mode != nullptr && std::strcmp(mode, "dense") == 0) {
+        return ConvRotExecutionPath::DENSE_H256;
+    }
+    if (mode != nullptr && std::strcmp(mode, "op") == 0) {
+        return rotation_op_supported ? ConvRotExecutionPath::ROTATION_OP
+                                     : ConvRotExecutionPath::NATIVE;
+    }
+    if (mode != nullptr && std::strcmp(mode, "q8") != 0 && std::strcmp(mode, "auto") != 0) {
+        throw std::runtime_error("invalid SD_CONVROT_MODE; expected 'auto', 'native', 'q8', 'dense', 'op', or 'compat'");
+    }
+
+    // The CUDA radix-4 transform is mathematically correct, but the H3 text
+    // encoder amplifies its rounding difference enough to change the scene.
+    // CUDA therefore keeps the numerically stable dense transform. Other
+    // backends use the standalone transform when they implement it.
+    if (backend_name != nullptr && std::strncmp(backend_name, "CUDA", 4) == 0) {
+        return ConvRotExecutionPath::DENSE_H256;
+    }
+    return rotation_op_supported ? ConvRotExecutionPath::ROTATION_OP
+                                 : ConvRotExecutionPath::NATIVE;
+}
+
 // Select the compact representation before any model parameter tensor is
-// created.  The default is deliberately native: an unsupported backend is a
-// configuration error rather than a silent CPU reroute or full F16 expansion.
-// Set SD_CONVROT_MODE=compat to explicitly request the compatibility loader.
+// created. SD_CONVROT_MODE can override the automatic per-backend policy.
 inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend,
                                                            const String2TensorStorage& source,
                                                            const std::string& component,
@@ -92,28 +149,31 @@ inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend
         return selected;
     }
 
-    const char* mode = std::getenv("SD_CONVROT_MODE");
-    const bool compatibility_mode = mode != nullptr && std::strcmp(mode, "compat") == 0;
-    const bool q8_decomp_mode     = mode != nullptr && std::strcmp(mode, "q8") == 0;
-    if (mode != nullptr && !compatibility_mode && !q8_decomp_mode && std::strcmp(mode, "native") != 0) {
-        throw std::runtime_error("invalid SD_CONVROT_MODE; expected 'native', 'q8', or 'compat'");
-    }
+    const char* mode         = std::getenv("SD_CONVROT_MODE");
     const char* backend_name = backend != nullptr ? ggml_backend_name(backend) : "unknown";
-    if (compatibility_mode) {
+    const bool rotation_op_supported = ggml_backend_supports_convrot_rotation_op(backend);
+    const ConvRotExecutionPath path  = select_convrot_execution_path(backend_name, rotation_op_supported, mode);
+    if (path == ConvRotExecutionPath::COMPAT) {
         LOG_INFO("ConvRot: using explicitly selected F16 compatibility path for %s on backend %s",
                  component.c_str(), backend_name);
         return selected;
     }
-    if (q8_decomp_mode) {
+    if (path == ConvRotExecutionPath::DENSE_H256 || path == ConvRotExecutionPath::ROTATION_OP) {
         for (auto& [name, storage] : selected) {
             if (name.rfind(prefix, 0) == 0 && storage.is_comfy_int8_convrot_weight()) {
                 storage.comfy_int8_native_enabled    = true;
                 storage.comfy_int8_q8_decomp_enabled = true;
+                storage.comfy_int8_convrot_op_enabled = path == ConvRotExecutionPath::ROTATION_OP;
             }
         }
-        LOG_INFO("ConvRot: selected Q8_0 activation-rotation decomposition for %s on backend %s",
+        LOG_INFO("ConvRot: selected Q8_0 %s activation transform for %s on backend %s",
+                 path == ConvRotExecutionPath::ROTATION_OP ? "standalone" : "dense-H256",
                  component.c_str(), backend_name);
         return selected;
+    }
+    if (mode != nullptr && std::strcmp(mode, "op") == 0 && !rotation_op_supported) {
+        LOG_WARN("ConvRot: standalone rotation is unavailable on backend %s; falling back to the native operation for %s",
+                 backend_name, component.c_str());
     }
     if (!ggml_backend_supports_convrot_op(backend)) {
         throw std::runtime_error("ConvRot native support is required for " + component +
@@ -3978,6 +4038,8 @@ protected:
     bool has_convrot_weight = false;
     bool use_convrot_f16_compat = false;
     bool use_convrot_q8_decomp = false;
+    bool use_convrot_rotation_op = false;
+    bool use_convrot_fast_h256 = false;
     float scale;
     std::string prefix;
 
@@ -3987,14 +4049,24 @@ protected:
         has_convrot_weight   = false;
         use_convrot_f16_compat = false;
         use_convrot_q8_decomp  = false;
+        use_convrot_rotation_op = false;
+        use_convrot_fast_h256   = false;
         const auto storage_it = tensor_storage_map.find(prefix + "weight");
         if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
             storage_it->second.comfy_int8_native_enabled) {
             has_convrot_weight = true;
             if (storage_it->second.comfy_int8_q8_decomp_enabled) {
-                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, in_features, out_features);
-                params["weight.convrot_h256"]  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 256);
-                use_convrot_q8_decomp            = true;
+                params["weight"]         = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, in_features, out_features);
+                use_convrot_q8_decomp      = true;
+                use_convrot_rotation_op    = storage_it->second.comfy_int8_convrot_op_enabled;
+                if (!use_convrot_rotation_op) {
+                    params["weight.convrot_h256"] = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 256);
+                    const char* h256_mode           = std::getenv("SD_CONVROT_H256_MODE");
+                    use_convrot_fast_h256           = h256_mode != nullptr && std::strcmp(h256_mode, "fast") == 0;
+                    if (h256_mode != nullptr && !use_convrot_fast_h256 && std::strcmp(h256_mode, "dense") != 0) {
+                        throw std::runtime_error("invalid SD_CONVROT_H256_MODE; expected 'dense' or 'fast'");
+                    }
+                }
             } else {
                 params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
                 params["weight.convrot_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
@@ -4054,21 +4126,31 @@ public:
         ggml_tensor* out         = nullptr;
         if (has_convrot_weight) {
             if (use_convrot_q8_decomp) {
-                // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate each
-                // 256-wide activation block once, then use the optimized stock
-                // Q8_0 matmul. Backends that recognize the hint replace this
-                // tiny dense matmul with the radix-4 transform.
-                ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
-                ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
-                                                         ggml_nelements(contiguous) / 256);
-                ggml_tensor* rotated    = ggml_mul_mat(ctx->ggml_ctx, params["weight.convrot_h256"], blocks);
-                ggml_mul_mat_set_hint(rotated, GGML_HINT_SRC0_IS_CONVROT_H256);
-                rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
-                out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+                if (use_convrot_rotation_op) {
+                    ggml_tensor* rotated = ggml_convrot(ctx->ggml_ctx, x, 256);
+                    ggml_set_name(rotated, (prefix + "trace.convrot.post_h256").c_str());
+                    out = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+                } else {
+                    // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate
+                    // each 256-wide block before the stock Q8_0 matmul.
+                    ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
+                    ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
+                                                             ggml_nelements(contiguous) / 256);
+                    ggml_set_name(blocks, (prefix + "trace.convrot.pre_h256").c_str());
+                    ggml_tensor* rotated    = ggml_mul_mat(ctx->ggml_ctx, params["weight.convrot_h256"], blocks);
+                    ggml_set_name(rotated, (prefix + "trace.convrot.post_h256").c_str());
+                    if (use_convrot_fast_h256) {
+                        ggml_mul_mat_set_hint(rotated, GGML_HINT_SRC0_IS_CONVROT_H256);
+                    }
+                    rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+                    out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+                }
+                ggml_set_name(out, (prefix + "trace.convrot.post_q8_gemm").c_str());
             } else {
                 // ConvRot weights and their tensor-wise scales remain compact
                 // at rest. The operator owns the scale semantics.
                 out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
+                ggml_set_name(out, (prefix + "trace.convrot.native_out").c_str());
                 if (use_convrot_f16_compat) {
                     ggml_mul_mat_convrot_set_f16_compat(out, true);
                 }

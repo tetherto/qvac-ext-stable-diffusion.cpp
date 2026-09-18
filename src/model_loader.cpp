@@ -1631,10 +1631,10 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
     // sidecar before uploading it.  Otherwise a malformed zero/NaN scale
     // reaches the backend without the compatibility loader's validation.
     const size_t scale_count = static_cast<size_t>(output_rows);
+    std::vector<float> scale_values(scale_count);
     for (size_t row = 0; row < scale_count; ++row) {
-        float scale;
-        memcpy(&scale, scales.data() + row * sizeof(scale), sizeof(scale));
-        if (!std::isfinite(scale) || scale <= 0.f) {
+        memcpy(&scale_values[row], scales.data() + row * sizeof(float), sizeof(float));
+        if (!std::isfinite(scale_values[row]) || scale_values[row] <= 0.f) {
             LOG_ERROR("native ComfyUI Int8 tensor '%s' has a non-positive or non-finite scale", tensor_storage.name.c_str());
             return false;
         }
@@ -1648,24 +1648,15 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
         }
     };
     if (q8_decomp) {
-        const size_t qk       = static_cast<size_t>(ggml_blck_size(GGML_TYPE_Q8_0));
-        const size_t block_sz = ggml_type_size(GGML_TYPE_Q8_0);
-        const size_t row_sz   = ggml_row_size(GGML_TYPE_Q8_0, tensor_storage.ne[0]);
-        if (qk != 32 || block_sz < sizeof(ggml_fp16_t) + qk) {
-            LOG_ERROR("unexpected Q8_0 layout while repacking '%s'", tensor_storage.name.c_str());
+        const size_t packed_size = ggml_convrot_repack_q8_0(nullptr, nullptr,
+                                                             tensor_storage.ne[0], tensor_storage.ne[1], nullptr);
+        if (packed_size != ggml_nbytes(dst_weight)) {
+            LOG_ERROR("unexpected Q8_0 size while repacking '%s'", tensor_storage.name.c_str());
             return false;
         }
-        std::vector<uint8_t> packed(ggml_nbytes(dst_weight), 0);
-        for (size_t row = 0; row < scale_count; ++row) {
-            float scale;
-            memcpy(&scale, scales.data() + row * sizeof(scale), sizeof(scale));
-            const ggml_fp16_t d = ggml_fp32_to_fp16(scale);
-            for (size_t column = 0; column < static_cast<size_t>(tensor_storage.ne[0]); column += qk) {
-                uint8_t* block = packed.data() + row * row_sz + (column / qk) * block_sz;
-                memcpy(block, &d, sizeof(d));
-                memcpy(block + sizeof(d), weights.data() + row * static_cast<size_t>(tensor_storage.ne[0]) + column, qk);
-            }
-        }
+        std::vector<uint8_t> packed(packed_size);
+        ggml_convrot_repack_q8_0(reinterpret_cast<const int8_t*>(weights.data()), scale_values.data(),
+                                 tensor_storage.ne[0], tensor_storage.ne[1], packed.data());
         upload(dst_weight, packed.data(), packed.size());
     } else {
         upload(dst_weight, weights.data(), weights.size());
