@@ -26,9 +26,6 @@ test('runners.yaml parses with unique keys/targets', () => {
 })
 
 test('the catalog still describes this repo: hosted images only', () => {
-  // qvac-ext-stable-diffusion.cpp runs entirely on GitHub-hosted images. If a
-  // self-hosted entry appears here, the job wiring needs the fork-ci authorize
-  // gate that the self-hosted engine repos carry, and this repo has none.
   for (const entry of loadRunners()) {
     const labels = entry.kind === 'array' ? entry.labels : [entry.label]
     assert.ok(
@@ -76,8 +73,8 @@ test('CI workflows do not hardcode catalog runner targets', () => {
 })
 
 test('the validated allowlist is not empty', () => {
-  // A wired workflow absent from ADDON_WORKFLOWS is not checked at all, so an
-  // empty or stale list makes every other assertion here vacuous.
+  // A workflow absent from ADDON_WORKFLOWS is not checked, so a stale list
+  // makes every other assertion here vacuous.
   const wired = listAddonWorkflows()
   assert.ok(wired.length >= 1)
   assert.ok(wired.includes('.github/workflows/build.yml'))
