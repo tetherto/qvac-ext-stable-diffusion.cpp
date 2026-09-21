@@ -110,6 +110,72 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 
 if(SD_CUDA)
     message("-- Use CUDA as backend stable-diffusion")
+
+    # Keep NVCC's host ABI aligned with the selected C++ compiler. This is
+    # essential for libc++ consumers (such as QVAC's Linux triplet), where
+    # letting NVCC fall back to g++ makes CMake's CUDA probes use incompatible
+    # standard-library flags. An explicit CMAKE_CUDA_HOST_COMPILER always wins.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND
+       (NOT DEFINED CMAKE_CUDA_HOST_COMPILER OR CMAKE_CUDA_HOST_COMPILER STREQUAL ""))
+        set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}" CACHE FILEPATH
+            "Host compiler used by NVCC" FORCE)
+        message(STATUS "CUDA host compiler defaulted to ${CMAKE_CUDA_HOST_COMPILER}")
+    endif()
+
+    # CUDA 13 packages headers below targets/<platform>/include. Prefer an
+    # explicitly configured compiler; otherwise prefer well-known CUDA roots
+    # before PATH. This prevents an older distro nvcc (for example CUDA 12 in
+    # /usr/bin) from winning over CUDA 13 installed at /usr/local/cuda.
+    if(DEFINED CMAKE_CUDA_COMPILER AND NOT CMAKE_CUDA_COMPILER STREQUAL "")
+        set(SD_NVCC_EXECUTABLE "${CMAKE_CUDA_COMPILER}")
+    else()
+        find_program(SD_NVCC_EXECUTABLE NAMES nvcc
+            PATHS /usr/local/cuda/bin
+            NO_DEFAULT_PATH)
+        if(NOT SD_NVCC_EXECUTABLE)
+            find_program(SD_NVCC_EXECUTABLE NAMES nvcc
+                HINTS
+                    "$ENV{CUDA_PATH}/bin"
+                    "$ENV{CUDA_HOME}/bin"
+                NO_DEFAULT_PATH)
+        endif()
+        if(NOT SD_NVCC_EXECUTABLE)
+            find_program(SD_NVCC_EXECUTABLE NAMES nvcc)
+        endif()
+        if(SD_NVCC_EXECUTABLE)
+            set(CMAKE_CUDA_COMPILER "${SD_NVCC_EXECUTABLE}" CACHE FILEPATH
+                "CUDA compiler used by stable-diffusion.cpp" FORCE)
+            message(STATUS "CUDA compiler defaulted to ${CMAKE_CUDA_COMPILER}")
+        endif()
+    endif()
+
+    # Seed FindCUDAToolkit without overriding an explicit toolkit selection.
+    if(NOT DEFINED CUDAToolkit_ROOT OR CUDAToolkit_ROOT STREQUAL "")
+        if(SD_NVCC_EXECUTABLE)
+            get_filename_component(SD_CUDA_BIN_DIR "${SD_NVCC_EXECUTABLE}" DIRECTORY)
+            get_filename_component(SD_CUDA_TOOLKIT_ROOT "${SD_CUDA_BIN_DIR}" DIRECTORY)
+            set(CUDAToolkit_ROOT "${SD_CUDA_TOOLKIT_ROOT}" CACHE PATH
+                "CUDA toolkit root used by stable-diffusion.cpp" FORCE)
+        endif()
+    endif()
+
+    if(CUDAToolkit_ROOT AND
+       (NOT DEFINED CUDAToolkit_TARGET_DIR OR CUDAToolkit_TARGET_DIR STREQUAL "") AND
+       (NOT DEFINED CUDAToolkit_INCLUDE_DIRECTORIES OR CUDAToolkit_INCLUDE_DIRECTORIES STREQUAL ""))
+        file(GLOB SD_CUDA_TARGET_DIRS LIST_DIRECTORIES true
+            "${CUDAToolkit_ROOT}/targets/*")
+        foreach(SD_CUDA_TARGET_DIR IN LISTS SD_CUDA_TARGET_DIRS)
+            if(EXISTS "${SD_CUDA_TARGET_DIR}/include/cuda_runtime.h")
+                set(CUDAToolkit_TARGET_DIR "${SD_CUDA_TARGET_DIR}" CACHE PATH
+                    "CUDA target directory used by stable-diffusion.cpp" FORCE)
+                set(CUDAToolkit_INCLUDE_DIRECTORIES "${SD_CUDA_TARGET_DIR}/include" CACHE PATH
+                    "CUDA target include directories used by stable-diffusion.cpp" FORCE)
+                message(STATUS "CUDA target include directory: ${CUDAToolkit_INCLUDE_DIRECTORIES}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
     set(GGML_CUDA ON)
 endif()
 
