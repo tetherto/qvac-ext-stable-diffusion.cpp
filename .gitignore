@@ -1,6 +1,13 @@
 build*/
 cmake-build-*/
 test/
+# `test/` above is unanchored, so it matches a `test` directory at ANY depth,
+# not just the local build scratch dir it is grouped with. That silently
+# swallowed .github/scripts/test/, which runner-names-validate.yml runs. Keep
+# the broad rule (a nested test/ elsewhere may rely on it) and re-include the
+# CI path. The directory itself has to be re-included: git cannot re-include a
+# file whose parent directory is excluded.
+!.github/scripts/test/
 .vscode/
 .idea/
 .cache/
