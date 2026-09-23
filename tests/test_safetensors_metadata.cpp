@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <thread>
 
-namespace {
+namespace safetensors_metadata_test {
 
     const std::string header =
         R"({"model.diffusion_model.test.weight.diff":{"dtype":"F32","shape":[6,4],"data_offsets":[0,96]}})";
@@ -213,9 +213,10 @@ namespace {
         GGML_ASSERT(!read_file(path));
     }
 
-}  // namespace
+}  // namespace safetensors_metadata_test
 
 int main() {
+    using namespace safetensors_metadata_test;
     const auto path = std::filesystem::temp_directory_path() / "sd-test-safetensors-metadata.safetensors";
     test_exception_cleanup(path);
     test_reader(path);
