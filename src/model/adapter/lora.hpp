@@ -131,7 +131,7 @@ struct LoraModel : public GGMLRunner {
         for (const auto& pair : lora_tensors) {
             lora_params.push_back(pair.second);
         }
-        if (!model_manager->prepare_params(lora_params)) {
+        if (!GGMLRunner::measure_mode_enabled() && !model_manager->prepare_params(lora_params)) {
             LOG_ERROR("lora model manager prepare params failed");
             return false;
         }

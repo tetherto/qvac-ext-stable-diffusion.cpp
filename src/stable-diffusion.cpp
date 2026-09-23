@@ -4064,7 +4064,14 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     sd_ctx_t* sd_ctx        = &sd_ctx_storage;
     sd_ctx->sd              = new StableDiffusionGGML();
     sd_ctx->sd->fit_dry_run = true;
-    if (!sd_ctx->sd->init(&dry_params)) {
+    bool init_ok = false;
+    try {
+        SDMetadataOnlyReadScope metadata_only;
+        init_ok = sd_ctx->sd->init(&dry_params);
+    } catch (const std::exception& error) {
+        LOG_ERROR("fit-params: dry-run model init failed: %s", error.what());
+    }
+    if (!init_ok) {
         LOG_ERROR("fit-params: dry-run model init failed");
         delete sd_ctx->sd;
         sd_ctx->sd = nullptr;
@@ -4128,6 +4135,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
 
     auto measure = [&](const sd_tiling_params_t& tiling,
                        std::vector<GGMLRunner::graph_memory_measurement>& records) -> bool {
+        SDMetadataOnlyReadScope metadata_only;
         records.clear();
         struct MeasureModeGuard {
             explicit MeasureModeGuard(std::vector<GGMLRunner::graph_memory_measurement>* records) {

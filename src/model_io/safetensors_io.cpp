@@ -5,6 +5,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <ostream>
 #include <string>
 #include <unordered_set>
@@ -180,9 +181,19 @@ bool read_safetensors_file(const std::string& file_path,
             continue;
         }
 
-        size_t begin = tensor_info["data_offsets"][0].get<size_t>();
-        size_t end   = tensor_info["data_offsets"][1].get<size_t>();
-        if (begin > end || end > file_size_ - data_start) {
+        const auto& offsets     = tensor_info["data_offsets"];
+        const auto valid_offset = [](const nlohmann::json& value) {
+            return value.is_number_unsigned() ? value.get<uint64_t>() <= std::numeric_limits<size_t>::max()
+                                              : value.is_number_integer() && value.get<int64_t>() >= 0;
+        };
+        if (!offsets.is_array() || offsets.size() != 2 || !valid_offset(offsets[0]) || !valid_offset(offsets[1])) {
+            set_error(error, "invalid data offsets for tensor '" + name + "'");
+            return false;
+        }
+        size_t begin = offsets[0].get<size_t>();
+        size_t end   = offsets[1].get<size_t>();
+        if (begin > end || end > std::numeric_limits<size_t>::max() - data_start ||
+            (!sd_get_metadata_only_read() && end > file_size_ - data_start)) {
             set_error(error, "data offsets out of bounds for tensor '" + name + "'");
             return false;
         }
@@ -226,11 +237,11 @@ bool read_safetensors_file(const std::string& file_path,
         if (dtype == "F8_E4M3") {
             tensor_storage.is_f8_e4m3 = true;
             // f8 -> f16
-            tensor_size_ok = (tensor_storage.nbytes() == tensor_data_size * 2);
+            tensor_size_ok = (tensor_storage.nbytes() / 2 == tensor_data_size);
         } else if (dtype == "F8_E5M2") {
             tensor_storage.is_f8_e5m2 = true;
             // f8 -> f16
-            tensor_size_ok = (tensor_storage.nbytes() == tensor_data_size * 2);
+            tensor_size_ok = (tensor_storage.nbytes() / 2 == tensor_data_size);
         } else if (dtype == "F64") {
             tensor_storage.is_f64 = true;
             // f64 -> f32
