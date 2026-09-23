@@ -4054,6 +4054,7 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
         return SD_FIT_FAILURE;
     }
 
+    ggml_time_init();
     int64_t t0 = ggml_time_ms();
 
     sd_ctx_params_t dry_params = *sd_ctx_params;
