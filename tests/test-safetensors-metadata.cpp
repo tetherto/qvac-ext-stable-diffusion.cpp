@@ -167,11 +167,11 @@ namespace {
 
 int main() {
     const auto path = std::filesystem::temp_directory_path() / "sd-test-safetensors-metadata.safetensors";
+    test_exception_cleanup(path);
     test_reader(path);
     test_invalid_headers(path);
     test_converted_types(path);
     test_shard_and_lora(path);
-    test_exception_cleanup(path);
     std::filesystem::remove(path);
     return 0;
 }
