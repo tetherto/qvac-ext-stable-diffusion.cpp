@@ -138,6 +138,56 @@ namespace {
         std::filesystem::remove(index);
     }
 
+    void test_lora_scalars(const std::filesystem::path& path) {
+        ggml_backend_t cpu = sd_backend_cpu_init();
+        GGML_ASSERT(cpu != nullptr);
+        for (const std::string suffix : {"alpha", "scale"}) {
+            const std::string json =
+                R"({"model.diffusion_model.test.lora_down.weight":{"dtype":"F32","shape":[2,4],"data_offsets":[0,32]},)"
+                R"("model.diffusion_model.test.lora_up.weight":{"dtype":"F32","shape":[6,2],"data_offsets":[32,80]},)"
+                "\"model.diffusion_model.test." +
+                suffix + R"(":{"dtype":"F32","shape":[1],"data_offsets":[80,84]}})";
+            int full_nodes = 0;
+            for (bool measure : {false, true}) {
+                write_file(path, json, measure ? 0 : 84);
+                SDMetadataOnlyReadScope scope;
+                GGMLRunner::set_measure_mode(measure);
+                {
+                    LoraModel lora("scalars", cpu, cpu, path.string());
+                    GGML_ASSERT(lora.load_from_file(1));
+                    auto* scalar = lora.lora_tensors.at("lora.model.diffusion_model.test.weight." + suffix);
+                    GGML_ASSERT(LoraModel::read_scale(scalar) == (measure ? 1.0f : 0.0f));
+                    GGML_ASSERT((scalar->data == nullptr) == measure);
+                    ggml_init_params init = {};
+                    init.mem_size         = 128 * ggml_tensor_overhead() + ggml_graph_overhead_custom(128, false);
+                    init.no_alloc         = true;
+                    auto* ctx             = ggml_init(init);
+                    GGML_ASSERT(ctx != nullptr);
+                    ggml_set_name(ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1), "ggml_runner_build_in_tensor:one");
+                    auto* weight = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 6);
+                    auto* diff   = lora.get_lora_weight_diff("model.diffusion_model.test.weight", ctx, cpu);
+                    GGML_ASSERT(diff != nullptr && ggml_are_same_shape(diff, weight));
+                    auto* x                             = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 4, 1);
+                    WeightAdapter::ForwardParams params = {};
+                    params.op_type                      = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
+                    auto* out                           = lora.get_out_diff(ctx, cpu, x, weight, params, "model.diffusion_model.test.weight");
+                    GGML_ASSERT(out != nullptr && out->ne[0] == 6 && out->ne[1] == 1);
+                    auto* graph = ggml_new_graph_custom(ctx, 128, false);
+                    ggml_build_forward_expand(graph, diff);
+                    ggml_build_forward_expand(graph, out);
+                    if (measure) {
+                        GGML_ASSERT(ggml_graph_n_nodes(graph) == full_nodes);
+                    } else {
+                        full_nodes = ggml_graph_n_nodes(graph);
+                    }
+                    ggml_free(ctx);
+                }
+                GGMLRunner::set_measure_mode(false);
+            }
+        }
+        ggml_backend_free(cpu);
+    }
+
     void test_exception_cleanup(const std::filesystem::path& path) {
         write_file(path, R"({"x":{"dtype":42,"shape":[1],"data_offsets":[0,4]}})");
         bool caught = false;
@@ -172,6 +222,7 @@ int main() {
     test_invalid_headers(path);
     test_converted_types(path);
     test_shard_and_lora(path);
+    test_lora_scalars(path);
     std::filesystem::remove(path);
     return 0;
 }
