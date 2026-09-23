@@ -106,6 +106,19 @@ bool sd_get_progress_suppressed();
 void sd_set_progress_suppressed(bool suppressed);
 
 void sd_begin_preview_pass(int total_steps);
+bool sd_get_metadata_only_read();
+
+class SDMetadataOnlyReadScope {
+public:
+    SDMetadataOnlyReadScope();
+    ~SDMetadataOnlyReadScope();
+    SDMetadataOnlyReadScope(const SDMetadataOnlyReadScope&)            = delete;
+    SDMetadataOnlyReadScope& operator=(const SDMetadataOnlyReadScope&) = delete;
+
+private:
+    bool previous_;
+};
+
 sd_preview_cb_t sd_get_preview_callback();
 void* sd_get_preview_callback_data();
 preview_t sd_get_preview_mode();

@@ -139,8 +139,9 @@ struct LoraModel : public GGMLRunner {
             return false;
         for (const auto& entry : tensors)
             registered_params.push_back(entry.second);
-        return model_manager->validate_registered_tensors() &&
-               model_manager->prepare_params(registered_params);
+        return GGMLRunner::measure_mode_enabled() ||
+               (model_manager->validate_registered_tensors() &&
+                model_manager->prepare_params(registered_params));
     }
 
     float scalar_value(ggml_tensor* tensor) const {

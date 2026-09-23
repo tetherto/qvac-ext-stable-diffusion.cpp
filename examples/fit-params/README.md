@@ -4,6 +4,9 @@
 device memory, using measured metadata-only dry runs: the real generation
 pipeline is executed with graph building and memory measurement only, so
 no weight data is read and no ggml weight or compute buffers are allocated.
+Safetensors inputs may contain only their complete header, including auxiliary
+models and LoRAs. A successful fit does not verify that weight data is present;
+generation still requires complete model files.
 Shaped host tensors are still materialized to carry state between graph builds;
 allocation failures are reported as fit errors. The measured per-module memory
 includes projected persistent cache buffers and is packed against the free
