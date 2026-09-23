@@ -145,6 +145,8 @@ struct LoraModel : public GGMLRunner {
     }
 
     float scalar_value(ggml_tensor* tensor) const {
+        // Values do not affect graph shapes; fit mode must not read payloads.
+        if (GGMLRunner::measure_mode_enabled()) return 1.0f;
         auto found = scalar_values.find(tensor);
         return found != scalar_values.end() ? found->second : ggml_ext_backend_tensor_get_f32(tensor);
     }
