@@ -15,3 +15,6 @@
 
 # GitHub-hosted (pinned images)
 windows_2022: windows-2022 # Windows Server 2022 hosted x64
+
+# QVAC-24501 verification: temporary comment to exercise the on-PR CI flow.
+# This line is removed before this branch is closed.
