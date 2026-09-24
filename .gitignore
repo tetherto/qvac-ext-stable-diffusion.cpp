@@ -1,6 +1,8 @@
 build*/
 cmake-build-*/
 test/
+# `test/` is unanchored, so it also swallowed .github/scripts/test/, which CI runs.
+!.github/scripts/test/
 .vscode/
 .idea/
 .cache/
