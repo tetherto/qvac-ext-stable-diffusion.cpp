@@ -281,6 +281,7 @@ int main() {
     std::fprintf(stderr, "ConvRot test: invalid-group rejection verified\n");
 
     write_fixture(path, "not-json");
+    std::fprintf(stderr, "ConvRot test: malformed-marker fixture written\n");
     ModelLoader malformed_loader;
     GGML_ASSERT(!malformed_loader.init_from_file(path.string()));
     std::fprintf(stderr, "ConvRot test: malformed-marker rejection verified\n");
