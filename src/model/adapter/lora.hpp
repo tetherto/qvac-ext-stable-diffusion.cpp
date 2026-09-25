@@ -131,7 +131,7 @@ struct LoraModel : public GGMLRunner {
         for (const auto& pair : lora_tensors) {
             lora_params.push_back(pair.second);
         }
-        if (!model_manager->prepare_params(lora_params)) {
+        if (!GGMLRunner::measure_mode_enabled() && !model_manager->prepare_params(lora_params)) {
             LOG_ERROR("lora model manager prepare params failed");
             return false;
         }
@@ -409,6 +409,11 @@ struct LoraModel : public GGMLRunner {
         return compatible;
     }
 
+    static float read_scale(ggml_tensor* tensor) {
+        // Scalar values do not affect graph shapes during memory measurement.
+        return GGMLRunner::measure_mode_enabled() ? 1.0f : ggml_ext_backend_tensor_get_f32(tensor);
+    }
+
     ggml_tensor* get_lora_weight_diff(const std::string& model_tensor_name, ggml_context* ctx, ggml_backend_t backend) {
         ggml_tensor* updown = nullptr;
         int index           = 0;
@@ -461,12 +466,12 @@ struct LoraModel : public GGMLRunner {
             int64_t rank = lora_down->ne[ggml_n_dims(lora_down) - 1];
             iter         = lora_tensors.find(scale_name);
             if (iter != lora_tensors.end()) {
-                scale_value = ggml_ext_backend_tensor_get_f32(iter->second);
+                scale_value = read_scale(iter->second);
                 applied_lora_tensors.insert(scale_name);
             } else {
                 iter = lora_tensors.find(alpha_name);
                 if (iter != lora_tensors.end()) {
-                    float alpha = ggml_ext_backend_tensor_get_f32(iter->second);
+                    float alpha = read_scale(iter->second);
                     scale_value = alpha / rank;
                     // LOG_DEBUG("rank %s %ld %.2f %.2f", alpha_name.c_str(), rank, alpha, scale_value);
                     applied_lora_tensors.insert(alpha_name);
@@ -615,7 +620,7 @@ struct LoraModel : public GGMLRunner {
             int64_t rank = hada_1_down->ne[ggml_n_dims(hada_1_down) - 1];
             iter         = lora_tensors.find(alpha_name);
             if (iter != lora_tensors.end()) {
-                float alpha = ggml_ext_backend_tensor_get_f32(iter->second);
+                float alpha = read_scale(iter->second);
                 scale_value = alpha / rank;
                 applied_lora_tensors.insert(alpha_name);
             }
@@ -728,7 +733,7 @@ struct LoraModel : public GGMLRunner {
             float scale_value = 1.0f;
             iter              = lora_tensors.find(alpha_name);
             if (iter != lora_tensors.end()) {
-                float alpha = ggml_ext_backend_tensor_get_f32(iter->second);
+                float alpha = read_scale(iter->second);
                 scale_value = alpha / rank;
                 applied_lora_tensors.insert(alpha_name);
             }
@@ -889,7 +894,7 @@ struct LoraModel : public GGMLRunner {
                 float scale_value = 1.0f;
                 iter              = lora_tensors.find(alpha_name);
                 if (iter != lora_tensors.end()) {
-                    float alpha = ggml_ext_backend_tensor_get_f32(iter->second);
+                    float alpha = read_scale(iter->second);
                     scale_value = alpha / rank;
                 }
 
@@ -1016,12 +1021,12 @@ struct LoraModel : public GGMLRunner {
             int64_t rank = lora_down->ne[ggml_n_dims(lora_down) - 1];
             iter         = lora_tensors.find(scale_name);
             if (iter != lora_tensors.end()) {
-                scale_value       = ggml_ext_backend_tensor_get_f32(iter->second);
+                scale_value       = read_scale(iter->second);
                 scale_tensor_name = scale_name;
             } else {
                 iter = lora_tensors.find(alpha_name);
                 if (iter != lora_tensors.end()) {
-                    float alpha       = ggml_ext_backend_tensor_get_f32(iter->second);
+                    float alpha       = read_scale(iter->second);
                     scale_value       = alpha / rank;
                     scale_tensor_name = alpha_name;
                     // LOG_DEBUG("rank %s %ld %.2f %.2f", alpha_name.c_str(), rank, alpha, scale_value);

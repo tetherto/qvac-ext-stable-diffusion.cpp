@@ -11,6 +11,11 @@ target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-fit-params COMMAND test-fit-params)
 
+add_executable(test-safetensors-metadata test_safetensors_metadata.cpp)
+target_include_directories(test-safetensors-metadata PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-safetensors-metadata PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME test-safetensors-metadata COMMAND test-safetensors-metadata)
+
 add_executable(test-ltx-vae-temporal test-ltx-vae-temporal.cpp)
 target_link_libraries(test-ltx-vae-temporal PRIVATE stable-diffusion)
 add_test(NAME test-ltx-vae-temporal COMMAND test-ltx-vae-temporal)

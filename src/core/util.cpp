@@ -342,6 +342,7 @@ int32_t sd_get_num_physical_cores() {
 static sd_progress_cb_t sd_progress_cb = nullptr;
 void* sd_progress_cb_data              = nullptr;
 static thread_local bool sd_progress_suppressed = false;
+static thread_local bool sd_metadata_only_read  = false;
 
 static sd_abort_cb_t sd_abort_cb = nullptr;
 static void* sd_abort_cb_data   = nullptr;
@@ -700,6 +701,19 @@ bool sd_get_progress_suppressed() {
 
 void sd_set_progress_suppressed(bool suppressed) {
     sd_progress_suppressed = suppressed;
+}
+
+bool sd_get_metadata_only_read() {
+    return sd_metadata_only_read;
+}
+
+SDMetadataOnlyReadScope::SDMetadataOnlyReadScope()
+    : previous_(sd_metadata_only_read) {
+    sd_metadata_only_read = true;
+}
+
+SDMetadataOnlyReadScope::~SDMetadataOnlyReadScope() {
+    sd_metadata_only_read = previous_;
 }
 
 sd_image_t tensor_to_sd_image(const sd::Tensor<float>& tensor, int frame_index) {

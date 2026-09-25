@@ -5,6 +5,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <ostream>
 #include <string>
 #include <unordered_set>
@@ -180,9 +181,19 @@ bool read_safetensors_file(const std::string& file_path,
             continue;
         }
 
-        size_t begin = tensor_info["data_offsets"][0].get<size_t>();
-        size_t end   = tensor_info["data_offsets"][1].get<size_t>();
-        if (begin > end || end > file_size_ - data_start) {
+        const auto& offsets     = tensor_info["data_offsets"];
+        const auto valid_offset = [](const nlohmann::json& value) {
+            return value.is_number_unsigned() ? value.get<uint64_t>() <= std::numeric_limits<size_t>::max()
+                                              : value.is_number_integer() && value.get<int64_t>() >= 0;
+        };
+        if (!offsets.is_array() || offsets.size() != 2 || !valid_offset(offsets[0]) || !valid_offset(offsets[1])) {
+            set_error(error, "invalid data offsets for tensor '" + name + "'");
+            return false;
+        }
+        size_t begin = offsets[0].get<size_t>();
+        size_t end   = offsets[1].get<size_t>();
+        if (begin > end || end > std::numeric_limits<size_t>::max() - data_start ||
+            (!sd_get_metadata_only_read() && end > file_size_ - data_start)) {
             set_error(error, "data offsets out of bounds for tensor '" + name + "'");
             return false;
         }
@@ -193,15 +204,30 @@ bool read_safetensors_file(const std::string& file_path,
             return false;
         }
 
-        if (shape.size() > SD_MAX_DIMS) {
+        if (!shape.is_array() || shape.size() > SD_MAX_DIMS) {
             set_error(error, "invalid tensor '" + name + "'");
             return false;
         }
 
         int n_dims              = (int)shape.size();
         int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+        // Bound intermediate products too, including F64/I64 conversion and zero-sized tensors.
+        const uint64_t max_nelements =
+            std::min<uint64_t>(std::numeric_limits<int64_t>::max(), std::numeric_limits<size_t>::max()) /
+            (2 * ggml_type_size(type));
+        uint64_t nelements = 1;
         for (int i = 0; i < n_dims; i++) {
-            ne[i] = shape[i].get<int64_t>();
+            if (!shape[i].is_number_unsigned()) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
+                return false;
+            }
+            const uint64_t dim = shape[i].get<uint64_t>();
+            if (dim > max_nelements || (dim != 0 && nelements > max_nelements / dim)) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
+                return false;
+            }
+            nelements *= std::max<uint64_t>(dim, 1);
+            ne[i] = static_cast<int64_t>(dim);
         }
 
         if (n_dims == 5) {
@@ -226,11 +252,11 @@ bool read_safetensors_file(const std::string& file_path,
         if (dtype == "F8_E4M3") {
             tensor_storage.is_f8_e4m3 = true;
             // f8 -> f16
-            tensor_size_ok = (tensor_storage.nbytes() == tensor_data_size * 2);
+            tensor_size_ok = (tensor_storage.nbytes() / 2 == tensor_data_size);
         } else if (dtype == "F8_E5M2") {
             tensor_storage.is_f8_e5m2 = true;
             // f8 -> f16
-            tensor_size_ok = (tensor_storage.nbytes() == tensor_data_size * 2);
+            tensor_size_ok = (tensor_storage.nbytes() / 2 == tensor_data_size);
         } else if (dtype == "F64") {
             tensor_storage.is_f64 = true;
             // f64 -> f32
