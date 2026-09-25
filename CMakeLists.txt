@@ -396,6 +396,11 @@ if (SD_BUILD_EXAMPLES)
 endif()
 
 if (SD_BUILD_TESTS)
+    # The in-tree tests exercise internal C++ helpers in addition to the public
+    # C API. Export those helpers from the Windows DLL for test builds only.
+    if (WIN32 AND SD_BUILD_SHARED_LIBS)
+        set_target_properties(${SD_LIB} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    endif()
     enable_testing()
     add_subdirectory(tests)
 endif()
