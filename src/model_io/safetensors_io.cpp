@@ -204,15 +204,30 @@ bool read_safetensors_file(const std::string& file_path,
             return false;
         }
 
-        if (shape.size() > SD_MAX_DIMS) {
+        if (!shape.is_array() || shape.size() > SD_MAX_DIMS) {
             set_error(error, "invalid tensor '" + name + "'");
             return false;
         }
 
         int n_dims              = (int)shape.size();
         int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+        // Bound intermediate products too, including F64/I64 conversion and zero-sized tensors.
+        const uint64_t max_nelements =
+            std::min<uint64_t>(std::numeric_limits<int64_t>::max(), std::numeric_limits<size_t>::max()) /
+            (2 * ggml_type_size(type));
+        uint64_t nelements = 1;
         for (int i = 0; i < n_dims; i++) {
-            ne[i] = shape[i].get<int64_t>();
+            if (!shape[i].is_number_unsigned()) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
+                return false;
+            }
+            const uint64_t dim = shape[i].get<uint64_t>();
+            if (dim > max_nelements || (dim != 0 && nelements > max_nelements / dim)) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
+                return false;
+            }
+            nelements *= std::max<uint64_t>(dim, 1);
+            ne[i] = static_cast<int64_t>(dim);
         }
 
         if (n_dims == 5) {
