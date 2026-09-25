@@ -68,6 +68,16 @@ namespace safetensors_metadata_test {
     void test_invalid_headers(const std::filesystem::path& path) {
         SDMetadataOnlyReadScope scope;
         for (const auto& json : {
+                 R"({"x":{"dtype":"F32","shape":[-1000000],"data_offsets":[0,18446744073705551616]}})",
+                 R"({"x":{"dtype":"F32","shape":[2305843009213693952],"data_offsets":[0,9223372036854775808]}})",
+                 R"({"x":{"dtype":"F32","shape":[4294967296,4294967296,1,1,1],"data_offsets":[0,0]}})",
+                 R"({"x":{"dtype":"F32","shape":[0,4294967296,4294967296,1,1],"data_offsets":[0,0]}})",
+                 R"({"x":{"dtype":"F64","shape":[2305843009213693952],"data_offsets":[0,0]}})",
+                 R"({"x":{"dtype":"I64","shape":[2305843009213693952],"data_offsets":[0,0]}})",
+                 R"({"x":{"dtype":"F32","shape":[18446744073709551615],"data_offsets":[0,0]}})",
+                 R"({"x":{"dtype":"F32","shape":[4.0],"data_offsets":[0,16]}})",
+                 R"({"x":{"dtype":"F32","shape":[true],"data_offsets":[0,4]}})",
+                 R"({"x":{"dtype":"F32","shape":null,"data_offsets":[0,4]}})",
                  R"({"x":{"dtype":"F32","shape":[1],"data_offsets":[4,0]}})",
                  R"({"x":{"dtype":"F32","shape":[1],"data_offsets":[-1000,-996]}})",
                  R"({"x":{"dtype":"F32","shape":[1],"data_offsets":[0.0,4.0]}})",
@@ -101,6 +111,34 @@ namespace safetensors_metadata_test {
                  R"({"x":{"dtype":"F16","shape":[2],"data_offsets":[0,4]}})"}) {
             write_file(path, json);
             GGML_ASSERT(read_file(path));
+        }
+    }
+
+    void test_shapes(const std::filesystem::path& path) {
+        for (const std::string shape : {"[]", "[2,3,4,1,1]", "[0,2,3]", "[2,0,3]", "[2,3,0]"}) {
+            const size_t payload   = shape == "[]" ? 4 : shape == "[2,3,4,1,1]" ? 96
+                                                                                : 0;
+            const std::string json = "{\"x\":{\"dtype\":\"F32\",\"shape\":" + shape +
+                                     ",\"data_offsets\":[0," + std::to_string(payload) + "]}}";
+            write_file(path, json, payload);
+            GGML_ASSERT(read_file(path));
+            write_file(path, json);
+            SDMetadataOnlyReadScope scope;
+            GGML_ASSERT(read_file(path));
+        }
+        for (const std::string shape : {"[-1,0]", "[4.0]", "[0,4294967296,4294967296,1,1]"}) {
+            write_file(path, "{\"x\":{\"dtype\":\"F32\",\"shape\":" + shape + ",\"data_offsets\":[0,0]}}");
+            GGML_ASSERT(!read_file(path));
+            sd_ctx_params_t params;
+            sd_ctx_params_init(&params);
+            const auto model_path = path.string();
+            params.model_path     = model_path.c_str();
+            sd_fit_workload_t workload;
+            sd_fit_workload_init(&workload);
+            sd_fit_result_t result{};
+            GGML_ASSERT(sd_fit_params(&params, &workload, &result) == SD_FIT_ERROR);
+            sd_fit_result_free(&result);
+            GGML_ASSERT(!sd_get_metadata_only_read());
         }
     }
 
@@ -222,6 +260,7 @@ int main() {
     test_reader(path);
     test_invalid_headers(path);
     test_converted_types(path);
+    test_shapes(path);
     test_shard_and_lora(path);
     test_lora_scalars(path);
     std::filesystem::remove(path);

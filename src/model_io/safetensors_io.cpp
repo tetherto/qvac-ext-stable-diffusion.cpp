@@ -309,27 +309,30 @@ bool read_safetensors_file(const std::string& file_path,
             return false;
         }
 
-        if (shape.size() > SD_MAX_DIMS) {
+        if (!shape.is_array() || shape.size() > SD_MAX_DIMS) {
             set_error(error, "invalid tensor '" + name + "'");
             return false;
         }
 
         int n_dims              = (int)shape.size();
         int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
-        uint64_t elements       = 1;
+        // Bound intermediate products too, including F64/I64 conversion and zero-sized tensors.
+        const uint64_t max_nelements =
+            std::min<uint64_t>(std::numeric_limits<int64_t>::max(), std::numeric_limits<size_t>::max()) /
+            (2 * ggml_type_size(type));
+        uint64_t nelements = 1;
         for (int i = 0; i < n_dims; i++) {
-            ne[i] = shape[i].get<int64_t>();
-            if (ne[i] < 0 || (elements != 0 && static_cast<uint64_t>(ne[i]) > INT64_MAX / elements)) {
-                set_error(error, "invalid dimensions for tensor '" + name + "'");
+            if (!shape[i].is_number_unsigned()) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
                 return false;
             }
-            elements *= ne[i];
-        }
-        const uint64_t storage_size = ggml_type_size(type) * ((dtype == "F64" || dtype == "I64") ? 2 : 1);
-        if (elements % ggml_blck_size(type) != 0 ||
-            elements / ggml_blck_size(type) > INT64_MAX / storage_size) {
-            set_error(error, "invalid storage size for tensor '" + name + "'");
-            return false;
+            const uint64_t dim = shape[i].get<uint64_t>();
+            if (dim > max_nelements || (dim != 0 && nelements > max_nelements / dim)) {
+                set_error(error, "invalid shape for tensor '" + name + "'");
+                return false;
+            }
+            nelements *= std::max<uint64_t>(dim, 1);
+            ne[i] = static_cast<int64_t>(dim);
         }
 
         if (n_dims == 5) {
