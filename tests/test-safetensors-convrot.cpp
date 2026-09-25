@@ -259,8 +259,10 @@ int main() {
     std::fprintf(stderr, "ConvRot test: backend policy checks complete\n");
 
     write_fixture(path, marker, std::numeric_limits<float>::quiet_NaN());
+    std::fprintf(stderr, "ConvRot test: invalid-scale fixture written\n");
     ModelLoader invalid_scale_loader;
     GGML_ASSERT(invalid_scale_loader.init_from_file(path.string()));
+    std::fprintf(stderr, "ConvRot test: invalid-scale loader initialized\n");
     const TensorStorage& invalid_scale_weight = find_tensor(invalid_scale_loader, "layer.weight");
     ggml_init_params invalid_scale_params = {ggml_tensor_overhead() * 2 + 1024 + 4 * sizeof(float) + 4096, nullptr, false};
     ggml_context* invalid_scale_ctx       = ggml_init(invalid_scale_params);
@@ -268,6 +270,7 @@ int main() {
     ggml_tensor* invalid_raw_weight = ggml_new_tensor_2d(invalid_scale_ctx, GGML_TYPE_I8, 256, 4);
     ggml_tensor* invalid_raw_scale  = ggml_new_tensor_1d(invalid_scale_ctx, GGML_TYPE_F32, 4);
     GGML_ASSERT(!invalid_scale_loader.load_comfy_int8_tensorwise(invalid_scale_weight, invalid_raw_weight, invalid_raw_scale));
+    std::fprintf(stderr, "ConvRot test: invalid-scale rejection verified\n");
     ggml_free(invalid_scale_ctx);
 
     const std::string unsupported_group =
@@ -275,10 +278,12 @@ int main() {
     write_fixture(path, unsupported_group);
     ModelLoader invalid_loader;
     GGML_ASSERT(!invalid_loader.init_from_file(path.string()));
+    std::fprintf(stderr, "ConvRot test: invalid-group rejection verified\n");
 
     write_fixture(path, "not-json");
     ModelLoader malformed_loader;
     GGML_ASSERT(!malformed_loader.init_from_file(path.string()));
+    std::fprintf(stderr, "ConvRot test: malformed-marker rejection verified\n");
 
     if (const char* real_model_path = std::getenv("CONVROT_MODEL_PATH")) {
         ModelLoader real_loader;
