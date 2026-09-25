@@ -1,5 +1,4 @@
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -63,11 +62,8 @@ int unset_test_environment(const char* name) {
 }
 
 ggml_backend_t init_cpu_backend() {
-    std::fprintf(stderr, "ConvRot test: loading CPU backend\n");
     ggml_backend_load_all();
-    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
-    std::fprintf(stderr, "ConvRot test: CPU backend initialized\n");
-    return backend;
+    return ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
 }
 
 class InspectableLinear : public Linear {
@@ -158,7 +154,6 @@ int main() {
     ggml_free(q8_ctx);
 
     ggml_backend_t cpu_backend = init_cpu_backend();
-    std::fprintf(stderr, "ConvRot test: starting backend policy checks\n");
     GGML_ASSERT(cpu_backend != nullptr);
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "native") == 0);
     const auto native_selection = select_convrot_tensor_storage(cpu_backend,
@@ -256,13 +251,10 @@ int main() {
     GGML_ASSERT(!compatibility_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
     ggml_backend_free(cpu_backend);
-    std::fprintf(stderr, "ConvRot test: backend policy checks complete\n");
 
     write_fixture(path, marker, std::numeric_limits<float>::quiet_NaN());
-    std::fprintf(stderr, "ConvRot test: invalid-scale fixture written\n");
     ModelLoader invalid_scale_loader;
     GGML_ASSERT(invalid_scale_loader.init_from_file(path.string()));
-    std::fprintf(stderr, "ConvRot test: invalid-scale loader initialized\n");
     const TensorStorage& invalid_scale_weight = find_tensor(invalid_scale_loader, "layer.weight");
     ggml_init_params invalid_scale_params = {ggml_tensor_overhead() * 2 + 1024 + 4 * sizeof(float) + 4096, nullptr, false};
     ggml_context* invalid_scale_ctx       = ggml_init(invalid_scale_params);
@@ -270,7 +262,6 @@ int main() {
     ggml_tensor* invalid_raw_weight = ggml_new_tensor_2d(invalid_scale_ctx, GGML_TYPE_I8, 256, 4);
     ggml_tensor* invalid_raw_scale  = ggml_new_tensor_1d(invalid_scale_ctx, GGML_TYPE_F32, 4);
     GGML_ASSERT(!invalid_scale_loader.load_comfy_int8_tensorwise(invalid_scale_weight, invalid_raw_weight, invalid_raw_scale));
-    std::fprintf(stderr, "ConvRot test: invalid-scale rejection verified\n");
     ggml_free(invalid_scale_ctx);
 
     const std::string unsupported_group =
@@ -278,13 +269,10 @@ int main() {
     write_fixture(path, unsupported_group);
     ModelLoader invalid_loader;
     GGML_ASSERT(!invalid_loader.init_from_file(path.string()));
-    std::fprintf(stderr, "ConvRot test: invalid-group rejection verified\n");
 
     write_fixture(path, "not-json");
-    std::fprintf(stderr, "ConvRot test: malformed-marker fixture written\n");
     ModelLoader malformed_loader;
     GGML_ASSERT(!malformed_loader.init_from_file(path.string()));
-    std::fprintf(stderr, "ConvRot test: malformed-marker rejection verified\n");
 
     if (const char* real_model_path = std::getenv("CONVROT_MODEL_PATH")) {
         ModelLoader real_loader;
@@ -316,6 +304,5 @@ int main() {
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
-    std::fprintf(stderr, "ConvRot test: complete\n");
     return 0;
 }

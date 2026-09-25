@@ -216,10 +216,10 @@ static bool read_comfy_int8_metadata(std::ifstream& file,
             return false;
         }
 
-        nlohmann::json config;
-        try {
-            config = nlohmann::json::parse(marker_json);
-        } catch (const std::exception&) {
+        // Reject malformed markers explicitly, including builds where JSON
+        // parsing exceptions are disabled.
+        nlohmann::json config = nlohmann::json::parse(marker_json, nullptr, false);
+        if (config.is_discarded()) {
             set_error(error, "invalid JSON in ComfyUI quantization marker '" + marker_name + "'");
             return false;
         }
