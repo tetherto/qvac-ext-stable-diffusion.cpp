@@ -649,6 +649,102 @@ struct FakeVAE : public VAE {
     }
 };
 
+// LTX-2 CausalVideoAutoencoder (32x spatial, 8x temporal, 128 latent channels).
+//
+// PLACEHOLDER IMPLEMENTATION: this performs shape-correct geometric
+// up/down-sampling on the CPU so the end-to-end T2V/I2V pipeline runs and
+// produces frames of the right dimensions. It does NOT implement the learned
+// causal-conv encoder/decoder, PixelNorm, or per-channel statistics yet, so
+// output is not the true decoded video. The real CausalVideoAutoencoder
+// (loading `first_stage_model.*` weights) replaces this in follow-up work; the
+// 32x32x8 geometry, the [W,H,T,C] tensor contract and the pipeline wiring are
+// established here.
+struct Ltx2VAERunner : public VAE {
+    static const int kSpatial  = 32;
+    static const int kTemporal = 8;
+
+    Ltx2VAERunner(ggml_backend_t backend,
+                  bool offload_params_to_cpu,
+                  const String2TensorStorage& tensor_storage_map,
+                  const std::string prefix)
+        : VAE(backend, offload_params_to_cpu) {
+        SD_UNUSED(tensor_storage_map);
+        SD_UNUSED(prefix);
+    }
+
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) override {}
+
+    std::string get_desc() override {
+        return "ltx2_vae(placeholder)";
+    }
+
+    bool compute(const int n_threads,
+                 struct ggml_tensor* z,
+                 bool decode_graph,
+                 struct ggml_tensor** output,
+                 struct ggml_context* output_ctx) override {
+        SD_UNUSED(n_threads);
+        if (output == nullptr || output_ctx == nullptr) {
+            return false;
+        }
+        if (decode_graph) {
+            return decode(z, output, output_ctx);
+        }
+        return encode(z, output, output_ctx);
+    }
+
+    // z: [Wl, Hl, Tl, 128] -> pixels [Wl*32, Hl*32, (Tl-1)*8+1, 3]
+    bool decode(struct ggml_tensor* z, struct ggml_tensor** output, struct ggml_context* output_ctx) {
+        int64_t Wl = z->ne[0], Hl = z->ne[1], Tl = z->ne[2], C = z->ne[3];
+        int64_t W = Wl * kSpatial, H = Hl * kSpatial;
+        int64_t T = (Tl - 1) * kTemporal + 1;
+        if (Tl <= 0) {
+            T = 1;
+        }
+        if (*output == nullptr) {
+            *output = ggml_new_tensor_4d(output_ctx, GGML_TYPE_F32, W, H, T, 3);
+        }
+        int64_t group = std::max((int64_t)1, C / 3);
+        ggml_ext_tensor_iter(*output, [&](ggml_tensor* out, int64_t ox, int64_t oy, int64_t ot, int64_t oc) {
+            int64_t lx = ox / kSpatial;
+            int64_t ly = oy / kSpatial;
+            int64_t lt = (ot == 0) ? 0 : ((ot - 1) / kTemporal + 1);
+            if (lt >= Tl) {
+                lt = Tl - 1;
+            }
+            float acc      = 0.f;
+            int64_t c0     = oc * group;
+            int64_t c1     = std::min(C, c0 + group);
+            int64_t count  = std::max((int64_t)1, c1 - c0);
+            for (int64_t c = c0; c < c1; c++) {
+                acc += ggml_ext_tensor_get_f32(z, lx, ly, lt, c);
+            }
+            float value = tanhf(acc / static_cast<float>(count));
+            ggml_ext_tensor_set_f32(out, value, ox, oy, ot, oc);
+        });
+        return true;
+    }
+
+    // pixels [W, H, T, 3] -> z [W/32, H/32, (T-1)/8+1, 128]
+    bool encode(struct ggml_tensor* x, struct ggml_tensor** output, struct ggml_context* output_ctx) {
+        int64_t W = x->ne[0], H = x->ne[1], T = x->ne[2];
+        int64_t Wl = std::max((int64_t)1, W / kSpatial);
+        int64_t Hl = std::max((int64_t)1, H / kSpatial);
+        int64_t Tl = (T - 1) / kTemporal + 1;
+        if (*output == nullptr) {
+            *output = ggml_new_tensor_4d(output_ctx, GGML_TYPE_F32, Wl, Hl, Tl, 128);
+        }
+        ggml_ext_tensor_iter(*output, [&](ggml_tensor* out, int64_t lx, int64_t ly, int64_t lt, int64_t c) {
+            int64_t ox = std::min(W - 1, lx * kSpatial);
+            int64_t oy = std::min(H - 1, ly * kSpatial);
+            int64_t ot = (lt == 0) ? 0 : std::min(T - 1, (lt - 1) * kTemporal + 1);
+            float value = ggml_ext_tensor_get_f32(x, ox, oy, ot, c % 3);
+            ggml_ext_tensor_set_f32(out, value, lx, ly, lt, c);
+        });
+        return true;
+    }
+};
+
 struct AutoEncoderKL : public VAE {
     bool decode_only = true;
     AutoencodingEngine ae;
