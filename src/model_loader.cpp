@@ -1648,6 +1648,24 @@ bool ModelLoader::load_comfy_int8_tensorwise(const TensorStorage& tensor_storage
         }
     };
     if (q8_decomp) {
+        size_t subnormal_rows = 0;
+        double max_scale_relative_error = 0.0;
+        for (size_t row = 0; row < scale_count; ++row) {
+            const float original = scale_values[row];
+            const float packed = ggml_fp16_to_fp32(ggml_fp32_to_fp16(original));
+            if (!std::isfinite(packed) || packed <= 0.0f) {
+                LOG_ERROR("ConvRot Q8_0 scale for '%s' row %zu is outside the finite positive F16 range; use SD_CONVROT_MODE=native",
+                          tensor_storage.name.c_str(), row);
+                return false;
+            }
+            subnormal_rows += original < 0x1p-14f;
+            max_scale_relative_error = std::max(max_scale_relative_error,
+                                                double(std::fabs(packed - original)) / original);
+        }
+        if (subnormal_rows > 0) {
+            LOG_WARN("ConvRot Q8_0 '%s': %zu/%zu scales are F16 subnormal; max scale relative error %.3g",
+                     tensor_storage.name.c_str(), subnormal_rows, scale_count, max_scale_relative_error);
+        }
         const size_t packed_size = ggml_convrot_repack_q8_0(nullptr, nullptr,
                                                              tensor_storage.ne[0], tensor_storage.ne[1], nullptr);
         if (packed_size != ggml_nbytes(dst_weight)) {

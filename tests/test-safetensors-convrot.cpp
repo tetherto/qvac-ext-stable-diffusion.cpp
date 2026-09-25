@@ -153,6 +153,27 @@ int main() {
     GGML_ASSERT(static_cast<const int8_t*>(q8_weight->data)[sizeof(packed_scale) + 1] == 0);
     ggml_free(q8_ctx);
 
+    // FP16-subnormal scales are reported but remain usable; scales that would
+    // underflow to zero must not silently produce an all-zero Q8_0 row.
+    for (float scale : {1e-6f, 1e-9f}) {
+        write_fixture(path, marker, scale);
+        ModelLoader range_loader;
+        GGML_ASSERT(range_loader.init_from_file(path.string()));
+        const TensorStorage& range_weight = find_tensor(range_loader, "layer.weight");
+        ggml_init_params range_params = {ggml_tensor_overhead() + q8_bytes + 4096, nullptr, false};
+        ggml_context* range_ctx = ggml_init(range_params);
+        GGML_ASSERT(range_ctx != nullptr);
+        ggml_tensor* range_q8 = ggml_new_tensor_2d(range_ctx, GGML_TYPE_Q8_0, 256, 4);
+        GGML_ASSERT(range_loader.load_comfy_int8_tensorwise(range_weight, range_q8, nullptr) == (scale == 1e-6f));
+        if (scale == 1e-6f) {
+            ggml_fp16_t range_half;
+            memcpy(&range_half, range_q8->data, sizeof(range_half));
+            GGML_ASSERT(ggml_fp16_to_fp32(range_half) > 0.0f);
+        }
+        ggml_free(range_ctx);
+    }
+    write_fixture(path, marker);
+
     ggml_backend_t cpu_backend = init_cpu_backend();
     GGML_ASSERT(cpu_backend != nullptr);
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "native") == 0);
