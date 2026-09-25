@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -62,8 +63,11 @@ int unset_test_environment(const char* name) {
 }
 
 ggml_backend_t init_cpu_backend() {
+    std::fprintf(stderr, "ConvRot test: loading CPU backend\n");
     ggml_backend_load_all();
-    return ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    std::fprintf(stderr, "ConvRot test: CPU backend initialized\n");
+    return backend;
 }
 
 class InspectableLinear : public Linear {
@@ -154,6 +158,7 @@ int main() {
     ggml_free(q8_ctx);
 
     ggml_backend_t cpu_backend = init_cpu_backend();
+    std::fprintf(stderr, "ConvRot test: starting backend policy checks\n");
     GGML_ASSERT(cpu_backend != nullptr);
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "native") == 0);
     const auto native_selection = select_convrot_tensor_storage(cpu_backend,
@@ -251,6 +256,7 @@ int main() {
     GGML_ASSERT(!compatibility_selection.at("layer.weight").comfy_int8_native_enabled);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
     ggml_backend_free(cpu_backend);
+    std::fprintf(stderr, "ConvRot test: backend policy checks complete\n");
 
     write_fixture(path, marker, std::numeric_limits<float>::quiet_NaN());
     ModelLoader invalid_scale_loader;
@@ -304,5 +310,6 @@ int main() {
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
+    std::fprintf(stderr, "ConvRot test: complete\n");
     return 0;
 }
