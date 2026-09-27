@@ -31,27 +31,27 @@
  * this header are required.
  */
 
-#ifndef LTX2_H
-#define LTX2_H
+#ifndef __SD_LTX2_H__
+#define __SD_LTX2_H__
 
 #include "stable-diffusion.h"
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-#  ifndef SD_BUILD_SHARED_LIB
-#    define LTX2_API
-#  else
-#    ifdef SD_BUILD_DLL
-#      define LTX2_API __declspec(dllexport)
-#    else
-#      define LTX2_API __declspec(dllimport)
-#    endif
-#  endif
+#ifndef SD_BUILD_SHARED_LIB
+#define LTX2_API
 #else
-#  if __GNUC__ >= 4
-#    define LTX2_API __attribute__((visibility("default")))
-#  else
-#    define LTX2_API
-#  endif
+#ifdef SD_BUILD_DLL
+#define LTX2_API __declspec(dllexport)
+#else
+#define LTX2_API __declspec(dllimport)
+#endif
+#endif
+#else
+#if __GNUC__ >= 4
+#define LTX2_API __attribute__((visibility("default")))
+#else
+#define LTX2_API
+#endif
 #endif
 
 #ifdef __cplusplus
@@ -99,11 +99,11 @@ typedef struct ltx2_ctx_t ltx2_ctx_t;
  * @note Flash-attention (diffusion_flash_attn) is enabled by default; this
  *       is strongly recommended for the 22 B model.
  */
-LTX2_API ltx2_ctx_t* ltx2_new_ctx(const char*      diffusion_model_path,
-                                   const char*      vae_path,
-                                   const char*      gemma_path,
-                                   int              n_threads,
-                                   enum sd_type_t   wtype);
+LTX2_API ltx2_ctx_t* ltx2_new_ctx(const char* diffusion_model_path,
+                                  const char* vae_path,
+                                  const char* gemma_path,
+                                  int n_threads,
+                                  enum sd_type_t wtype);
 
 /**
  * @brief Release all resources owned by a context.
@@ -152,17 +152,17 @@ LTX2_API void ltx2_free_ctx(ltx2_ctx_t* ctx);
  *         member and then the array pointer itself with free().  Returns NULL
  *         on error (ctx is NULL, model not loaded, OOM, etc.).
  */
-LTX2_API sd_image_t* ltx2_generate_t2v(ltx2_ctx_t*  ctx,
-                                        const char*  prompt,
-                                        const char*  negative_prompt,
-                                        int          width,
-                                        int          height,
-                                        int          video_frames,
-                                        int          fps,
-                                        int          sample_steps,
-                                        float        cfg_scale,
-                                        int64_t      seed,
-                                        int*         out_num_frames);
+LTX2_API sd_image_t* ltx2_generate_t2v(ltx2_ctx_t* ctx,
+                                       const char* prompt,
+                                       const char* negative_prompt,
+                                       int width,
+                                       int height,
+                                       int video_frames,
+                                       int fps,
+                                       int sample_steps,
+                                       float cfg_scale,
+                                       int64_t seed,
+                                       int* out_num_frames);
 
 /**
  * @brief Generate a video from an initial image and a text prompt (I2V).
@@ -190,21 +190,21 @@ LTX2_API sd_image_t* ltx2_generate_t2v(ltx2_ctx_t*  ctx,
  *
  * @return Same ownership and error semantics as ltx2_generate_t2v().
  */
-LTX2_API sd_image_t* ltx2_generate_i2v(ltx2_ctx_t*  ctx,
-                                        sd_image_t   init_image,
-                                        const char*  prompt,
-                                        const char*  negative_prompt,
-                                        int          width,
-                                        int          height,
-                                        int          video_frames,
-                                        int          fps,
-                                        int          sample_steps,
-                                        float        cfg_scale,
-                                        int64_t      seed,
-                                        int*         out_num_frames);
+LTX2_API sd_image_t* ltx2_generate_i2v(ltx2_ctx_t* ctx,
+                                       sd_image_t init_image,
+                                       const char* prompt,
+                                       const char* negative_prompt,
+                                       int width,
+                                       int height,
+                                       int video_frames,
+                                       int fps,
+                                       int sample_steps,
+                                       float cfg_scale,
+                                       int64_t seed,
+                                       int* out_num_frames);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LTX2_H */
+#endif  // __SD_LTX2_H__
