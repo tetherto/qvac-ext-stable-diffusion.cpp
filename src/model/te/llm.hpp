@@ -1771,7 +1771,9 @@ namespace LLM {
                 }
             }
             model = LLM(config, enable_vision, config.llama_cpp_style);
-            model.init(params_ctx, tensor_storage_map, prefix);
+            model.init(params_ctx,
+                       select_convrot_tensor_storage(backend, tensor_storage_map, "LLM", prefix),
+                       prefix);
         }
 
         std::string get_desc() override {
