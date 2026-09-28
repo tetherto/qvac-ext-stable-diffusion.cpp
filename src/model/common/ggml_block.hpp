@@ -1,3 +1,4 @@
+#include "core/convrot.hpp"
 #ifndef __SD_MODEL_COMMON_GGML_BLOCK_HPP__
 #define __SD_MODEL_COMMON_GGML_BLOCK_HPP__
 
@@ -148,6 +149,14 @@ protected:
     bool force_f32;
     bool force_prec_f32;
     bool has_weight_scale       = false;
+    // This is distinct from `weight_scale`: the latter is a regular
+    // post-linear model parameter, while ConvRot's F32 vector is a private
+    // sidecar input to GGML_OP_MUL_MAT_CONVROT.
+    bool has_convrot_weight      = false;
+    bool use_convrot_f16_compat  = false;
+    bool use_convrot_q8_decomp   = false;
+    bool use_convrot_rotation_op = false;
+    bool use_convrot_fast_h256   = false;
     bool int8_convrot           = false;
     int int8_convrot_group_size = 0;
     float scale;
@@ -158,6 +167,37 @@ protected:
         has_weight_scale        = false;
         int8_convrot            = false;
         int8_convrot_group_size = 0;
+        has_convrot_weight      = false;
+        use_convrot_f16_compat  = false;
+        use_convrot_q8_decomp   = false;
+        use_convrot_rotation_op = false;
+        use_convrot_fast_h256   = false;
+        const auto storage_it   = tensor_storage_map.find(prefix + "weight");
+        if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
+            storage_it->second.comfy_int8_native_enabled) {
+            has_convrot_weight = true;
+            if (storage_it->second.comfy_int8_q8_decomp_enabled) {
+                params["weight"]        = ggml_new_tensor_2d(ctx, GGML_TYPE_Q8_0, in_features, out_features);
+                use_convrot_q8_decomp   = true;
+                use_convrot_rotation_op = storage_it->second.comfy_int8_convrot_op_enabled;
+                if (!use_convrot_rotation_op) {
+                    params["weight.convrot_h256"] = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 256, 256);
+                    const char* h256_mode         = std::getenv("SD_CONVROT_H256_MODE");
+                    use_convrot_fast_h256         = h256_mode != nullptr && std::strcmp(h256_mode, "fast") == 0;
+                    if (h256_mode != nullptr && !use_convrot_fast_h256 && std::strcmp(h256_mode, "dense") != 0) {
+                        throw std::runtime_error("invalid SD_CONVROT_H256_MODE; expected 'dense' or 'fast'");
+                    }
+                }
+            } else {
+                params["weight"]               = ggml_new_tensor_2d(ctx, GGML_TYPE_I8, in_features, out_features);
+                params["weight.convrot_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+                use_convrot_f16_compat         = storage_it->second.name.rfind("text_encoders.llm.", 0) == 0;
+            }
+            if (bias) {
+                params["bias"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, out_features);
+            }
+            return;
+        }
         enum ggml_type wtype    = get_type(prefix + "weight", tensor_storage_map, GGML_TYPE_F32);
         if (in_features % ggml_blck_size(wtype) != 0 || force_f32) {
             wtype = GGML_TYPE_F32;
@@ -236,6 +276,51 @@ public:
         }
         ggml_tensor* linear_bias = has_weight_scale ? nullptr : b;
         ggml_tensor* out         = nullptr;
+        if (has_convrot_weight) {
+            if (use_convrot_q8_decomp) {
+                if (use_convrot_rotation_op) {
+                    ggml_tensor* rotated = ggml_convrot(ctx->ggml_ctx, x, 256);
+                    ggml_set_name(rotated, (prefix + "trace.convrot.post_h256").c_str());
+                    out = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+                } else {
+                    // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate
+                    // each 256-wide block before the stock Q8_0 matmul.
+                    ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
+                    ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
+                                                              ggml_nelements(contiguous) / 256);
+                    ggml_set_name(blocks, (prefix + "trace.convrot.pre_h256").c_str());
+                    ggml_tensor* rotated = ggml_mul_mat(ctx->ggml_ctx, params["weight.convrot_h256"], blocks);
+                    ggml_set_name(rotated, (prefix + "trace.convrot.post_h256").c_str());
+                    if (use_convrot_fast_h256) {
+                        ggml_mul_mat_set_hint(rotated, GGML_HINT_SRC0_IS_CONVROT_H256);
+                    }
+                    rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+                    out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
+                }
+                ggml_set_name(out, (prefix + "trace.convrot.post_q8_gemm").c_str());
+            } else {
+                // ConvRot weights and their tensor-wise scales remain compact
+                // at rest. The operator owns the scale semantics.
+                out = ggml_mul_mat_convrot(ctx->ggml_ctx, x, w, params["weight.convrot_scale"], 256);
+                ggml_set_name(out, (prefix + "trace.convrot.native_out").c_str());
+                if (use_convrot_f16_compat) {
+                    ggml_mul_mat_convrot_set_f16_compat(out, true);
+                }
+            }
+            if (b != nullptr) {
+                out = ggml_add_inplace(ctx->ggml_ctx, out, b);
+            }
+            if (ctx->weight_adapter) {
+                WeightAdapter::ForwardParams forward_params;
+                forward_params.op_type               = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
+                forward_params.linear.force_prec_f32 = force_prec_f32;
+                forward_params.linear.scale          = scale;
+                out = ctx->weight_adapter->add_lora_to_output(
+                    ctx->ggml_ctx, ctx->backend, x, w, out, prefix, forward_params);
+            }
+
+            return out;
+        }
         if (w->type == GGML_TYPE_I8) {
             if (x->type != GGML_TYPE_F32) {
                 x = ggml_ext_cast_f32(ctx->ggml_ctx, ctx->backend, x);

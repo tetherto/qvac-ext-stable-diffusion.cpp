@@ -231,7 +231,8 @@ namespace safetensors_metadata_test {
         bool caught = false;
         try {
             SDMetadataOnlyReadScope scope;
-            read_file(path);
+            GGML_ASSERT(!read_file(path));
+            throw std::runtime_error("metadata scope cleanup");
         } catch (const std::exception&) {
             caught = true;
         }
