@@ -963,8 +963,8 @@ void ModelLoader::set_wtype_override(ggml_type wtype, std::string tensor_type_ru
         if (!tensor_should_be_converted(tensor_storage, dst_type)) {
             continue;
         }
-        if (tensor_storage.is_comfy_int8_convrot_weight() && ggml_is_quantized(dst_type)) {
-            LOG_WARN("ignoring quantized weight-type override for ConvRot tensor '%s'", name.c_str());
+        if (tensor_storage.is_comfy_int8_tensorwise && ggml_is_quantized(dst_type)) {
+            LOG_WARN("ignoring quantized weight-type override for ComfyUI Int8 tensor '%s'", name.c_str());
             continue;
         }
         tensor_storage.expected_type = dst_type;

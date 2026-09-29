@@ -11,6 +11,7 @@
 
 #include "core/ggml_extend.hpp"
 #include "core/util.h"
+#include "ggml-cpu.h"
 #include "model_io/binary_io.h"
 #include "model_io/safetensors_io.h"
 #include "model_loader.h"
@@ -120,6 +121,7 @@ namespace {
         bool fast_h256_enabled() const { return use_convrot_fast_h256; }
         bool rotation_op_enabled() const { return use_convrot_rotation_op; }
         ggml_type weight_type() const { return params.at("weight")->type; }
+        ggml_tensor* parameter(const std::string& name) const { return params.at(name); }
     };
 
 }  // namespace
@@ -425,6 +427,70 @@ int main() {
     compat_linear.init(compat_graph_ctx, compatibility_selection, "layer");
     GGML_ASSERT(compat_linear.weight_type() == GGML_TYPE_F16);
     ggml_free(compat_graph_ctx);
+
+    const std::vector<float> bias_values = {0.25f, -0.5f, 1.0f, -1.25f};
+    std::vector<float> input_values(256 * 2);
+    for (size_t i = 0; i < input_values.size(); ++i) {
+        input_values[i] = 0.5f + static_cast<float>(static_cast<int>((i * 17) % 29) - 14) * 0.125f;
+    }
+    auto run_linear = [&](const String2TensorStorage& selection) {
+        ggml_init_params exec_params = {8 * 1024 * 1024, nullptr, false};
+        ggml_context* exec_ctx       = ggml_init(exec_params);
+        GGML_ASSERT(exec_ctx != nullptr);
+        InspectableLinear linear(256, 4, true, false, true, 1.f / 128.f);
+        linear.init(exec_ctx, selection, "layer");
+        ggml_tensor* exec_weight = linear.parameter("weight");
+        if (exec_weight->type == GGML_TYPE_Q8_0) {
+            GGML_ASSERT(loader.load_comfy_int8_tensorwise(weight, exec_weight, nullptr));
+            if (!linear.rotation_op_enabled()) {
+                ggml_tensor* h256 = linear.parameter("weight.convrot_h256");
+                std::vector<float> matrix(256 * 256, 0.f);
+                for (size_t row = 0; row < 256; ++row) {
+                    matrix[row * 256 + row] = 1.f;
+                    float* values = matrix.data() + row * 256;
+                    for (size_t stride = 1; stride < 256; stride *= 4) {
+                        for (size_t base = 0; base < 256; base += 4 * stride) {
+                            for (size_t i = 0; i < stride; ++i) {
+                                float* v      = values + base + i;
+                                const float a = v[0], b = v[stride], c = v[2 * stride], d = v[3 * stride];
+                                v[0]          = (a + b + c - d) * 0.5f;
+                                v[stride]     = (a + b - c + d) * 0.5f;
+                                v[2 * stride] = (a - b + c + d) * 0.5f;
+                                v[3 * stride] = (-a + b + c + d) * 0.5f;
+                            }
+                        }
+                    }
+                }
+                memcpy(h256->data, matrix.data(), matrix.size() * sizeof(float));
+            }
+        } else {
+            GGML_ASSERT(exec_weight->type == GGML_TYPE_F16);
+            GGML_ASSERT(loader.load_tensor(weight, exec_weight));
+        }
+        memcpy(linear.parameter("bias")->data, bias_values.data(), bias_values.size() * sizeof(float));
+        ggml_tensor* exec_input = ggml_new_tensor_2d(exec_ctx, GGML_TYPE_F32, 256, 2);
+        memcpy(exec_input->data, input_values.data(), input_values.size() * sizeof(float));
+        GGMLRunnerContext exec_runner;
+        exec_runner.ggml_ctx = exec_ctx;
+        ggml_tensor* exec_output = linear.forward(&exec_runner, exec_input);
+        ggml_cgraph* graph = ggml_new_graph(exec_ctx);
+        ggml_build_forward_expand(graph, exec_output);
+        GGML_ASSERT(ggml_graph_compute_with_ctx(exec_ctx, graph, 1) == GGML_STATUS_SUCCESS);
+        std::vector<float> values(8);
+        memcpy(values.data(), exec_output->data, values.size() * sizeof(float));
+        ggml_free(exec_ctx);
+        return values;
+    };
+    const auto reference_values = run_linear(compatibility_selection);
+    GGML_ASSERT(std::fabs(reference_values[0] - bias_values[0]) > 0.1f);
+    GGML_ASSERT(std::fabs(reference_values[4] - bias_values[0]) > 0.1f);
+    for (const auto& selection : {automatic_selection, dense_selection}) {
+        const auto q8_values = run_linear(selection);
+        for (size_t i = 0; i < q8_values.size(); ++i) {
+            GGML_ASSERT(std::isfinite(q8_values[i]));
+            GGML_ASSERT(std::fabs(q8_values[i] - reference_values[i]) < 0.05f);
+        }
+    }
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
     ggml_backend_free(cpu_backend);
 
@@ -443,6 +509,22 @@ int main() {
     GGML_ASSERT(ggml_fp16_to_fp32(static_cast<const ggml_fp16_t*>(wide_decoded->data)[0]) == 1.0f);
     GGML_ASSERT(ggml_fp16_to_fp32(static_cast<const ggml_fp16_t*>(wide_decoded->data)[4999]) == 0.0f);
     ggml_free(wide_ctx);
+
+    write_fixture(path, "{\"format\":\"int8_tensorwise\"}", 0.5f, 256);
+    ModelLoader plain_loader;
+    GGML_ASSERT(plain_loader.init_from_file(path.string()));
+    plain_loader.set_wtype_override(GGML_TYPE_Q8_0, "");
+    const TensorStorage& plain_weight = find_tensor(plain_loader, "layer.weight");
+    GGML_ASSERT(plain_weight.is_comfy_int8_tensorwise && !plain_weight.comfy_int8_convrot);
+    GGML_ASSERT(plain_weight.expected_type == GGML_TYPE_F16);
+    ggml_init_params plain_params = {ggml_tensor_overhead() + 4 * 256 * sizeof(ggml_fp16_t) + 4096,
+                                     nullptr, false};
+    ggml_context* plain_ctx = ggml_init(plain_params);
+    GGML_ASSERT(plain_ctx != nullptr);
+    ggml_tensor* plain_decoded = ggml_new_tensor_2d(plain_ctx, GGML_TYPE_F16, 256, 4);
+    GGML_ASSERT(plain_loader.load_tensor(plain_weight, plain_decoded));
+    GGML_ASSERT(ggml_fp16_to_fp32(static_cast<const ggml_fp16_t*>(plain_decoded->data)[0]) == 1.f);
+    ggml_free(plain_ctx);
 
     write_fixture(path, marker, std::numeric_limits<float>::quiet_NaN());
     ModelLoader invalid_scale_loader;
