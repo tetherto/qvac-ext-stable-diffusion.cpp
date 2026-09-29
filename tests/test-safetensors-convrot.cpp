@@ -464,7 +464,7 @@ int main() {
                 memcpy(h256->data, matrix.data(), matrix.size() * sizeof(float));
             }
         } else {
-            GGML_ASSERT(exec_weight->type == GGML_TYPE_F16);
+            GGML_ASSERT(exec_weight->type == GGML_TYPE_F16 || exec_weight->type == GGML_TYPE_F32);
             GGML_ASSERT(loader.load_tensor(weight, exec_weight));
         }
         memcpy(linear.parameter("bias")->data, bias_values.data(), bias_values.size() * sizeof(float));
@@ -481,7 +481,9 @@ int main() {
         ggml_free(exec_ctx);
         return values;
     };
-    const auto reference_values = run_linear(compatibility_selection);
+    auto f32_compat_selection = compatibility_selection;
+    f32_compat_selection.at("layer.weight").expected_type = GGML_TYPE_F32;
+    const auto reference_values = run_linear(f32_compat_selection);
     GGML_ASSERT(std::fabs(reference_values[0] - bias_values[0]) > 0.1f);
     GGML_ASSERT(std::fabs(reference_values[4] - bias_values[0]) > 0.1f);
     for (const auto& selection : {automatic_selection, dense_selection}) {
