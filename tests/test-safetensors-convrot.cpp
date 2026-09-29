@@ -11,7 +11,6 @@
 
 #include "core/ggml_extend.hpp"
 #include "core/util.h"
-#include "ggml-cpu.h"
 #include "model_io/binary_io.h"
 #include "model_io/safetensors_io.h"
 #include "model_loader.h"
@@ -475,7 +474,7 @@ int main() {
         ggml_tensor* exec_output = linear.forward(&exec_runner, exec_input);
         ggml_cgraph* graph = ggml_new_graph(exec_ctx);
         ggml_build_forward_expand(graph, exec_output);
-        GGML_ASSERT(ggml_graph_compute_with_ctx(exec_ctx, graph, 1) == GGML_STATUS_SUCCESS);
+        GGML_ASSERT(ggml_backend_graph_compute(cpu_backend, graph) == GGML_STATUS_SUCCESS);
         std::vector<float> values(8);
         memcpy(values.data(), exec_output->data, values.size() * sizeof(float));
         ggml_free(exec_ctx);
