@@ -4150,7 +4150,7 @@ protected:
         use_convrot_rotation_op = false;
         use_convrot_fast_h256   = false;
         const auto storage_it   = tensor_storage_map.find(prefix + "weight");
-        if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
+        if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() && !force_f32 &&
             storage_it->second.comfy_int8_native_enabled) {
             has_convrot_weight = true;
             if (storage_it->second.comfy_int8_q8_decomp_enabled) {
@@ -4224,14 +4224,15 @@ public:
         ggml_tensor* out         = nullptr;
         if (has_convrot_weight) {
             if (use_convrot_q8_decomp) {
+                ggml_tensor* scaled_x = scale != 1.f ? ggml_ext_scale(ctx->ggml_ctx, x, scale) : x;
                 if (use_convrot_rotation_op) {
-                    ggml_tensor* rotated = ggml_convrot(ctx->ggml_ctx, x, 256);
+                    ggml_tensor* rotated = ggml_convrot(ctx->ggml_ctx, scaled_x, 256);
                     ggml_set_name(rotated, (prefix + "trace.convrot.post_h256").c_str());
                     out = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
                 } else {
                     // H256 is symmetric: (H*w_row).x == w_row.(H*x). Rotate
                     // each 256-wide block before the stock Q8_0 matmul.
-                    ggml_tensor* contiguous = ggml_is_contiguous(x) ? x : ggml_cont(ctx->ggml_ctx, x);
+                    ggml_tensor* contiguous = ggml_is_contiguous(scaled_x) ? scaled_x : ggml_cont(ctx->ggml_ctx, scaled_x);
                     ggml_tensor* blocks     = ggml_reshape_2d(ctx->ggml_ctx, contiguous, 256,
                                                               ggml_nelements(contiguous) / 256);
                     ggml_set_name(blocks, (prefix + "trace.convrot.pre_h256").c_str());
@@ -4243,7 +4244,13 @@ public:
                     rotated = ggml_reshape_4d(ctx->ggml_ctx, rotated, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
                     out     = ggml_mul_mat(ctx->ggml_ctx, w, rotated);
                 }
+                if (force_prec_f32) {
+                    ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+                }
                 ggml_set_name(out, (prefix + "trace.convrot.post_q8_gemm").c_str());
+                if (scale != 1.f) {
+                    out = ggml_ext_scale(ctx->ggml_ctx, out, 1.f / scale);
+                }
             } else {
                 // ConvRot weights and their tensor-wise scales remain compact
                 // at rest. The operator owns the scale semantics.
@@ -4254,6 +4261,9 @@ public:
                 }
             }
             if (b != nullptr) {
+                if (ctx->weight_adapter) {
+                    b = ctx->weight_adapter->patch_weight(ctx->ggml_ctx, ctx->backend, b, prefix + "bias");
+                }
                 out = ggml_add_inplace(ctx->ggml_ctx, out, b);
             }
             if (ctx->weight_adapter) {

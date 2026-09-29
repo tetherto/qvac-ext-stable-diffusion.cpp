@@ -1023,6 +1023,12 @@ public:
                     break;
                 }
             }
+            for (const auto& [name, storage] : model_loader.get_tensor_storage_map()) {
+                if (storage.is_comfy_int8_convrot_weight()) {
+                    have_quantized_weight = true;
+                    break;
+                }
+            }
             // Avoid full-model LoRA merge buffers on constrained setups.
             const bool params_offloaded      = params_backend_for(SDBackendModule::DIFFUSION) != backend_for(SDBackendModule::DIFFUSION);
             const bool streaming_constrained = stream_layers || params_offloaded;

@@ -590,6 +590,18 @@ bool ModelManager::apply_loras_to_params(const std::vector<TensorState*>& states
             state->applied_lora_epoch = current_lora_epoch_;
             continue;
         }
+        const auto& storage_map = model_loader_.get_tensor_storage_map();
+        const auto storage_it   = storage_map.find(state->name);
+        if (storage_it != storage_map.end() && storage_it->second.is_comfy_int8_convrot_weight() &&
+            (state->tensor->type == GGML_TYPE_I8 || state->tensor->type == GGML_TYPE_Q8_0)) {
+            if (!warned_convrot_lora_skip_) {
+                LOG_WARN("model manager skipping immediate LoRA application to ConvRot I8/Q8_0 weights "
+                         "(use --lora-apply-mode at_runtime)");
+                warned_convrot_lora_skip_ = true;
+            }
+            state->applied_lora_epoch = current_lora_epoch_;
+            continue;
+        }
         if (state->tensor->data == nullptr) {
             LOG_ERROR("model manager lora target tensor '%s' is not prepared", state->name.c_str());
             return false;
