@@ -119,6 +119,7 @@ namespace {
         using Linear::Linear;
         bool fast_h256_enabled() const { return use_convrot_fast_h256; }
         bool rotation_op_enabled() const { return use_convrot_rotation_op; }
+        ggml_type weight_type() const { return params.at("weight")->type; }
     };
 
 }  // namespace
@@ -195,6 +196,8 @@ int main() {
     GGML_ASSERT(weight.comfy_int8_scale.nbytes == 4 * sizeof(float));
     GGML_ASSERT(weight.is_comfy_int8_convrot_weight());
     GGML_ASSERT(loader.get_tensor_storage_map().find("layer.weight_scale") == loader.get_tensor_storage_map().end());
+    loader.set_wtype_override(GGML_TYPE_Q8_0, "");
+    GGML_ASSERT(find_tensor(loader, "layer.weight").expected_type == GGML_TYPE_F16);
 
     ggml_init_params params = {4096, nullptr, false};
     ggml_context* ctx       = ggml_init(params);
@@ -299,6 +302,34 @@ int main() {
     GGML_ASSERT(op_output->src[1] != nullptr && op_output->src[1]->op == GGML_OP_CONVROT);
     ggml_free(op_graph_ctx);
 
+    ggml_init_params precise_graph_params = {1024 * 1024, nullptr, true};
+    ggml_context* precise_graph_ctx       = ggml_init(precise_graph_params);
+    GGML_ASSERT(precise_graph_ctx != nullptr);
+    InspectableLinear precise_linear(256, 4, false, false, true, 1.f / 128.f);
+    precise_linear.init(precise_graph_ctx, automatic_selection, "layer");
+    ggml_tensor* precise_input = ggml_new_tensor_2d(precise_graph_ctx, GGML_TYPE_F32, 256, 2);
+    GGMLRunnerContext precise_runner_ctx;
+    precise_runner_ctx.ggml_ctx = precise_graph_ctx;
+    ggml_tensor* precise_output = precise_linear.forward(&precise_runner_ctx, precise_input);
+    GGML_ASSERT(precise_output->op == GGML_OP_SCALE);
+    ggml_tensor* precise_matmul = precise_output->src[0];
+    GGML_ASSERT(precise_matmul != nullptr && precise_matmul->op == GGML_OP_MUL_MAT);
+    int32_t precision = GGML_PREC_DEFAULT;
+    memcpy(&precision, precise_matmul->op_params, sizeof(precision));
+    GGML_ASSERT(precision == GGML_PREC_F32);
+    GGML_ASSERT(precise_matmul->src[1]->op == GGML_OP_CONVROT);
+    GGML_ASSERT(precise_matmul->src[1]->src[0]->op == GGML_OP_SCALE);
+    GGML_ASSERT(precise_matmul->src[1]->src[0]->src[0] == precise_input);
+    ggml_free(precise_graph_ctx);
+
+    ggml_init_params forced_graph_params = {1024 * 1024, nullptr, true};
+    ggml_context* forced_graph_ctx       = ggml_init(forced_graph_params);
+    GGML_ASSERT(forced_graph_ctx != nullptr);
+    InspectableLinear forced_linear(256, 4, false, true);
+    forced_linear.init(forced_graph_ctx, automatic_selection, "layer");
+    GGML_ASSERT(forced_linear.weight_type() == GGML_TYPE_F32);
+    ggml_free(forced_graph_ctx);
+
     GGML_ASSERT(set_test_environment("SD_CONVROT_MODE", "dense") == 0);
     const auto dense_selection = select_convrot_tensor_storage(cpu_backend,
                                                                loader.get_tensor_storage_map(),
@@ -306,6 +337,30 @@ int main() {
     GGML_ASSERT(dense_selection.at("layer.weight").comfy_int8_q8_decomp_enabled);
     GGML_ASSERT(!dense_selection.at("layer.weight").comfy_int8_convrot_op_enabled);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
+
+    ggml_init_params dense_precise_params = {1024 * 1024, nullptr, true};
+    ggml_context* dense_precise_ctx       = ggml_init(dense_precise_params);
+    GGML_ASSERT(dense_precise_ctx != nullptr);
+    InspectableLinear dense_precise_linear(256, 4, false, false, true, 1.f / 128.f);
+    dense_precise_linear.init(dense_precise_ctx, dense_selection, "layer");
+    ggml_tensor* dense_precise_input = ggml_new_tensor_2d(dense_precise_ctx, GGML_TYPE_F32, 256, 2);
+    GGMLRunnerContext dense_precise_runner;
+    dense_precise_runner.ggml_ctx = dense_precise_ctx;
+    ggml_tensor* dense_precise_output = dense_precise_linear.forward(&dense_precise_runner, dense_precise_input);
+    GGML_ASSERT(dense_precise_output->op == GGML_OP_SCALE);
+    ggml_tensor* dense_precise_matmul = dense_precise_output->src[0];
+    GGML_ASSERT(dense_precise_matmul->op == GGML_OP_MUL_MAT);
+    int32_t dense_precision = GGML_PREC_DEFAULT;
+    memcpy(&dense_precision, dense_precise_matmul->op_params, sizeof(dense_precision));
+    GGML_ASSERT(dense_precision == GGML_PREC_F32);
+    ggml_tensor* dense_rotated = dense_precise_matmul->src[1];
+    GGML_ASSERT(dense_rotated->op == GGML_OP_RESHAPE);
+    GGML_ASSERT(dense_rotated->src[0]->op == GGML_OP_MUL_MAT);
+    ggml_tensor* dense_blocks = dense_rotated->src[0]->src[1];
+    GGML_ASSERT(dense_blocks->op == GGML_OP_RESHAPE);
+    GGML_ASSERT(dense_blocks->src[0]->op == GGML_OP_SCALE);
+    GGML_ASSERT(dense_blocks->src[0]->src[0] == dense_precise_input);
+    ggml_free(dense_precise_ctx);
 
     auto h256_hint_for_mode = [&](const char* mode) {
         if (mode == nullptr) {
@@ -363,6 +418,13 @@ int main() {
                                                                        loader.get_tensor_storage_map(),
                                                                        "ConvRot loader test");
     GGML_ASSERT(!compatibility_selection.at("layer.weight").comfy_int8_native_enabled);
+    ggml_init_params compat_graph_params = {1024 * 1024, nullptr, true};
+    ggml_context* compat_graph_ctx       = ggml_init(compat_graph_params);
+    GGML_ASSERT(compat_graph_ctx != nullptr);
+    InspectableLinear compat_linear(256, 4, false);
+    compat_linear.init(compat_graph_ctx, compatibility_selection, "layer");
+    GGML_ASSERT(compat_linear.weight_type() == GGML_TYPE_F16);
+    ggml_free(compat_graph_ctx);
     GGML_ASSERT(unset_test_environment("SD_CONVROT_MODE") == 0);
     ggml_backend_free(cpu_backend);
 
