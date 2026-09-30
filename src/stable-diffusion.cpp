@@ -1023,6 +1023,12 @@ public:
                     break;
                 }
             }
+            for (const auto& [name, storage] : model_loader.get_tensor_storage_map()) {
+                if (storage.is_comfy_int8_convrot_weight()) {
+                    have_quantized_weight = true;
+                    break;
+                }
+            }
             // Avoid full-model LoRA merge buffers on constrained setups.
             const bool params_offloaded      = params_backend_for(SDBackendModule::DIFFUSION) != backend_for(SDBackendModule::DIFFUSION);
             const bool streaming_constrained = stream_layers || params_offloaded;
@@ -3995,7 +4001,15 @@ sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
         return nullptr;
     }
 
-    if (!sd_ctx->sd->init(sd_ctx_params)) {
+    bool initialized = false;
+    try {
+        initialized = sd_ctx->sd->init(sd_ctx_params);
+    } catch (const std::exception& error) {
+        LOG_ERROR("failed to initialize Stable Diffusion context: %s", error.what());
+    } catch (...) {
+        LOG_ERROR("failed to initialize Stable Diffusion context: unknown exception");
+    }
+    if (!initialized) {
         delete sd_ctx->sd;
         sd_ctx->sd = nullptr;
         free(sd_ctx);

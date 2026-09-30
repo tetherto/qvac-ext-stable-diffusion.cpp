@@ -101,6 +101,37 @@ int main() {
         GGML_ASSERT(loha.count_compatible_model_tensors(model_tensors) == 1);
     }
     {
+        ggml_init_params graph_init = {1024 * 1024, nullptr, true};
+        ggml_context* graph_ctx     = ggml_init(graph_init);
+        GGML_ASSERT(graph_ctx != nullptr);
+        ggml_tensor* one = ggml_new_tensor_1d(graph_ctx, GGML_TYPE_F32, 1);
+        ggml_set_name(one, "ggml_runner_build_in_tensor:one");
+        ggml_tensor* zero = ggml_new_tensor_1d(graph_ctx, GGML_TYPE_I32, 1);
+        ggml_set_name(zero, "ggml_runner_build_in_tensor:zero_int");
+        ggml_tensor* weight = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 4, 6);
+        ggml_tensor* input  = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 4, 2);
+        for (const char* kind : {"diff", "loha"}) {
+            auto model = std::make_shared<LoraModel>(kind, cpu, cpu, missing_path);
+            const std::string prefix = "lora.model.diffusion_model.test.weight.";
+            if (std::string(kind) == "diff") {
+                model->lora_tensors[prefix + "diff"] = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 4, 6);
+            } else {
+                model->lora_tensors[prefix + "hada_w1_b"] = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 4, 2);
+                model->lora_tensors[prefix + "hada_w1_a"] = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 2, 6);
+                model->lora_tensors[prefix + "hada_w2_b"] = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 4, 2);
+                model->lora_tensors[prefix + "hada_w2_a"] = ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 2, 6);
+            }
+            MultiLoraAdapter adapter({model});
+            WeightAdapter::ForwardParams forward_params;
+            forward_params.op_type = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
+            ggml_tensor* delta = adapter.lora_output_delta(graph_ctx, cpu, input, weight,
+                                                           "model.diffusion_model.test.", forward_params);
+            GGML_ASSERT(delta != nullptr && delta->ne[0] == 6 && delta->ne[1] == 2);
+            GGML_ASSERT(!model->applied_lora_tensors.empty());
+        }
+        ggml_free(graph_ctx);
+    }
+    {
         LoraModel lokr("lokr", cpu, cpu, missing_path);
         lokr.lora_tensors
             ["lora.model.diffusion_model.test.weight.lokr_w1"] =
