@@ -103,6 +103,7 @@ private:
     std::map<std::pair<uintptr_t, ggml_backend_t>, RuntimeResidency> runtime_residencies_;
     std::map<uintptr_t, std::function<bool()>> workspace_reclaimers_;
     bool warned_split_lora_skip_ = false;
+    bool warned_convrot_lora_skip_ = false;
     std::set<std::string> common_ignore_tensors_;
     std::vector<LoraSpec> loras_;
     std::set<ModelLoader::FileId> lora_sources_;

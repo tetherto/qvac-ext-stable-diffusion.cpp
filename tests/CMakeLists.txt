@@ -61,3 +61,9 @@ add_executable(test-vae-name-conversion test-vae-name-conversion.cpp)
 target_include_directories(test-vae-name-conversion PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-vae-name-conversion PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-vae-name-conversion COMMAND test-vae-name-conversion)
+
+add_executable(test-safetensors-convrot test-safetensors-convrot.cpp)
+target_include_directories(test-safetensors-convrot PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-safetensors-convrot PRIVATE stable-diffusion zip ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME test-safetensors-convrot COMMAND test-safetensors-convrot)
