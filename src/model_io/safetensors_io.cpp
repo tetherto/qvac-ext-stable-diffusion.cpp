@@ -115,6 +115,11 @@ struct ComfyInt8Info {
     TensorStorageSidecar scale;
 };
 
+struct ComfyNvfp4Info {
+    TensorStorageSidecar block_scale;
+    uint64_t global_scale_offset = 0;
+};
+
 static bool read_safetensors_tensor_info(const nlohmann::json& value,
                                          const std::string& name,
                                          uint64_t data_start,
@@ -307,6 +312,94 @@ static bool read_comfy_int8_metadata(std::ifstream& file,
     return true;
 }
 
+static bool read_comfy_nvfp4_metadata(std::ifstream& file,
+                                      const std::map<std::string, SafetensorsTensorInfo>& tensors,
+                                      uint64_t data_start,
+                                      std::map<std::string, ComfyNvfp4Info>* result,
+                                      std::set<std::string>* sidecar_names,
+                                      std::string* error) {
+    result->clear();
+    sidecar_names->clear();
+    constexpr const char* marker_suffix = ".comfy_quant";
+    constexpr size_t marker_suffix_len = 12;
+    for (const auto& [marker_name, marker] : tensors) {
+        if (!ends_with(marker_name, marker_suffix)) {
+            continue;
+        }
+        if (marker.dtype != "U8" || marker.end - marker.begin > 4096) {
+            set_error(error, "invalid ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+        std::string marker_json(static_cast<size_t>(marker.end - marker.begin), '\0');
+        file.clear();
+        file.seekg(static_cast<std::streamoff>(data_start + marker.begin));
+        file.read(marker_json.data(), static_cast<std::streamsize>(marker_json.size()));
+        if (!file) {
+            set_error(error, "failed to read ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+        const nlohmann::json config = nlohmann::json::parse(marker_json, nullptr, false);
+        if (config.is_discarded() || !config.is_object() || !config.contains("format") ||
+            !config["format"].is_string()) {
+            set_error(error, "invalid ComfyUI quantization marker '" + marker_name + "'");
+            return false;
+        }
+        if (config["format"].get<std::string>() != "nvfp4") {
+            continue;
+        }
+
+        const std::string base = marker_name.substr(0, marker_name.size() - marker_suffix_len);
+        const auto weight_it = tensors.find(base + ".weight");
+        const auto block_it = tensors.find(base + ".weight_scale");
+        const auto global_it = tensors.find(base + ".weight_scale_2");
+        if (weight_it == tensors.end() || block_it == tensors.end() || global_it == tensors.end()) {
+            set_error(error, "ComfyUI NVFP4 marker '" + marker_name + "' is missing its weight or scales");
+            return false;
+        }
+        const auto& weight = weight_it->second;
+        const auto& block = block_it->second;
+        const auto& global = global_it->second;
+        if (weight.dtype != "U8" || weight.shape.size() != 2 || weight.shape[0] <= 0 ||
+            weight.shape[1] <= 0 || weight.shape[1] > std::numeric_limits<int64_t>::max() / 2 ||
+            block.dtype != "F8_E4M3" || block.shape.size() != 2 ||
+            global.dtype != "F32" || !global.shape.empty() || global.end - global.begin != sizeof(float)) {
+            set_error(error, "ComfyUI NVFP4 marker '" + marker_name + "' has incompatible tensor types");
+            return false;
+        }
+        const uint64_t rows = static_cast<uint64_t>(weight.shape[0]);
+        const uint64_t columns = 2 * static_cast<uint64_t>(weight.shape[1]);
+        if (columns % 64 != 0 || rows > std::numeric_limits<uint64_t>::max() - 127 ||
+            rows > std::numeric_limits<uint64_t>::max() / columns) {
+            set_error(error, "ComfyUI NVFP4 marker '" + marker_name + "' has unsupported dimensions");
+            return false;
+        }
+        const uint64_t padded_rows = ((rows + 127) / 128) * 128;
+        const uint64_t blocks_per_row = columns / 16;
+        const uint64_t padded_blocks = ((blocks_per_row + 3) / 4) * 4;
+        if (padded_rows > std::numeric_limits<uint64_t>::max() / padded_blocks ||
+            block.shape[0] != static_cast<int64_t>(padded_rows) ||
+            block.shape[1] != static_cast<int64_t>(padded_blocks) ||
+            block.end - block.begin != padded_rows * padded_blocks ||
+            weight.end - weight.begin != rows * columns / 2) {
+            set_error(error, "ComfyUI NVFP4 marker '" + marker_name + "' has incompatible tensor dimensions");
+            return false;
+        }
+        ComfyNvfp4Info info;
+        info.block_scale.name = block_it->first;
+        info.block_scale.type = GGML_TYPE_I8; // Raw E4M3 bytes, not a model parameter.
+        info.block_scale.n_dims = 2;
+        info.block_scale.ne[0] = static_cast<int64_t>(padded_blocks);
+        info.block_scale.ne[1] = static_cast<int64_t>(padded_rows);
+        info.block_scale.offset = data_start + block.begin;
+        info.block_scale.nbytes = block.end - block.begin;
+        info.global_scale_offset = data_start + global.begin;
+        result->emplace(weight_it->first, info);
+        sidecar_names->emplace(block_it->first);
+        sidecar_names->emplace(global_it->first);
+    }
+    return true;
+}
+
 // https://huggingface.co/docs/safetensors/index
 bool read_safetensors_file(const std::string& file_path,
                            std::vector<TensorStorage>& tensor_storages,
@@ -397,6 +490,12 @@ bool read_safetensors_file(const std::string& file_path,
                                   error)) {
         return false;
     }
+    std::map<std::string, ComfyNvfp4Info> comfy_nvfp4_tensors;
+    std::set<std::string> comfy_nvfp4_sidecars;
+    if (!read_comfy_nvfp4_metadata(file, tensor_infos, data_start,
+                                   &comfy_nvfp4_tensors, &comfy_nvfp4_sidecars, error)) {
+        return false;
+    }
 
     tensor_storages.clear();
     for (const auto& [name, tensor_info] : tensor_infos) {
@@ -404,14 +503,18 @@ bool read_safetensors_file(const std::string& file_path,
 
         const std::string& dtype = tensor_info.dtype;
 
-        if (dtype == "U8" || comfy_int8_scale_tensors.find(name) != comfy_int8_scale_tensors.end()) {
+        const auto comfy_nvfp4 = comfy_nvfp4_tensors.find(name);
+        if ((dtype == "U8" && comfy_nvfp4 == comfy_nvfp4_tensors.end()) ||
+            comfy_int8_scale_tensors.find(name) != comfy_int8_scale_tensors.end() ||
+            comfy_nvfp4_sidecars.find(name) != comfy_nvfp4_sidecars.end()) {
             continue;
         }
 
         const uint64_t begin = tensor_info.begin;
         const uint64_t end   = tensor_info.end;
 
-        ggml_type type = safetensors_dtype_to_ggml_type(dtype);
+        ggml_type type = comfy_nvfp4 != comfy_nvfp4_tensors.end()
+                             ? GGML_TYPE_NVFP4 : safetensors_dtype_to_ggml_type(dtype);
         if (type == GGML_TYPE_COUNT) {
             set_error(error, "unsupported dtype '" + dtype + "' (tensor '" + name + "')");
             return false;
@@ -432,6 +535,9 @@ bool read_safetensors_file(const std::string& file_path,
             }
             nelements *= std::max<uint64_t>(dim, 1);
             ne[i] = static_cast<int64_t>(dim);
+        }
+        if (comfy_nvfp4 != comfy_nvfp4_tensors.end()) {
+            ne[1] *= 2; // The last safetensors dimension packs two FP4 values per byte.
         }
 
         if (n_dims == 5) {
@@ -457,7 +563,11 @@ bool read_safetensors_file(const std::string& file_path,
         uint64_t tensor_data_size = end - begin;
 
         bool tensor_size_ok;
-        if (dtype == "F8_E4M3") {
+        if (comfy_nvfp4 != comfy_nvfp4_tensors.end()) {
+            tensor_storage.is_comfy_nvfp4 = true;
+            tensor_storage.comfy_nvfp4_block_scale = comfy_nvfp4->second.block_scale;
+            tensor_size_ok = (tensor_storage.nbytes_to_read() == tensor_data_size);
+        } else if (dtype == "F8_E4M3") {
             tensor_storage.is_f8_e4m3 = true;
             // f8 -> f16
             tensor_size_ok = (tensor_storage.nbytes() / 2 == tensor_data_size);
@@ -498,6 +608,13 @@ bool read_safetensors_file(const std::string& file_path,
         tensor_storages.push_back(tensor_storage);
 
         // LOG_DEBUG("%s %s", tensor_storage.to_string().c_str(), dtype.c_str());
+    }
+
+    for (const auto& [weight_name, info] : comfy_nvfp4_tensors) {
+        int64_t scalar_shape[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+        const std::string layer_name = weight_name.substr(0, weight_name.size() - 7);
+        tensor_storages.emplace_back(layer_name + ".nvfp4_scale", GGML_TYPE_F32,
+                                     scalar_shape, 1, 0, info.global_scale_offset);
     }
 
     return true;
