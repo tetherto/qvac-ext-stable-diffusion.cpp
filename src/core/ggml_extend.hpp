@@ -4130,6 +4130,8 @@ protected:
     bool force_prec_f32;
     bool allow_weight_scale;
     bool has_weight_scale = false;
+    bool has_nvfp4_global_scale = false;
+    bool has_nvfp4_pre_quant_scale = false;
     // This is distinct from `weight_scale`: the latter is a regular
     // post-linear model parameter, while ConvRot's F32 vector is a private
     // sidecar input to GGML_OP_MUL_MAT_CONVROT.
@@ -4144,6 +4146,8 @@ protected:
     void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") override {
         this->prefix         = prefix;
         has_weight_scale     = false;
+        has_nvfp4_global_scale = false;
+        has_nvfp4_pre_quant_scale = false;
         has_convrot_weight      = false;
         use_convrot_f16_compat  = false;
         use_convrot_q8_decomp   = false;
@@ -4180,6 +4184,21 @@ protected:
             wtype = GGML_TYPE_F32;
         }
         params["weight"] = ggml_new_tensor_2d(ctx, wtype, in_features, out_features);
+        if (storage_it != tensor_storage_map.end() && storage_it->second.is_comfy_nvfp4_weight()) {
+            params["nvfp4_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+            has_nvfp4_global_scale = true;
+            const auto pre_quant_it = tensor_storage_map.find(prefix + "pre_quant_scale");
+            if (pre_quant_it != tensor_storage_map.end()) {
+                if (pre_quant_it->second.n_dims != 1 || pre_quant_it->second.ne[0] != in_features ||
+                    (pre_quant_it->second.type != GGML_TYPE_F32 &&
+                     pre_quant_it->second.type != GGML_TYPE_F16 &&
+                     pre_quant_it->second.type != GGML_TYPE_BF16)) {
+                    throw std::runtime_error("invalid ComfyUI NVFP4 pre_quant_scale shape");
+                }
+                params["pre_quant_scale"] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, in_features);
+                has_nvfp4_pre_quant_scale = true;
+            }
+        }
         if (bias) {
             enum ggml_type wtype = GGML_TYPE_F32;
             params["bias"]       = ggml_new_tensor_1d(ctx, wtype, out_features);
@@ -4215,12 +4234,15 @@ public:
     }
 
     ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
+        if (has_nvfp4_pre_quant_scale) {
+            x = ggml_mul(ctx->ggml_ctx, x, params["pre_quant_scale"]);
+        }
         ggml_tensor* w = params["weight"];
         ggml_tensor* b = nullptr;
         if (bias) {
             b = params["bias"];
         }
-        ggml_tensor* linear_bias = has_weight_scale ? nullptr : b;
+        ggml_tensor* linear_bias = (has_weight_scale || has_nvfp4_global_scale) ? nullptr : b;
         ggml_tensor* out         = nullptr;
         if (has_convrot_weight) {
             if (use_convrot_q8_decomp) {
@@ -4287,6 +4309,12 @@ public:
         }
         if (has_weight_scale) {
             out = ggml_mul(ctx->ggml_ctx, out, params["weight_scale"]);
+            if (b != nullptr) {
+                out = ggml_add_inplace(ctx->ggml_ctx, out, b);
+            }
+        }
+        if (has_nvfp4_global_scale) {
+            out = ggml_mul(ctx->ggml_ctx, out, params["nvfp4_scale"]);
             if (b != nullptr) {
                 out = ggml_add_inplace(ctx->ggml_ctx, out, b);
             }

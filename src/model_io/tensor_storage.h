@@ -56,6 +56,11 @@ struct TensorStorage {
     bool comfy_int8_convrot_op_enabled = false;
     uint32_t comfy_int8_group_size     = 0;
     TensorStorageSidecar comfy_int8_scale;
+    // ComfyUI NVFP4 stores two E2M1 values per byte. Its FP8 block scales
+    // are kept separately in the cuBLAS blocked layout, and the global F32
+    // scale is exposed as a small model parameter for the Linear graph.
+    bool is_comfy_nvfp4 = false;
+    TensorStorageSidecar comfy_nvfp4_block_scale;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
     int n_dims              = 0;
 
@@ -86,7 +91,9 @@ struct TensorStorage {
     }
 
     int64_t nbytes_to_read() const {
-        if (is_f8_e4m3 || is_f8_e5m2) {
+        if (is_comfy_nvfp4) {
+            return nelements() / 2;
+        } else if (is_f8_e4m3 || is_f8_e5m2) {
             return nbytes() / 2;
         } else if (is_f64 || is_i64) {
             return nbytes() * 2;
@@ -97,6 +104,11 @@ struct TensorStorage {
 
     bool has_comfy_int8_scale() const {
         return is_comfy_int8_tensorwise && comfy_int8_scale.valid();
+    }
+
+    bool is_comfy_nvfp4_weight() const {
+        return is_comfy_nvfp4 && comfy_nvfp4_block_scale.valid() && n_dims == 2 &&
+               ne[0] > 0 && ne[1] > 0 && ne[0] % 64 == 0;
     }
 
     bool is_comfy_int8_convrot_weight() const {
