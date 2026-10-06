@@ -32,6 +32,7 @@ option(SD_BUILD_EXAMPLES             "sd: build examples" ${SD_STANDALONE})
 option(SD_CUDA                       "sd: cuda backend" OFF)
 option(SD_HIPBLAS                    "sd: rocm backend" OFF)
 option(SD_METAL                      "sd: metal backend" OFF)
+option(SD_COREML                     "sd: Core ML FLUX.2 denoiser sidecar" OFF)
 option(SD_VULKAN                     "sd: vulkan backend" OFF)
 option(SD_OPENCL                     "sd: opencl backend" OFF)
 option(SD_SYCL                       "sd: sycl backend" OFF)
@@ -93,6 +94,14 @@ file(GLOB SD_LIB_SOURCES
     "src/vocab/*.h"
     "src/vocab/*.cpp"
 )
+
+if(SD_COREML)
+    if(NOT APPLE)
+        message(FATAL_ERROR "SD_COREML requires macOS")
+    endif()
+    enable_language(OBJC OBJCXX)
+    list(APPEND SD_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/flux_coreml.mm")
+endif()
 
 find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
 if(GIT_EXE)
@@ -187,6 +196,12 @@ target_link_libraries(${SD_LIB} PUBLIC ggml zip)
 target_include_directories(${SD_LIB} PUBLIC . include)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)
 target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
+
+if(SD_COREML)
+    target_compile_definitions(${SD_LIB} PRIVATE SD_USE_COREML)
+    set_source_files_properties(src/flux_coreml.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(${SD_LIB} PRIVATE "-framework CoreML" "-framework Foundation")
+endif()
 
 
 if (SD_BUILD_EXAMPLES)

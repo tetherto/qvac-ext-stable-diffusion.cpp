@@ -587,6 +587,13 @@ public:
                 }
             }
 
+            auto coreml_flux_model = std::dynamic_pointer_cast<FluxModel>(diffusion_model);
+            if (coreml_flux_model && coreml_flux_model->is_coreml_requested() &&
+                !coreml_flux_model->is_coreml_ready()) {
+                LOG_ERROR("Core ML FLUX.2 denoiser was requested but could not be loaded");
+                return false;
+            }
+
             cond_stage_model->alloc_params_buffer();
             cond_stage_model->get_param_tensors(tensors);
 
@@ -790,6 +797,10 @@ public:
         ignore_tensors.insert("model.diffusion_model.__x0__");
         ignore_tensors.insert("model.diffusion_model.__32x32__");
         ignore_tensors.insert("model.diffusion_model.__index_timestep_zero__");
+        auto coreml_flux_model = std::dynamic_pointer_cast<FluxModel>(diffusion_model);
+        if (coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+            ignore_tensors.insert("model.diffusion_model.");
+        }
 
         if (vae_decode_only) {
             ignore_tensors.insert("first_stage_model.encoder");
