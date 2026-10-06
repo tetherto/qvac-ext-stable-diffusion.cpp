@@ -82,14 +82,21 @@ calls. This single run establishes the optimization target, not a speedup.
 
 The exporter imports the official
 [Black Forest Labs FLUX.2 implementation](https://github.com/black-forest-labs/flux2)
-from a separate source checkout. Use a separate Python environment with
-`torch`, `safetensors`, `einops`, `numpy`, and `coremltools`. A previously tested
-combination is PyTorch 2.7 and coremltools 9. The model checkpoint is about
+from a separate source checkout. Use a separate Python environment with the
+versions in `script/requirements-flux2-coreml.txt`. PyTorch 2.7 is the latest
+version tested by coremltools 9, and NumPy is kept below 2.4 for conversion
+compatibility. The model checkpoint is about
 7.2 GiB, and tracing or conversion may exceed 16 GiB of memory. A Mac with
 more RAM is preferable for export; transfer the resulting `.mlpackage` to the
 M4 and compile it there if needed. Keep the captured fixture and baseline on
 the M4. The command examples below use a fresh output location and should be
 run from the repository root.
+
+```sh
+python3 -m venv .venv-flux2-export
+source .venv-flux2-export/bin/activate
+python -m pip install -r script/requirements-flux2-coreml.txt
+```
 
 First validate that the official PyTorch model reproduces the GGML call. This
 is a required gate before exporting. It is a full denoiser invocation and can

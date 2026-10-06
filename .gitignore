@@ -13,5 +13,8 @@ test/
 *.gguf
 output*.png
 models*
+bench-results/
+.venv*/
+__pycache__/
 *.log
 preview.png
