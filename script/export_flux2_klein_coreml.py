@@ -129,6 +129,8 @@ def main(argv=None):
     parser.add_argument("--trace", type=Path, help="input .pt for conversion")
     parser.add_argument("--package", type=Path, help="input .mlpackage for compile")
     parser.add_argument("--max-nrmse", type=float, default=0.03)
+    parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
+                        help="weight and activation precision for check; trace always uses fp16")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
                         help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
@@ -166,7 +168,7 @@ def main(argv=None):
         arrays = tuple(read_fixture_array(fixture, manifest, name, np)
                        for name in ("latent", "timesteps", "context"))
         inputs = tuple(torch.from_numpy(array.copy()).to(args.device) for array in arrays)
-        dtype = torch.bfloat16 if args.mode == "check" else torch.float16
+        dtype = torch.bfloat16 if args.mode == "check" and args.check_dtype == "bf16" else torch.float16
         print(f"Loading complete FLUX.2-klein 4B checkpoint as {dtype} on {args.device}", flush=True)
         started = time.perf_counter()
         model = load_official_model(args.source, args.weights.resolve(), dtype, args.device, torch)

@@ -105,7 +105,12 @@ python3 script/export_flux2_klein_coreml.py check \
   --fixture bench-results/flux2-klein-4b-1024-fixture
 ```
 
-If the normalized RMSE is at most 0.03, trace, convert, and compile in separate
+The check defaults to BF16, matching the checkpoint's precision. Repeat it
+with `--check-dtype fp16` before tracing; the traced model uses FP16 for Core ML.
+Both checks must meet the 0.03 normalized RMSE gate. A single-call numerical
+comparison does not establish full image quality.
+
+If both checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from
 the fixture; changing image size or text length requires another export.
 
