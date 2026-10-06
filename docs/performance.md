@@ -29,8 +29,8 @@ Using `--offload-to-cpu` allows you to offload weights to the CPU, saving VRAM w
 
 The engine has an optional Core ML denoiser runtime on macOS. It accepts a
 compiled `.mlmodelc` sidecar through `SDCPP_FLUX2_COREML_MODEL`. The sidecar
-must contain the complete FLUX.2-klein denoiser; the exporter is not part of
-this change. Without the variable, the existing GGML path remains in use.
+must contain the complete FLUX.2-klein denoiser. Without the variable, the
+existing GGML path remains in use.
 
 Build the runtime alongside Metal:
 
@@ -76,11 +76,58 @@ cat bench-results/flux2-klein-4b-1024-fixture/manifest.json
 
 The benchmark writes a log, image, and phase timings in `report.json`. The
 fixture contains exact float32 inputs and GGML output for numerical comparison.
-After a complete sidecar is exported and compiled, verify its first call:
+On a 16 GiB M4 at 1024 × 1024 with four steps, one measured FLUX.2-klein 4B
+run took 154.99 seconds for generation and 132.36 seconds in four denoiser
+calls. This single run establishes the optimization target, not a speedup.
+
+The exporter imports the official
+[Black Forest Labs FLUX.2 implementation](https://github.com/black-forest-labs/flux2)
+from a separate source checkout. Use a separate Python environment with
+`torch`, `safetensors`, `einops`, `numpy`, and `coremltools`. A previously tested
+combination is PyTorch 2.7 and coremltools 9. The model checkpoint is about
+7.2 GiB, and tracing or conversion may exceed 16 GiB of memory. A Mac with
+more RAM is preferable for export; transfer the resulting `.mlpackage` to the
+M4 and compile it there if needed. Keep the captured fixture and baseline on
+the M4. The command examples below use a fresh output location and should be
+run from the repository root.
+
+First validate that the official PyTorch model reproduces the GGML call. This
+is a required gate before exporting. It is a full denoiser invocation and can
+take several minutes on CPU:
+
+```sh
+git clone --depth 1 https://github.com/black-forest-labs/flux2.git ../flux2-official
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-4b-1024-fixture
+```
+
+If the normalized RMSE is at most 0.03, trace, convert, and compile in separate
+processes. Each output path must be new. The model has fixed dimensions from
+the fixture; changing image size or text length requires another export.
+
+```sh
+python3 script/export_flux2_klein_coreml.py trace \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --output bench-results/flux2-klein-4b-1024.pt
+python3 script/export_flux2_klein_coreml.py convert \
+  --trace bench-results/flux2-klein-4b-1024.pt \
+  --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --output bench-results/flux2-klein-4b-1024.mlpackage
+python3 script/export_flux2_klein_coreml.py compile \
+  --package bench-results/flux2-klein-4b-1024.mlpackage \
+  --output bench-results/flux2-klein-4b-1024.mlmodelc
+```
+
+After compilation, verify one Core ML call against the fixture before running
+image generation:
 
 ```sh
 python3 script/compare_flux_coreml_fixture.py \
-  --model /absolute/path/to/flux2-klein-4b.mlmodelc \
+  --model bench-results/flux2-klein-4b-1024.mlmodelc \
   --fixture bench-results/flux2-klein-4b-1024-fixture \
   --output bench-results/flux2-klein-4b-coreml-parity.json
 ```
