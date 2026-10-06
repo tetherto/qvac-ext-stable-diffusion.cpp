@@ -10,6 +10,7 @@ import argparse
 import gc
 import json
 import sys
+import time
 from pathlib import Path
 
 from compare_flux_coreml_fixture import error_metrics, validate_capture
@@ -47,7 +48,7 @@ def position_ids(height, width, text_tokens, torch, device):
     return image.reshape(1, height * width, 4), text
 
 
-def load_official_model(source, weights, dtype, torch):
+def load_official_model(source, weights, dtype, device, torch):
     try:
         from safetensors import safe_open
     except ImportError as exc:
@@ -83,17 +84,17 @@ def load_official_model(source, weights, dtype, torch):
             module_name, attribute = name.rsplit(".", 1)
             module = model.get_submodule(module_name)
             setattr(module, attribute,
-                    torch.nn.Parameter(value.to(dtype=dtype), requires_grad=False))
+                    torch.nn.Parameter(value.to(device=device, dtype=dtype), requires_grad=False))
             del value
     return model.eval()
 
 
-def make_wrapper(model, height, width, text_tokens, torch):
+def make_wrapper(model, height, width, text_tokens, device, torch):
     class EngineInputs(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.model = model
-            image_ids, text_ids = position_ids(height, width, text_tokens, torch, "cpu")
+            image_ids, text_ids = position_ids(height, width, text_tokens, torch, device)
             self.register_buffer("image_ids", image_ids, persistent=False)
             self.register_buffer("text_ids", text_ids, persistent=False)
 
@@ -128,6 +129,8 @@ def main(argv=None):
     parser.add_argument("--trace", type=Path, help="input .pt for conversion")
     parser.add_argument("--package", type=Path, help="input .mlpackage for compile")
     parser.add_argument("--max-nrmse", type=float, default=0.03)
+    parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
+                        help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
 
     if args.mode == "compile":
@@ -154,21 +157,28 @@ def main(argv=None):
     import torch
 
     torch.set_grad_enabled(False)
+    if args.device == "mps" and not torch.backends.mps.is_available():
+        parser.error("PyTorch MPS is unavailable in this environment")
     fixture = args.fixture.resolve()
     if args.mode in ("check", "trace"):
         if not args.source or not args.weights or not args.weights.is_file():
             parser.error("check/trace require an existing --source and --weights")
         arrays = tuple(read_fixture_array(fixture, manifest, name, np)
                        for name in ("latent", "timesteps", "context"))
-        inputs = tuple(torch.from_numpy(array.copy()) for array in arrays)
+        inputs = tuple(torch.from_numpy(array.copy()).to(args.device) for array in arrays)
         dtype = torch.bfloat16 if args.mode == "check" else torch.float16
-        print(f"Loading complete FLUX.2-klein 4B checkpoint as {dtype}", flush=True)
-        model = load_official_model(args.source, args.weights.resolve(), dtype, torch)
-        wrapper = make_wrapper(model, latent_shape[2], latent_shape[3], context_shape[2], torch)
+        print(f"Loading complete FLUX.2-klein 4B checkpoint as {dtype} on {args.device}", flush=True)
+        started = time.perf_counter()
+        model = load_official_model(args.source, args.weights.resolve(), dtype, args.device, torch)
+        print(f"Checkpoint loaded in {time.perf_counter() - started:.1f}s", flush=True)
+        wrapper = make_wrapper(model, latent_shape[2], latent_shape[3], context_shape[2], args.device, torch)
 
         if args.mode == "check":
+            print("Running one complete PyTorch denoiser call", flush=True)
+            started = time.perf_counter()
             with torch.inference_mode():
-                actual = wrapper(*inputs).numpy()
+                actual = wrapper(*inputs).cpu().numpy()
+            print(f"PyTorch denoiser completed in {time.perf_counter() - started:.1f}s", flush=True)
             reference = read_fixture_array(fixture, manifest, "output", np)
             metrics = error_metrics(actual, reference, np)
             print(json.dumps({"mode": "check", "dtype": str(dtype), **metrics}, indent=2), flush=True)
@@ -179,8 +189,11 @@ def main(argv=None):
         if not args.output or args.output.suffix != ".pt" or args.output.exists():
             parser.error("trace requires a new --output path ending in .pt")
         args.output.parent.mkdir(parents=True, exist_ok=True)
+        print("Tracing one complete PyTorch denoiser call", flush=True)
+        started = time.perf_counter()
         with torch.inference_mode():
             traced = torch.jit.trace(wrapper, inputs, strict=True, check_trace=False)
+        print(f"PyTorch tracing completed in {time.perf_counter() - started:.1f}s", flush=True)
         traced.save(str(args.output.resolve()))
         print(f"Saved {args.output.resolve()}", flush=True)
         return

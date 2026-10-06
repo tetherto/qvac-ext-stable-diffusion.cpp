@@ -93,7 +93,9 @@ run from the repository root.
 
 First validate that the official PyTorch model reproduces the GGML call. This
 is a required gate before exporting. It is a full denoiser invocation and can
-take several minutes on CPU:
+take several minutes on CPU. The command prints separate checkpoint loading and
+denoiser timing messages. Add `--device mps` to the `check` or `trace` command
+if PyTorch MPS is available and CPU inference is too slow:
 
 ```sh
 git clone --depth 1 https://github.com/black-forest-labs/flux2.git ../flux2-official
