@@ -119,7 +119,9 @@ comparison does not establish full image quality.
 
 If both checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from
-the fixture; changing image size or text length requires another export.
+the fixture; changing image size or text length requires another export. The
+trace step runs the traced graph against the fixture and only saves it if that
+comparison passes.
 
 ```sh
 python3 script/export_flux2_klein_coreml.py trace \

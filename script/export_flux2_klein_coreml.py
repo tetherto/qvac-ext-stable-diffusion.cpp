@@ -196,6 +196,16 @@ def main(argv=None):
         with torch.inference_mode():
             traced = torch.jit.trace(wrapper, inputs, strict=True, check_trace=False)
         print(f"PyTorch tracing completed in {time.perf_counter() - started:.1f}s", flush=True)
+        del wrapper, model
+        gc.collect()
+        print("Checking traced denoiser against the GGML fixture", flush=True)
+        with torch.inference_mode():
+            actual = traced(*inputs).cpu().numpy()
+        reference = read_fixture_array(fixture, manifest, "output", np)
+        metrics = error_metrics(actual, reference, np)
+        print(json.dumps({"mode": "trace", "dtype": str(dtype), **metrics}, indent=2), flush=True)
+        if metrics["normalized_rmse"] > args.max_nrmse:
+            raise SystemExit("traced model does not match the GGML fixture")
         traced.save(str(args.output.resolve()))
         print(f"Saved {args.output.resolve()}", flush=True)
         return
