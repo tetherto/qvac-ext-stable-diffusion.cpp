@@ -136,7 +136,19 @@ returned 0 finite values on the same call. The failure therefore precedes
 Core ML conversion; the current FP16 export is unsuitable for multi-step image
 generation. Do not treat its first-call parity result or measured runtime as
 a working speedup. A BF16 or numerically stable mixed-precision export is
-needed before further end-to-end benchmarking.
+needed before further end-to-end benchmarking. The same second call returned
+524,288 finite values in official BF16 PyTorch. To find where FP16 first
+becomes non-finite, repeat the failing check with `--locate-nonfinite`. It
+stops at the first affected module and reports that module's input and output
+ranges, without tracing or writing another model:
+
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --check-dtype fp16 --finite-only --locate-nonfinite
+```
 
 Only after all checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from

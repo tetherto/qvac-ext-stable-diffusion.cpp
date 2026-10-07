@@ -155,6 +155,55 @@ def read_fixture_array(fixture, manifest, name, np):
         tuple(reversed(entry["ne"])))
 
 
+class NonFiniteActivation(RuntimeError):
+    def __init__(self, report):
+        super().__init__(report["module"])
+        self.report = report
+
+
+def watch_first_nonfinite(model, torch):
+    """Stop a check at the first module whose output contains NaN or infinity."""
+    handles = []
+
+    def tensors(value):
+        if torch.is_tensor(value):
+            yield value
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                yield from tensors(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from tensors(item)
+
+    def summary(values):
+        result = []
+        for value in tensors(values):
+            if not value.is_floating_point():
+                continue
+            finite = torch.isfinite(value)
+            item = {"shape": list(value.shape), "dtype": str(value.dtype),
+                    "finite_values": int(finite.sum().item()),
+                    "total_values": value.numel()}
+            if finite.any().item():
+                good = value[finite].float()
+                item["finite_abs_max"] = float(good.abs().max().item())
+            result.append(item)
+        return result
+
+    def make_hook(name):
+        def hook(module, inputs, output):
+            if all(torch.isfinite(value).all().item()
+                   for value in tensors(output) if value.is_floating_point()):
+                return
+            raise NonFiniteActivation({"module": name, "type": type(module).__name__,
+                                       "inputs": summary(inputs), "outputs": summary(output)})
+        return hook
+
+    for name, module in model.named_modules():
+        handles.append(module.register_forward_hook(make_hook(name or "<root>")))
+    return handles
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("check", "trace", "convert", "compile"))
@@ -167,6 +216,8 @@ def main(argv=None):
     parser.add_argument("--max-nrmse", type=float, default=0.03)
     parser.add_argument("--finite-only", action="store_true",
                         help="check finite PyTorch output without comparing to the fixture output (check mode)")
+    parser.add_argument("--locate-nonfinite", action="store_true",
+                        help="stop at the first non-finite module output (check mode)")
     parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
                         help="weight and activation precision for check; trace always uses fp16")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
@@ -174,6 +225,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.finite_only and args.mode != "check":
         parser.error("--finite-only is supported only in check mode")
+    if args.locate_nonfinite and (args.mode != "check" or not args.finite_only):
+        parser.error("--locate-nonfinite requires check --finite-only")
 
     if args.mode == "compile":
         if not args.package or not args.package.is_dir() or not args.output:
@@ -218,8 +271,16 @@ def main(argv=None):
         if args.mode == "check":
             print("Running one complete PyTorch denoiser call", flush=True)
             started = time.perf_counter()
-            with torch.inference_mode():
-                actual = wrapper(*inputs).cpu().numpy()
+            handles = watch_first_nonfinite(wrapper, torch) if args.locate_nonfinite else []
+            try:
+                with torch.inference_mode():
+                    actual = wrapper(*inputs).cpu().numpy()
+            except NonFiniteActivation as exc:
+                print(json.dumps({"mode": "locate-nonfinite", **exc.report}, indent=2), flush=True)
+                raise SystemExit(1) from None
+            finally:
+                for handle in handles:
+                    handle.remove()
             print(f"PyTorch denoiser completed in {time.perf_counter() - started:.1f}s", flush=True)
             if args.finite_only:
                 finite = np.isfinite(actual)
