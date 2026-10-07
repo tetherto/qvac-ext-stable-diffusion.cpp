@@ -2,6 +2,7 @@
 #define __DIFFUSION_MODEL_H__
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -36,8 +37,9 @@ struct DiffusionParams {
     std::vector<int> skip_layers              = {};
 };
 
-// A single real invocation is useful for comparing a future Core ML denoiser
-// against ggml. Set SDCPP_FLUX_CAPTURE_DIR to write the first successful call.
+// Capture real invocations for comparison with another denoiser backend.
+// SDCPP_FLUX_CAPTURE_DIR writes the first call. Set SDCPP_FLUX_CAPTURE_ALL=1
+// to write every call into a numbered subdirectory.
 inline bool capture_flux_call(const char* directory, const DiffusionParams& params, ggml_tensor* output) {
     if (params.x == nullptr || params.timesteps == nullptr ||
         params.context == nullptr || output == nullptr ||
@@ -420,6 +422,16 @@ struct FluxModel : public DiffusionModel {
                                           diffusion_params.guidance ? &guidance : nullptr,
                                           static_cast<float*>((*output)->data), &error);
             if (!success) LOG_ERROR("Core ML FLUX.2 prediction failed: %s", error.c_str());
+            if (success) {
+                const float* values = static_cast<const float*>((*output)->data);
+                for (int64_t i = 0; i < ggml_nelements(*output); ++i) {
+                    if (!std::isfinite(values[i])) {
+                        LOG_ERROR("Core ML FLUX.2 prediction returned a non-finite value at element %lld",
+                                  static_cast<long long>(i));
+                        return false;
+                    }
+                }
+            }
         } else
 #endif
         success = flux.compute(n_threads,
@@ -439,10 +451,18 @@ struct FluxModel : public DiffusionModel {
         const char* capture_dir = std::getenv("SDCPP_FLUX_CAPTURE_DIR");
         if (success && capture_dir != nullptr && capture_dir[0] != '\0' &&
             output != nullptr && *output != nullptr) {
-            static std::atomic<bool> capture_claimed{false};
-            if (!capture_claimed.exchange(true) &&
-                !capture_flux_call(capture_dir, diffusion_params, *output)) {
-                LOG_WARN("FLUX denoiser fixture capture failed");
+            static std::atomic<unsigned int> capture_index{0};
+            const unsigned int index = capture_index.fetch_add(1) + 1;
+            const char* capture_all_env = std::getenv("SDCPP_FLUX_CAPTURE_ALL");
+            const bool capture_all = capture_all_env != nullptr && std::strcmp(capture_all_env, "1") == 0;
+            if (index == 1 || capture_all) {
+                const std::string directory = capture_all
+                                                  ? (std::filesystem::path(capture_dir) /
+                                                     ("call-" + std::to_string(index))).string()
+                                                  : capture_dir;
+                if (!capture_flux_call(directory.c_str(), diffusion_params, *output)) {
+                    LOG_WARN("FLUX denoiser fixture capture failed: %s", directory.c_str());
+                }
             }
         }
         return success;

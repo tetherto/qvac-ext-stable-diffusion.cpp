@@ -76,6 +76,9 @@ cat bench-results/flux2-klein-4b-1024-fixture/manifest.json
 
 The benchmark writes a log, image, and phase timings in `report.json`. The
 fixture contains exact float32 inputs and GGML output for numerical comparison.
+For a multi-step quality investigation, set `SDCPP_FLUX_CAPTURE_ALL=1` alongside
+`SDCPP_FLUX_CAPTURE_DIR`; each denoiser call is then captured under `call-1`,
+`call-2`, and so on. Use a new capture directory for each run.
 On a 16 GiB M4 at 1024 × 1024 with four steps, one measured FLUX.2-klein 4B
 run took 154.99 seconds for generation and 132.36 seconds in four denoiser
 calls. This single run establishes the optimization target, not a speedup.
