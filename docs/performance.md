@@ -150,6 +150,21 @@ python3 script/export_flux2_klein_coreml.py check \
   --check-dtype fp16 --finite-only --locate-nonfinite
 ```
 
+The first observed FP16 overflow is the text MLP gate multiplication in
+double block 4. `--safe-fp16` is an experimental exporter option that performs
+the residual multiplication and addition in float32 and bounds the result to
+the finite FP16 range before storing it. Check the captured later call before
+tracing or benchmarking; finite output alone does not establish acceptable
+numerical parity or image quality:
+
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --check-dtype fp16 --safe-fp16 --finite-only
+```
+
 Only after all checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from
 the fixture; changing image size or text length requires another export. The

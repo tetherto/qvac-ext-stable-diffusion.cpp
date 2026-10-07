@@ -48,7 +48,7 @@ def position_ids(height, width, text_tokens, torch, device):
     return image.reshape(1, height * width, 4), text
 
 
-def load_official_model(source, weights, dtype, device, torch):
+def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
     try:
         from safetensors import safe_open
     except ImportError as exc:
@@ -104,6 +104,50 @@ def load_official_model(source, weights, dtype, device, torch):
         return original_timestep_embedding(t.float(), *args, **kwargs).to(dtype=dtype)
 
     flux2_model.timestep_embedding = precise_timestep_embedding
+    if safe_fp16:
+        if dtype != torch.float16:
+            raise ValueError("--safe-fp16 requires FP16 weights and activations")
+        half_limit = torch.finfo(torch.float16).max
+
+        def bounded_mul(left, right):
+            return torch.clamp(left.float() * right.float(),
+                               min=-half_limit, max=half_limit).to(left.dtype)
+
+        def bounded_add(left, right):
+            return torch.clamp(left.float() + right.float(),
+                               min=-half_limit, max=half_limit).to(left.dtype)
+
+        def double_residuals(self, img, txt, img_attn, txt_attn, mods):
+            (img_gate1, img_shift2, img_scale2, img_gate2,
+             txt_gate1, txt_shift2, txt_scale2, txt_gate2) = mods
+            img = bounded_add(img, bounded_mul(img_gate1, self.img_attn.proj(img_attn)))
+            img_mod = bounded_add(bounded_mul(1 + img_scale2, self.img_norm2(img)), img_shift2)
+            img = bounded_add(img, bounded_mul(img_gate2, self.img_mlp(img_mod)))
+            txt = bounded_add(txt, bounded_mul(txt_gate1, self.txt_attn.proj(txt_attn)))
+            txt_mod = bounded_add(bounded_mul(1 + txt_scale2, self.txt_norm2(txt)), txt_shift2)
+            txt = bounded_add(txt, bounded_mul(txt_gate2, self.txt_mlp(txt_mod)))
+            return img, txt
+
+        def single_qkv(self, x, mod):
+            mod_shift, mod_scale, mod_gate = mod
+            x_mod = bounded_add(bounded_mul(1 + mod_scale, self.pre_norm(x)), mod_shift)
+            qkv, mlp = torch.split(
+                self.linear1(x_mod),
+                [3 * self.hidden_size, self.mlp_hidden_dim * self.mlp_mult_factor],
+                dim=-1,
+            )
+            from einops import rearrange
+            q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
+            q, k = self.norm(q, k, v)
+            return q, k, v, mlp, mod_gate
+
+        def single_out(self, x, attn, mlp, mod_gate):
+            output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+            return bounded_add(x, bounded_mul(mod_gate, output))
+
+        flux2_model.DoubleStreamBlock._apply_residuals = double_residuals
+        flux2_model.SingleStreamBlock._qkv = single_qkv
+        flux2_model.SingleStreamBlock._out = single_out
     with torch.device("meta"):
         model = flux2_model.Flux2(flux2_model.Klein4BParams())
     expected = dict(model.named_parameters())
@@ -275,6 +319,8 @@ def main(argv=None):
                         help="stop at the first non-finite module output (check mode)")
     parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
                         help="weight and activation precision for check; trace always uses fp16")
+    parser.add_argument("--safe-fp16", action="store_true",
+                        help="bound FP16 residual arithmetic to its finite range (check/trace)")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
                         help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
@@ -282,6 +328,11 @@ def main(argv=None):
         parser.error("--finite-only is supported only in check mode")
     if args.locate_nonfinite and (args.mode != "check" or not args.finite_only):
         parser.error("--locate-nonfinite requires check --finite-only")
+    if args.safe_fp16 and (args.mode not in ("check", "trace") or
+                          (args.mode == "check" and args.check_dtype != "fp16")):
+        parser.error("--safe-fp16 requires check --check-dtype fp16 or trace")
+    if args.safe_fp16 and args.locate_nonfinite:
+        parser.error("--safe-fp16 and --locate-nonfinite cannot be combined")
 
     if args.mode == "compile":
         if not args.package or not args.package.is_dir() or not args.output:
@@ -319,7 +370,8 @@ def main(argv=None):
         dtype = torch.bfloat16 if args.mode == "check" and args.check_dtype == "bf16" else torch.float16
         print(f"Loading complete FLUX.2-klein 4B checkpoint as {dtype} on {args.device}", flush=True)
         started = time.perf_counter()
-        model = load_official_model(args.source, args.weights.resolve(), dtype, args.device, torch)
+        model = load_official_model(args.source, args.weights.resolve(), dtype, args.device, torch,
+                                    safe_fp16=args.safe_fp16)
         print(f"Checkpoint loaded in {time.perf_counter() - started:.1f}s", flush=True)
         wrapper = make_wrapper(model, latent_shape[2], latent_shape[3], context_shape[2], args.device, torch)
 
