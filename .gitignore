@@ -17,3 +17,7 @@ preview.png
 CLAUDE.local.md
 .agents/
 .codex/
+
+.venv*/
+bench-results/
+__pycache__/
