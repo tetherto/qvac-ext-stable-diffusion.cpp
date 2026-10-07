@@ -118,12 +118,27 @@ python3 script/export_flux2_klein_coreml.py check \
 The check defaults to BF16, matching the checkpoint's precision. Repeat it
 with `--check-dtype fp16` before tracing; the traced model uses FP16 for Core ML.
 Both checks must meet the 0.03 normalized RMSE gate. A single-call numerical
-comparison does not establish full image quality.
-For a later captured call whose output contains NaNs, use `check --finite-only`
-with that call's fixture and `--check-dtype fp16` to test the official PyTorch
-model without using the invalid captured output as a reference.
+comparison does not establish full image quality. Also check a later denoiser
+call with `--finite-only` before tracing. This checks the official PyTorch
+model without using the captured output as a reference:
 
-If both checks pass, trace, convert, and compile in separate
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --check-dtype fp16 --finite-only
+```
+
+On the 16 GiB M4, this captured second call returned 0 finite values out of
+524,288 in the official FP16 PyTorch model. The FP16 Core ML conversion also
+returned 0 finite values on the same call. The failure therefore precedes
+Core ML conversion; the current FP16 export is unsuitable for multi-step image
+generation. Do not treat its first-call parity result or measured runtime as
+a working speedup. A BF16 or numerically stable mixed-precision export is
+needed before further end-to-end benchmarking.
+
+Only after all checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from
 the fixture; changing image size or text length requires another export. The
 trace step runs the traced graph against the fixture and only saves it if that
@@ -131,9 +146,7 @@ comparison passes. It uses paired cosine and sine values for RoPE so no
 intermediate tensor exceeds Core ML's rank-5 limit, and retains fractional
 timesteps in float32 through their sinusoidal embedding. Older traces must be
 regenerated. Conversion preserves the traced model's explicit float32 math.
-On the M4, both the original all-float16 conversion and this conversion have
-produced non-finite output at the second denoising step. The exporter remains
-experimental until that multi-step failure is resolved.
+The exporter remains experimental until the multi-step failure is resolved.
 
 ```sh
 python3 script/export_flux2_klein_coreml.py trace \
