@@ -165,11 +165,15 @@ def main(argv=None):
     parser.add_argument("--trace", type=Path, help="input .pt for conversion")
     parser.add_argument("--package", type=Path, help="input .mlpackage for compile")
     parser.add_argument("--max-nrmse", type=float, default=0.03)
+    parser.add_argument("--finite-only", action="store_true",
+                        help="check finite PyTorch output without comparing to the fixture output (check mode)")
     parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
                         help="weight and activation precision for check; trace always uses fp16")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
                         help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
+    if args.finite_only and args.mode != "check":
+        parser.error("--finite-only is supported only in check mode")
 
     if args.mode == "compile":
         if not args.package or not args.package.is_dir() or not args.output:
@@ -217,6 +221,15 @@ def main(argv=None):
             with torch.inference_mode():
                 actual = wrapper(*inputs).cpu().numpy()
             print(f"PyTorch denoiser completed in {time.perf_counter() - started:.1f}s", flush=True)
+            if args.finite_only:
+                finite = np.isfinite(actual)
+                print(json.dumps({"mode": "check", "dtype": str(dtype),
+                                  "finite_values": int(finite.sum()),
+                                  "total_values": int(finite.size),
+                                  "passes_finite_check": bool(finite.all())}, indent=2), flush=True)
+                if not finite.all():
+                    raise SystemExit(1)
+                return
             reference = read_fixture_array(fixture, manifest, "output", np)
             metrics = error_metrics(actual, reference, np)
             print(json.dumps({"mode": "check", "dtype": str(dtype), **metrics}, indent=2), flush=True)

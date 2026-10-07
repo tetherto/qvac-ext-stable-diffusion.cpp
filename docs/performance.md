@@ -119,6 +119,9 @@ The check defaults to BF16, matching the checkpoint's precision. Repeat it
 with `--check-dtype fp16` before tracing; the traced model uses FP16 for Core ML.
 Both checks must meet the 0.03 normalized RMSE gate. A single-call numerical
 comparison does not establish full image quality.
+For a later captured call whose output contains NaNs, use `check --finite-only`
+with that call's fixture and `--check-dtype fp16` to test the official PyTorch
+model without using the invalid captured output as a reference.
 
 If both checks pass, trace, convert, and compile in separate
 processes. Each output path must be new. The model has fixed dimensions from
@@ -127,9 +130,10 @@ trace step runs the traced graph against the fixture and only saves it if that
 comparison passes. It uses paired cosine and sine values for RoPE so no
 intermediate tensor exceeds Core ML's rank-5 limit, and retains fractional
 timesteps in float32 through their sinusoidal embedding. Older traces must be
-regenerated. Conversion preserves the traced model's explicit
-float32 math; an all-float16 conversion produced non-finite output at the
-second denoising step on the M4.
+regenerated. Conversion preserves the traced model's explicit float32 math.
+On the M4, both the original all-float16 conversion and this conversion have
+produced non-finite output at the second denoising step. The exporter remains
+experimental until that multi-step failure is resolved.
 
 ```sh
 python3 script/export_flux2_klein_coreml.py trace \
