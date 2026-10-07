@@ -64,6 +64,8 @@ def main():
     parser.add_argument("--inputs", default="latent,timesteps,context",
                         help="comma-separated Core ML inputs; add pooled or guidance if exported")
     parser.add_argument("--max-nrmse", type=float, default=0.03)
+    parser.add_argument("--finite-only", action="store_true",
+                        help="check prediction shape and finite values without a reference output")
     args = parser.parse_args()
     try:
         import coremltools as ct
@@ -95,8 +97,24 @@ def main():
     model = ct.models.CompiledMLModel(str(args.model.resolve()), compute_units=ct.ComputeUnit.ALL)
     prediction = model.predict(inputs)
     output_entry = tensors["output"]
+    output_shape = tuple(reversed(output_entry["ne"]))
+    if args.finite_only:
+        actual = np.asarray(prediction["output"])
+        if actual.shape != output_shape:
+            parser.error(f"Core ML output shape {actual.shape} != captured {output_shape}")
+        finite = np.isfinite(actual)
+        report = {"model": str(args.model.resolve()), "fixture": str(args.fixture.resolve()),
+                  "input_shapes": {name: list(value.shape) for name, value in inputs.items()},
+                  "output_shape": list(output_shape), "finite_values": int(finite.sum()),
+                  "total_values": int(finite.size), "passes_finite_check": bool(finite.all())}
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        if not report["passes_finite_check"]:
+            raise SystemExit(1)
+        return
     reference = np.fromfile(args.fixture / output_entry["file"], dtype=np.float32).reshape(
-        tuple(reversed(output_entry["ne"])))
+        output_shape)
     try:
         metrics = error_metrics(prediction["output"], reference, np)
     except ValueError as exc:

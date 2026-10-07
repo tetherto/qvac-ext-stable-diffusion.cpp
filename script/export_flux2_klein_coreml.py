@@ -252,7 +252,10 @@ def main(argv=None):
         traced,
         convert_to="mlprogram",
         minimum_deployment_target=ct.target.macOS15,
-        compute_precision=ct.precision.FLOAT16,
+        # Keep the official model's explicit float32 normalization, RoPE, and
+        # timestep math. The all-float16 ML Program produced non-finite values
+        # on the second denoising step of a four-step M4 run.
+        compute_precision=ct.precision.FLOAT32,
         inputs=[
             ct.TensorType(name="latent", shape=latent_shape, dtype=np.float32),
             ct.TensorType(name="timesteps", shape=timestep_shape, dtype=np.float32),

@@ -126,7 +126,9 @@ the fixture; changing image size or text length requires another export. The
 trace step runs the traced graph against the fixture and only saves it if that
 comparison passes. It uses paired cosine and sine values for RoPE so no
 intermediate tensor exceeds Core ML's rank-5 limit. Traces made before this
-change must be regenerated.
+change must be regenerated. Conversion preserves the traced model's explicit
+float32 math; an all-float16 conversion produced non-finite output at the
+second denoising step on the M4.
 
 ```sh
 python3 script/export_flux2_klein_coreml.py trace \
@@ -153,7 +155,19 @@ python3 script/compare_flux_coreml_fixture.py \
   --output bench-results/flux2-klein-4b-coreml-parity.json
 ```
 
-A passing single-call comparison is followed by a full generation using
+If a later denoiser call was captured, also test that exact input before a full
+generation. This mode checks shape and finite values without comparing with
+the captured output, so it can be used when that output contains NaNs:
+
+```sh
+python3 script/compare_flux_coreml_fixture.py \
+  --model bench-results/flux2-klein-4b-1024.mlmodelc \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --output bench-results/flux2-klein-4b-coreml-step2.json \
+  --finite-only
+```
+
+After these checks pass, run a full generation using
 `SDCPP_FLUX2_COREML_MODEL=/absolute/path/to/flux2-klein-4b.mlmodelc` with the
 same CLI options and a fresh output directory. Compare denoiser time,
 generation time, peak memory, and the image against the Metal baseline.
