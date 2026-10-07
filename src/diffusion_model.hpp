@@ -422,16 +422,6 @@ struct FluxModel : public DiffusionModel {
                                           diffusion_params.guidance ? &guidance : nullptr,
                                           static_cast<float*>((*output)->data), &error);
             if (!success) LOG_ERROR("Core ML FLUX.2 prediction failed: %s", error.c_str());
-            if (success) {
-                const float* values = static_cast<const float*>((*output)->data);
-                for (int64_t i = 0; i < ggml_nelements(*output); ++i) {
-                    if (!std::isfinite(values[i])) {
-                        LOG_ERROR("Core ML FLUX.2 prediction returned a non-finite value at element %lld",
-                                  static_cast<long long>(i));
-                        return false;
-                    }
-                }
-            }
         } else
 #endif
         success = flux.compute(n_threads,
@@ -465,6 +455,18 @@ struct FluxModel : public DiffusionModel {
                 }
             }
         }
+#ifdef SD_USE_COREML
+        if (success && coreml_requested) {
+            const float* values = static_cast<const float*>((*output)->data);
+            for (int64_t i = 0; i < ggml_nelements(*output); ++i) {
+                if (!std::isfinite(values[i])) {
+                    LOG_ERROR("Core ML FLUX.2 prediction returned a non-finite value at element %lld",
+                              static_cast<long long>(i));
+                    return false;
+                }
+            }
+        }
+#endif
         return success;
     }
 };
