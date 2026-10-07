@@ -16,12 +16,12 @@ struct FluxCoreMLModel;
 FluxCoreMLModel* flux_coreml_open(const char* path, std::string* error);
 void flux_coreml_close(FluxCoreMLModel* model);
 bool flux_coreml_predict(FluxCoreMLModel* model,
-                        const FluxCoreMLTensor& latent,
-                        const FluxCoreMLTensor& timesteps,
-                        const FluxCoreMLTensor& context,
-                        const FluxCoreMLTensor* pooled,
-                        const FluxCoreMLTensor* guidance,
-                        float* output,
-                        std::string* error);
+                         const FluxCoreMLTensor& latent,
+                         const FluxCoreMLTensor& timesteps,
+                         const FluxCoreMLTensor& context,
+                         const FluxCoreMLTensor* pooled,
+                         const FluxCoreMLTensor* guidance,
+                         float* output,
+                         std::string* error);
 
 #endif

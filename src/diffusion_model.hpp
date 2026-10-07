@@ -68,7 +68,8 @@ inline bool capture_flux_call(const char* directory, const DiffusionParams& para
     bool first = true;
     for (const auto& item : tensors) {
         ggml_tensor* tensor = item.second;
-        if (tensor == nullptr) continue;
+        if (tensor == nullptr)
+            continue;
         if (!ggml_is_contiguous(tensor) || ggml_nbytes(tensor) == 0 ||
             (tensor->buffer == nullptr && tensor->data == nullptr)) {
             LOG_WARN("FLUX capture cannot read tensor %s", item.first);
@@ -88,13 +89,15 @@ inline bool capture_flux_call(const char* directory, const DiffusionParams& para
             LOG_WARN("FLUX capture could not write %s", filename.c_str());
             return false;
         }
-        if (!first) manifest << ",\n";
+        if (!first)
+            manifest << ",\n";
         first = false;
         manifest << "    \"" << item.first << "\": {\"file\": \"" << filename
                  << "\", \"type\": \"" << ggml_type_name(tensor->type)
                  << "\", \"ne\": [";
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
-            if (i != 0) manifest << ", ";
+            if (i != 0)
+                manifest << ", ";
             manifest << tensor->ne[i];
         }
         manifest << "], \"bytes\": " << size << "}";
@@ -106,7 +109,7 @@ inline bool capture_flux_call(const char* directory, const DiffusionParams& para
 }
 
 struct DiffusionModel {
-    virtual ~DiffusionModel() = default;
+    virtual ~DiffusionModel()                                                           = default;
     virtual std::string get_desc()                                                      = 0;
     virtual bool compute(int n_threads,
                          DiffusionParams diffusion_params,
@@ -255,7 +258,7 @@ struct MMDiTModel : public DiffusionModel {
 
 struct FluxModel : public DiffusionModel {
     Flux::FluxRunner flux;
-    bool coreml_requested = false;
+    bool coreml_requested      = false;
     bool coreml_adapter_active = false;
 #ifdef SD_USE_COREML
     FluxCoreMLModel* coreml = nullptr;
@@ -276,8 +279,10 @@ struct FluxModel : public DiffusionModel {
         else if (coreml_requested) {
             std::string error;
             coreml = flux_coreml_open(path, &error);
-            if (coreml == nullptr) LOG_ERROR("Core ML FLUX.2 model load failed: %s", error.c_str());
-            else LOG_INFO("Using Core ML FLUX.2 denoiser: %s", path);
+            if (coreml == nullptr)
+                LOG_ERROR("Core ML FLUX.2 model load failed: %s", error.c_str());
+            else
+                LOG_INFO("Using Core ML FLUX.2 denoiser: %s", path);
         }
 #else
         else if (coreml_requested) {
@@ -306,19 +311,23 @@ struct FluxModel : public DiffusionModel {
     }
 
     void alloc_params_buffer() override {
-        if (!coreml_requested) flux.alloc_params_buffer();
+        if (!coreml_requested)
+            flux.alloc_params_buffer();
     }
 
     void free_params_buffer() override {
-        if (!coreml_requested) flux.free_params_buffer();
+        if (!coreml_requested)
+            flux.free_params_buffer();
     }
 
     void free_compute_buffer() override {
-        if (!coreml_requested) flux.free_compute_buffer();
+        if (!coreml_requested)
+            flux.free_compute_buffer();
     }
 
     void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) override {
-        if (!coreml_requested) flux.get_param_tensors(tensors, "model.diffusion_model");
+        if (!coreml_requested)
+            flux.get_param_tensors(tensors, "model.diffusion_model");
     }
 
     size_t get_params_buffer_size() override {
@@ -364,7 +373,7 @@ struct FluxModel : public DiffusionModel {
                       static_cast<long long>(diffusion_params.context->ne[3]));
         }
         const int64_t start_ms = ggml_time_ms();
-        bool success = false;
+        bool success           = false;
 #ifdef SD_USE_COREML
         if (coreml_requested) {
             if (coreml_adapter_active) {
@@ -380,13 +389,18 @@ struct FluxModel : public DiffusionModel {
                 return false;
             }
             auto read_input = [](ggml_tensor* tensor, std::vector<float>& storage, FluxCoreMLTensor& input) -> bool {
-                if (!tensor || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)) return false;
+                if (!tensor || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor))
+                    return false;
                 storage.resize(static_cast<size_t>(ggml_nelements(tensor)));
-                if (tensor->buffer) ggml_backend_tensor_get(tensor, storage.data(), 0, ggml_nbytes(tensor));
-                else if (tensor->data) std::memcpy(storage.data(), tensor->data, ggml_nbytes(tensor));
-                else return false;
+                if (tensor->buffer)
+                    ggml_backend_tensor_get(tensor, storage.data(), 0, ggml_nbytes(tensor));
+                else if (tensor->data)
+                    std::memcpy(storage.data(), tensor->data, ggml_nbytes(tensor));
+                else
+                    return false;
                 input.data = storage.data();
-                for (int i = 0; i < 4; ++i) input.ne[i] = tensor->ne[i];
+                for (int i = 0; i < 4; ++i)
+                    input.ne[i] = tensor->ne[i];
                 return true;
             };
             std::vector<float> latent_data, timestep_data, context_data, pooled_data, guidance_data;
@@ -399,7 +413,8 @@ struct FluxModel : public DiffusionModel {
                 LOG_ERROR("Core ML FLUX.2 denoiser requires contiguous float32 inputs");
                 return false;
             }
-            if (*output == nullptr) *output = ggml_dup_tensor(output_ctx, diffusion_params.x);
+            if (*output == nullptr)
+                *output = ggml_dup_tensor(output_ctx, diffusion_params.x);
             bool output_matches_latent = *output != nullptr &&
                                          (*output)->type == GGML_TYPE_F32 &&
                                          (*output)->data != nullptr &&
@@ -421,34 +436,36 @@ struct FluxModel : public DiffusionModel {
                                           diffusion_params.y ? &pooled : nullptr,
                                           diffusion_params.guidance ? &guidance : nullptr,
                                           static_cast<float*>((*output)->data), &error);
-            if (!success) LOG_ERROR("Core ML FLUX.2 prediction failed: %s", error.c_str());
+            if (!success)
+                LOG_ERROR("Core ML FLUX.2 prediction failed: %s", error.c_str());
         } else
 #endif
-        success = flux.compute(n_threads,
-                                          diffusion_params.x,
-                                          diffusion_params.timesteps,
-                                          diffusion_params.context,
-                                          diffusion_params.c_concat,
-                                          diffusion_params.y,
-                                          diffusion_params.guidance,
-                                          diffusion_params.ref_latents,
-                                          diffusion_params.increase_ref_index,
-                                          output,
-                                          output_ctx,
-                                          diffusion_params.skip_layers);
+            success = flux.compute(n_threads,
+                                   diffusion_params.x,
+                                   diffusion_params.timesteps,
+                                   diffusion_params.context,
+                                   diffusion_params.c_concat,
+                                   diffusion_params.y,
+                                   diffusion_params.guidance,
+                                   diffusion_params.ref_latents,
+                                   diffusion_params.increase_ref_index,
+                                   output,
+                                   output_ctx,
+                                   diffusion_params.skip_layers);
         LOG_DEBUG("flux denoiser compute completed, taking %lld ms",
                   static_cast<long long>(ggml_time_ms() - start_ms));
         const char* capture_dir = std::getenv("SDCPP_FLUX_CAPTURE_DIR");
         if (success && capture_dir != nullptr && capture_dir[0] != '\0' &&
             output != nullptr && *output != nullptr) {
             static std::atomic<unsigned int> capture_index{0};
-            const unsigned int index = capture_index.fetch_add(1) + 1;
+            const unsigned int index    = capture_index.fetch_add(1) + 1;
             const char* capture_all_env = std::getenv("SDCPP_FLUX_CAPTURE_ALL");
-            const bool capture_all = capture_all_env != nullptr && std::strcmp(capture_all_env, "1") == 0;
+            const bool capture_all      = capture_all_env != nullptr && std::strcmp(capture_all_env, "1") == 0;
             if (index == 1 || capture_all) {
                 const std::string directory = capture_all
                                                   ? (std::filesystem::path(capture_dir) /
-                                                     ("call-" + std::to_string(index))).string()
+                                                     ("call-" + std::to_string(index)))
+                                                        .string()
                                                   : capture_dir;
                 if (!capture_flux_call(directory.c_str(), diffusion_params, *output)) {
                     LOG_WARN("FLUX denoiser fixture capture failed: %s", directory.c_str());

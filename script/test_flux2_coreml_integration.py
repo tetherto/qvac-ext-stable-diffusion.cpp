@@ -82,6 +82,29 @@ class Flux2CoreMLIntegrationTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("could not be loaded", log)
 
+    def test_lora_requests_fail_before_application(self):
+        for mode in ("immediately", "at_runtime", "auto"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                # An existing path makes the CLI preserve the request. Its
+                # contents must never be loaded by either LoRA apply path.
+                lora = Path(directory) / "unsupported.safetensors"
+                lora.touch()
+                output = Path(directory) / "image.png"
+                command = self.command(output)
+                command[command.index("-p") + 1] = f"a lovely cat <lora:{lora}:1>"
+                command.extend(["--lora-apply-mode", mode])
+                env = os.environ.copy()
+                env["SDCPP_FLUX2_COREML_MODEL"] = str(self.paths["SDCPP_TEST_FLUX2_COREML"])
+                completed = subprocess.run(
+                    command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=180,
+                )
+                log = completed.stdout + completed.stderr
+                self.assertNotEqual(completed.returncode, 0, log[-4000:])
+                self.assertIn("LoRA requests are not supported by the Core ML FLUX.2 denoiser", log)
+                self.assertNotIn("attempting to apply", log)
+                self.assertNotIn("flux denoiser compute completed", log)
+                self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

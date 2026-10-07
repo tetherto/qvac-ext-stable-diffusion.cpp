@@ -1249,7 +1249,12 @@ public:
         }
     }
 
-    void apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    bool apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+        auto coreml_flux_model = std::dynamic_pointer_cast<FluxModel>(diffusion_model);
+        if (lora_count > 0 && coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+            LOG_ERROR("LoRA requests are not supported by the Core ML FLUX.2 denoiser");
+            return false;
+        }
         std::unordered_map<std::string, float> lora_f2m;
         for (uint32_t i = 0; i < lora_count; i++) {
             std::string lora_id = SAFE_STR(loras[i].path);
@@ -1269,6 +1274,7 @@ public:
         if (!lora_f2m.empty()) {
             LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         }
+        return true;
     }
 
     SDCondition get_pmid_conditon(ggml_context* work_ctx,
@@ -3612,7 +3618,10 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
     sd_ctx->sd->set_flow_shift(sd_img_gen_params->sample_params.flow_shift);
 
     // Apply lora
-    sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count);
+    if (!sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count)) {
+        ggml_free(work_ctx);
+        return nullptr;
+    }
 
     enum sample_method_t sample_method = sd_img_gen_params->sample_params.sample_method;
     if (sample_method == SAMPLE_METHOD_COUNT) {
@@ -3970,7 +3979,10 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
     int64_t t0 = ggml_time_ms();
 
     // Apply lora
-    sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count);
+    if (!sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count)) {
+        ggml_free(work_ctx);
+        return nullptr;
+    }
 
     ggml_tensor* init_latent        = nullptr;
     ggml_tensor* clip_vision_output = nullptr;

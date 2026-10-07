@@ -182,6 +182,7 @@ python3 script/export_flux2_klein_coreml.py trace \
   --source ../flux2-official \
   --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
   --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --safe-fp16 \
   --output bench-results/flux2-klein-4b-1024.pt
 python3 script/export_flux2_klein_coreml.py convert \
   --trace bench-results/flux2-klein-4b-1024.pt \
