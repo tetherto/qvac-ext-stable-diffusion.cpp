@@ -125,8 +125,9 @@ processes. Each output path must be new. The model has fixed dimensions from
 the fixture; changing image size or text length requires another export. The
 trace step runs the traced graph against the fixture and only saves it if that
 comparison passes. It uses paired cosine and sine values for RoPE so no
-intermediate tensor exceeds Core ML's rank-5 limit. Traces made before this
-change must be regenerated. Conversion preserves the traced model's explicit
+intermediate tensor exceeds Core ML's rank-5 limit, and retains fractional
+timesteps in float32 through their sinusoidal embedding. Older traces must be
+regenerated. Conversion preserves the traced model's explicit
 float32 math; an all-float16 conversion produced non-finite output at the
 second denoising step on the M4.
 

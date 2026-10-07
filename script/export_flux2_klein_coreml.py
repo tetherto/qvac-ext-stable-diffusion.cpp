@@ -96,6 +96,14 @@ def load_official_model(source, weights, dtype, device, torch):
     flux2_model.causal_attn_fn = no_reference_attention
     flux2_model.EmbedND.forward = compact_embed_nd
     flux2_model.apply_rope = compact_apply_rope
+    original_timestep_embedding = flux2_model.timestep_embedding
+
+    def precise_timestep_embedding(t, *args, **kwargs):
+        # Keep the engine's fractional timestep in float32 through the
+        # high-frequency sin/cos calculation, then match the model weights.
+        return original_timestep_embedding(t.float(), *args, **kwargs).to(dtype=dtype)
+
+    flux2_model.timestep_embedding = precise_timestep_embedding
     with torch.device("meta"):
         model = flux2_model.Flux2(flux2_model.Klein4BParams())
     expected = dict(model.named_parameters())
@@ -132,7 +140,7 @@ def make_wrapper(model, height, width, text_tokens, device, torch):
             dtype = self.model.img_in.weight.dtype
             x = latent.permute(0, 2, 3, 1).reshape(1, height * width, EXPECTED_CHANNELS).to(dtype)
             ctx = context.reshape(1, text_tokens, EXPECTED_CONTEXT_WIDTH).to(dtype)
-            t = timesteps.reshape(1).to(dtype)
+            t = timesteps.reshape(1)
             out = self.model(x, self.image_ids, t, ctx, self.text_ids, None)
             return out.reshape(1, height, width, EXPECTED_CHANNELS).permute(0, 3, 1, 2).float()
 
