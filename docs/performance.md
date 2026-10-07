@@ -151,18 +151,20 @@ python3 script/export_flux2_klein_coreml.py check \
 ```
 
 The first observed FP16 overflow is the text MLP gate multiplication in
-double block 4. `--safe-fp16` is an experimental exporter option that performs
-the residual multiplication and addition in float32 and bounds the result to
-the finite FP16 range before storing it. Check the captured later call before
-tracing or benchmarking; finite output alone does not establish acceptable
-numerical parity or image quality:
+double block 4. Saturating these residuals to the finite FP16 range kept the
+second call finite but missed the GGML parity gate (0.0652 normalized RMSE).
+`--safe-fp16` now keeps the residual streams in float32 while retaining FP16
+linear weights and casting normalized inputs at each linear layer. Check the
+captured later call against a GGML capture before tracing or benchmarking;
+finite output alone does not establish acceptable numerical parity or image
+quality:
 
 ```sh
 python3 script/export_flux2_klein_coreml.py check \
   --source ../flux2-official \
   --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
-  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
-  --check-dtype fp16 --safe-fp16 --finite-only
+  --fixture bench-results/flux2-klein-4b-ggml-all-reference/call-2 \
+  --check-dtype fp16 --safe-fp16
 ```
 
 Only after all checks pass, trace, convert, and compile in separate

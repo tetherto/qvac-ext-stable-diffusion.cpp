@@ -107,46 +107,26 @@ def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
     if safe_fp16:
         if dtype != torch.float16:
             raise ValueError("--safe-fp16 requires FP16 weights and activations")
-        half_limit = torch.finfo(torch.float16).max
-
-        def bounded_mul(left, right):
-            return torch.clamp(left.float() * right.float(),
-                               min=-half_limit, max=half_limit).to(left.dtype)
-
-        def bounded_add(left, right):
-            return torch.clamp(left.float() + right.float(),
-                               min=-half_limit, max=half_limit).to(left.dtype)
 
         def double_residuals(self, img, txt, img_attn, txt_attn, mods):
             (img_gate1, img_shift2, img_scale2, img_gate2,
              txt_gate1, txt_shift2, txt_scale2, txt_gate2) = mods
-            img = bounded_add(img, bounded_mul(img_gate1, self.img_attn.proj(img_attn)))
-            img_mod = bounded_add(bounded_mul(1 + img_scale2, self.img_norm2(img)), img_shift2)
-            img = bounded_add(img, bounded_mul(img_gate2, self.img_mlp(img_mod)))
-            txt = bounded_add(txt, bounded_mul(txt_gate1, self.txt_attn.proj(txt_attn)))
-            txt_mod = bounded_add(bounded_mul(1 + txt_scale2, self.txt_norm2(txt)), txt_shift2)
-            txt = bounded_add(txt, bounded_mul(txt_gate2, self.txt_mlp(txt_mod)))
+            # The BF16 checkpoint can produce gated residuals beyond FP16's
+            # finite range. Keep the residual stream in FP32 while retaining
+            # compact FP16 linear weights and attention projections.
+            img = img.float() + img_gate1.float() * self.img_attn.proj(img_attn).float()
+            img_mod = (1 + img_scale2.float()) * self.img_norm2(img) + img_shift2.float()
+            img = img + img_gate2.float() * self.img_mlp(img_mod).float()
+            txt = txt.float() + txt_gate1.float() * self.txt_attn.proj(txt_attn).float()
+            txt_mod = (1 + txt_scale2.float()) * self.txt_norm2(txt) + txt_shift2.float()
+            txt = txt + txt_gate2.float() * self.txt_mlp(txt_mod).float()
             return img, txt
-
-        def single_qkv(self, x, mod):
-            mod_shift, mod_scale, mod_gate = mod
-            x_mod = bounded_add(bounded_mul(1 + mod_scale, self.pre_norm(x)), mod_shift)
-            qkv, mlp = torch.split(
-                self.linear1(x_mod),
-                [3 * self.hidden_size, self.mlp_hidden_dim * self.mlp_mult_factor],
-                dim=-1,
-            )
-            from einops import rearrange
-            q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-            q, k = self.norm(q, k, v)
-            return q, k, v, mlp, mod_gate
 
         def single_out(self, x, attn, mlp, mod_gate):
             output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
-            return bounded_add(x, bounded_mul(mod_gate, output))
+            return x.float() + mod_gate.float() * output.float()
 
         flux2_model.DoubleStreamBlock._apply_residuals = double_residuals
-        flux2_model.SingleStreamBlock._qkv = single_qkv
         flux2_model.SingleStreamBlock._out = single_out
     with torch.device("meta"):
         model = flux2_model.Flux2(flux2_model.Klein4BParams())
@@ -166,6 +146,15 @@ def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
             setattr(module, attribute,
                     torch.nn.Parameter(value.to(device=device, dtype=dtype), requires_grad=False))
             del value
+    if safe_fp16:
+        from types import MethodType
+
+        def cast_linear_input(self, x):
+            return torch.nn.functional.linear(x.to(self.weight.dtype), self.weight, self.bias)
+
+        for module in model.modules():
+            if isinstance(module, torch.nn.Linear):
+                module.forward = MethodType(cast_linear_input, module)
     return model.eval()
 
 
@@ -320,7 +309,7 @@ def main(argv=None):
     parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
                         help="weight and activation precision for check; trace always uses fp16")
     parser.add_argument("--safe-fp16", action="store_true",
-                        help="bound FP16 residual arithmetic to its finite range (check/trace)")
+                        help="keep residual streams in FP32 with FP16 linear weights (check/trace)")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
                         help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
