@@ -119,6 +119,30 @@ def read_fixture_array(fixture, manifest, name, np):
         tuple(reversed(entry["ne"])))
 
 
+def install_rope_einsum_conversion():
+    """Work around coremltools 9's generic converter for FLUX.2 RoPE.
+
+    The official implementation uses ``einsum('...n,d->...nd', pos, omega)``.
+    For its rank-2 position tensor, this is exactly ``pos[..., None] * omega``.
+    Core ML Tools 9's generic einsum solver attempts a rank-4 transpose of
+    a rank-2 tensor. Limit the override to this one equation and input rank.
+    """
+    from coremltools.converters.mil import Builder as mb
+    from coremltools.converters.mil.frontend import _utils
+
+    original = _utils.build_einsum_mil
+
+    def build_einsum_mil(variables, equation, name):
+        if equation == "...n,d->...nd":
+            if len(variables) != 2 or len(variables[0].shape) != 2 or len(variables[1].shape) != 1:
+                raise ValueError("unexpected FLUX.2 RoPE einsum operand shapes")
+            return mb.mul(x=mb.expand_dims(x=variables[0], axes=[2]),
+                          y=variables[1], name=name)
+        return original(variables, equation, name)
+
+    _utils.build_einsum_mil = build_einsum_mil
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("check", "trace", "convert", "compile"))
@@ -218,6 +242,7 @@ def main(argv=None):
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     traced = torch.jit.load(str(args.trace.resolve()), map_location="cpu")
+    install_rope_einsum_conversion()
     gc.collect()
     print("Converting traced denoiser to an ML Program", flush=True)
     converted = ct.convert(
