@@ -67,7 +67,35 @@ def load_official_model(source, weights, dtype, device, torch):
         out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
         return out.transpose(1, 2).reshape(out.shape[0], out.shape[2], -1)
 
+    # The official RoPE implementation represents each rotation as a 2x2
+    # matrix and temporarily creates rank-6 tensors. Core ML permits rank <=5.
+    # Keep cosine and sine as a pair and rotate adjacent channels directly.
+    def compact_rope(pos, dim, theta):
+        scale = torch.arange(0, dim, 2, dtype=pos.dtype, device=pos.device) / dim
+        angles = pos.unsqueeze(-1) * (1.0 / (theta ** scale))
+        return torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1).float()
+
+    def compact_embed_nd(self, ids):
+        parts = [compact_rope(ids[..., i], self.axes_dim[i], self.theta)
+                 for i in range(len(self.axes_dim))]
+        return torch.cat(parts, dim=-2).unsqueeze(1)
+
+    def compact_apply_rope(xq, xk, freqs):
+        cos = freqs[..., 0]
+        sin = freqs[..., 1]
+
+        def rotate(x):
+            pairs = x.float().reshape(*x.shape[:-1], -1, 2)
+            real, imag = pairs[..., 0], pairs[..., 1]
+            out = torch.stack((cos * real - sin * imag,
+                               sin * real + cos * imag), dim=-1)
+            return out.reshape_as(x).type_as(x)
+
+        return rotate(xq), rotate(xk)
+
     flux2_model.causal_attn_fn = no_reference_attention
+    flux2_model.EmbedND.forward = compact_embed_nd
+    flux2_model.apply_rope = compact_apply_rope
     with torch.device("meta"):
         model = flux2_model.Flux2(flux2_model.Klein4BParams())
     expected = dict(model.named_parameters())
@@ -117,30 +145,6 @@ def read_fixture_array(fixture, manifest, name, np):
         raise ValueError(f"{name} must be float32")
     return np.fromfile(fixture / entry["file"], dtype=np.float32).reshape(
         tuple(reversed(entry["ne"])))
-
-
-def install_rope_einsum_conversion():
-    """Work around coremltools 9's generic converter for FLUX.2 RoPE.
-
-    The official implementation uses ``einsum('...n,d->...nd', pos, omega)``.
-    For its rank-2 position tensor, this is exactly ``pos[..., None] * omega``.
-    Core ML Tools 9's generic einsum solver attempts a rank-4 transpose of
-    a rank-2 tensor. Limit the override to this one equation and input rank.
-    """
-    from coremltools.converters.mil import Builder as mb
-    from coremltools.converters.mil.frontend import _utils
-
-    original = _utils.build_einsum_mil
-
-    def build_einsum_mil(variables, equation, name):
-        if equation == "...n,d->...nd":
-            if len(variables) != 2 or len(variables[0].shape) != 2 or len(variables[1].shape) != 1:
-                raise ValueError("unexpected FLUX.2 RoPE einsum operand shapes")
-            return mb.mul(x=mb.expand_dims(x=variables[0], axes=[2]),
-                          y=variables[1], name=name)
-        return original(variables, equation, name)
-
-    _utils.build_einsum_mil = build_einsum_mil
 
 
 def main(argv=None):
@@ -242,7 +246,6 @@ def main(argv=None):
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     traced = torch.jit.load(str(args.trace.resolve()), map_location="cpu")
-    install_rope_einsum_conversion()
     gc.collect()
     print("Converting traced denoiser to an ML Program", flush=True)
     converted = ct.convert(
