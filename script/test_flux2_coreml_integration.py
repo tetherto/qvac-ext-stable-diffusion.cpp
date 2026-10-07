@@ -36,7 +36,7 @@ class Flux2CoreMLIntegrationTest(unittest.TestCase):
             "--vae", str(self.paths["SDCPP_TEST_FLUX2_VAE"]),
             "--llm", str(self.paths["SDCPP_TEST_FLUX2_LLM"]),
             "-p", "a lovely cat", "--seed", "42",
-            "-W", "1024", "-H", "1024", "--steps", "1",
+            "-W", "1024", "-H", "1024", "--steps", "4",
             "--sampling-method", "euler", "--cfg-scale", "1",
             "--diffusion-fa", "--clip-on-cpu", "--offload-to-cpu",
             "-v", "-o", str(output),
@@ -55,7 +55,7 @@ class Flux2CoreMLIntegrationTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue(json.loads(report.read_text())["passes_reference"])
 
-    def test_generation_uses_coreml_without_ggml_diffusion_weights(self):
+    def test_multistep_generation_uses_coreml_without_ggml_diffusion_weights(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "image.png"
             env = os.environ.copy()
