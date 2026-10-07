@@ -162,7 +162,7 @@ class NonFiniteActivation(RuntimeError):
 
 
 def watch_first_nonfinite(model, torch):
-    """Stop a check at the first module whose output contains NaN or infinity."""
+    """Stop at the first invalid module or unwrapped double-block residual."""
     handles = []
 
     def tensors(value):
@@ -201,7 +201,62 @@ def watch_first_nonfinite(model, torch):
 
     for name, module in model.named_modules():
         handles.append(module.register_forward_hook(make_hook(name or "<root>")))
-    return handles
+
+    # Flux2.forward calls DoubleStreamBlock.forward_kv_extract directly, so
+    # ordinary module hooks cannot observe the residual arithmetic inside it.
+    # Inspect those operations separately without retaining their activations.
+    blocks = model.model.double_blocks
+    block_type = type(blocks[0])
+    original_apply_residuals = block_type._apply_residuals
+    block_names = {id(block): f"model.double_blocks.{index}"
+                   for index, block in enumerate(blocks)}
+
+    def checked_apply_residuals(self, img, txt, img_attn, txt_attn, mods):
+        (img_gate1, img_shift2, img_scale2, img_gate2,
+         txt_gate1, txt_shift2, txt_scale2, txt_gate2) = mods
+        name = block_names[id(self)]
+
+        def checked(operation, inputs, output):
+            if not torch.isfinite(output).all().item():
+                raise NonFiniteActivation({"module": name, "type": "DoubleStreamBlock",
+                                           "operation": operation,
+                                           "inputs": summary(inputs),
+                                           "outputs": summary(output)})
+            return output
+
+        img_proj = self.img_attn.proj(img_attn)
+        img_weighted = checked("image attention gate multiply",
+                               (img_gate1, img_proj), img_gate1 * img_proj)
+        img = checked("image attention residual add", (img, img_weighted), img + img_weighted)
+        img_norm = self.img_norm2(img)
+        img_mod = checked("image MLP modulation", (img_norm, img_scale2, img_shift2),
+                          (1 + img_scale2) * img_norm + img_shift2)
+        img_mlp = self.img_mlp(img_mod)
+        img_weighted = checked("image MLP gate multiply", (img_gate2, img_mlp),
+                               img_gate2 * img_mlp)
+        img = checked("image MLP residual add", (img, img_weighted), img + img_weighted)
+
+        txt_proj = self.txt_attn.proj(txt_attn)
+        txt_weighted = checked("text attention gate multiply",
+                               (txt_gate1, txt_proj), txt_gate1 * txt_proj)
+        txt = checked("text attention residual add", (txt, txt_weighted), txt + txt_weighted)
+        txt_norm = self.txt_norm2(txt)
+        txt_mod = checked("text MLP modulation", (txt_norm, txt_scale2, txt_shift2),
+                          (1 + txt_scale2) * txt_norm + txt_shift2)
+        txt_mlp = self.txt_mlp(txt_mod)
+        txt_weighted = checked("text MLP gate multiply", (txt_gate2, txt_mlp),
+                               txt_gate2 * txt_mlp)
+        txt = checked("text MLP residual add", (txt, txt_weighted), txt + txt_weighted)
+        return img, txt
+
+    block_type._apply_residuals = checked_apply_residuals
+
+    def cleanup():
+        block_type._apply_residuals = original_apply_residuals
+        for handle in handles:
+            handle.remove()
+
+    return cleanup
 
 
 def main(argv=None):
@@ -271,7 +326,7 @@ def main(argv=None):
         if args.mode == "check":
             print("Running one complete PyTorch denoiser call", flush=True)
             started = time.perf_counter()
-            handles = watch_first_nonfinite(wrapper, torch) if args.locate_nonfinite else []
+            cleanup = watch_first_nonfinite(wrapper, torch) if args.locate_nonfinite else None
             try:
                 with torch.inference_mode():
                     actual = wrapper(*inputs).cpu().numpy()
@@ -279,8 +334,8 @@ def main(argv=None):
                 print(json.dumps({"mode": "locate-nonfinite", **exc.report}, indent=2), flush=True)
                 raise SystemExit(1) from None
             finally:
-                for handle in handles:
-                    handle.remove()
+                if cleanup is not None:
+                    cleanup()
             print(f"PyTorch denoiser completed in {time.perf_counter() - started:.1f}s", flush=True)
             if args.finite_only:
                 finite = np.isfinite(actual)

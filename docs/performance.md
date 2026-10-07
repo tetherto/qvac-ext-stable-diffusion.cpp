@@ -139,8 +139,8 @@ a working speedup. A BF16 or numerically stable mixed-precision export is
 needed before further end-to-end benchmarking. The same second call returned
 524,288 finite values in official BF16 PyTorch. To find where FP16 first
 becomes non-finite, repeat the failing check with `--locate-nonfinite`. It
-stops at the first affected module and reports that module's input and output
-ranges, without tracing or writing another model:
+stops at the first affected module or residual operation and reports its input
+and output ranges, without tracing or writing another model:
 
 ```sh
 python3 script/export_flux2_klein_coreml.py check \
