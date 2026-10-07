@@ -2,6 +2,7 @@
 #define __CONDITIONER_HPP__
 
 #include "clip.hpp"
+#include "gemma3.hpp"
 #include "llm.hpp"
 #include "t5.hpp"
 
@@ -2148,6 +2149,144 @@ struct LLMEmbedder : public Conditioner {
         int64_t t1 = ggml_time_ms();
         LOG_DEBUG("computing condition graph completed, taking %" PRId64 " ms", t1 - t0);
         return {hidden_states, nullptr, nullptr, extra_hidden_states_vec};
+    }
+};
+
+// LTX-2 multi-layer feature extractor: aggregates all Gemma-3 decoder layers
+// and projects them to the DiT cross-attention dimension. The learned weights
+// live in the LTX-2 checkpoint under `text_embedding_projection.video_*`.
+//
+// NOTE: the exact aggregation (mean-centering / per-layer scaling) and the
+// projection tensor layout must be reconciled with the Diffusers LTX-2
+// reference. Here we implement flatten([hidden x num_layers]) -> Linear.
+struct Ltx2TextProjection : public GGMLRunner {
+    int64_t in_dim  = 0;  // hidden * num_layers
+    int64_t out_dim = 0;  // cross_attention_dim
+    std::shared_ptr<Linear> proj;
+
+    Ltx2TextProjection(ggml_backend_t backend,
+                       bool offload_params_to_cpu,
+                       const String2TensorStorage& tensor_storage_map,
+                       const std::string prefix = "text_embedding_projection")
+        : GGMLRunner(backend, offload_params_to_cpu) {
+        auto it = tensor_storage_map.find(prefix + ".video_proj.weight");
+        if (it != tensor_storage_map.end() && it->second.n_dims >= 2) {
+            in_dim  = it->second.ne[0];
+            out_dim = it->second.ne[1];
+        }
+        proj = std::make_shared<Linear>(in_dim, out_dim, true);
+        proj->init(params_ctx, tensor_storage_map, prefix + ".video_proj");
+    }
+
+    std::string get_desc() override { return "ltx2_text_proj"; }
+
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
+        proj->get_param_tensors(tensors, prefix + ".video_proj");
+    }
+
+    struct ggml_cgraph* build_graph(struct ggml_tensor* stacked) {
+        struct ggml_cgraph* gf = new_graph_custom(4096);
+        stacked                = to_backend(stacked);  // [hidden, n_token, num_layers]
+        auto runner_ctx        = get_context();
+        auto ctxg              = runner_ctx.ggml_ctx;
+
+        int64_t hidden = stacked->ne[0];
+        int64_t ntok   = stacked->ne[1];
+        int64_t nlayer = stacked->ne[2];
+
+        auto x = ggml_cont(ctxg, ggml_permute(ctxg, stacked, 0, 2, 1, 3));  // [hidden, num_layers, n_token]
+        x      = ggml_reshape_2d(ctxg, x, hidden * nlayer, ntok);            // [hidden*num_layers, n_token]
+        x      = proj->forward(&runner_ctx, x);                             // [out_dim, n_token]
+        x      = ggml_reshape_3d(ctxg, x, x->ne[0], x->ne[1], 1);
+        ggml_build_forward_expand(gf, x);
+        return gf;
+    }
+
+    bool compute(int n_threads, struct ggml_tensor* stacked, struct ggml_tensor** output, struct ggml_context* output_ctx) {
+        auto get_graph = [&]() -> struct ggml_cgraph* { return build_graph(stacked); };
+        return GGMLRunner::compute(get_graph, n_threads, false, output, output_ctx);
+    }
+};
+
+// Minimal Gemma tokenizer. Gemma uses a SentencePiece model that is not
+// embedded here; for the synthetic/integration path we emit a deterministic
+// byte-level token stream with a leading BOS. Real generation requires the
+// Gemma-3 SentencePiece vocabulary (loaded from the GGUF or embedded).
+struct GemmaTokenizer {
+    int bos_token_id   = 2;
+    int eos_token_id   = 1;
+    int64_t vocab_size = 262208;
+
+    std::vector<int> tokenize(const std::string& text) {
+        std::vector<int> ids;
+        ids.push_back(bos_token_id);
+        for (unsigned char c : text) {
+            ids.push_back(static_cast<int>(c) % static_cast<int>(vocab_size));
+        }
+        return ids;
+    }
+};
+
+// LTX-2 text conditioner: Gemma-3 encoder -> multi-layer feature extractor ->
+// cross-attention context for the video DiT.
+struct Ltx2Conditioner : public Conditioner {
+    GemmaTokenizer tokenizer;
+    std::shared_ptr<GEMMA3::Gemma3Runner> gemma;
+    std::shared_ptr<Ltx2TextProjection> projection;
+    std::string gemma_prefix;
+    std::string proj_prefix;
+
+    Ltx2Conditioner(ggml_backend_t backend,
+                    bool offload_params_to_cpu,
+                    const String2TensorStorage& tensor_storage_map,
+                    const std::string gemma_prefix = "text_encoders.llm",
+                    const std::string proj_prefix  = "model.diffusion_model.text_embedding_projection")
+        : gemma_prefix(gemma_prefix), proj_prefix(proj_prefix) {
+        gemma                = std::make_shared<GEMMA3::Gemma3Runner>(backend, offload_params_to_cpu, tensor_storage_map, gemma_prefix);
+        tokenizer.vocab_size = gemma->params.vocab_size;
+        projection           = std::make_shared<Ltx2TextProjection>(backend, offload_params_to_cpu, tensor_storage_map, proj_prefix);
+    }
+
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) override {
+        gemma->get_param_tensors(tensors, gemma_prefix);
+        projection->get_param_tensors(tensors, proj_prefix);
+    }
+
+    void alloc_params_buffer() override {
+        gemma->alloc_params_buffer();
+        projection->alloc_params_buffer();
+    }
+
+    void free_params_buffer() override {
+        gemma->free_params_buffer();
+        projection->free_params_buffer();
+    }
+
+    size_t get_params_buffer_size() override {
+        return gemma->get_params_buffer_size() + projection->get_params_buffer_size();
+    }
+
+    void set_flash_attention_enabled(bool enabled) override {
+        gemma->set_flash_attention_enabled(enabled);
+        projection->set_flash_attention_enabled(enabled);
+    }
+
+    SDCondition get_learned_condition(ggml_context* work_ctx,
+                                      int n_threads,
+                                      const ConditionerParams& conditioner_params) override {
+        std::vector<int> tokens = tokenizer.tokenize(conditioner_params.text);
+        auto input_ids          = ggml_new_tensor_1d(work_ctx, GGML_TYPE_I32, tokens.size());
+        for (size_t i = 0; i < tokens.size(); i++) {
+            ggml_set_i32_1d(input_ids, i, tokens[i]);
+        }
+
+        struct ggml_tensor* stacked = nullptr;
+        gemma->compute(n_threads, input_ids, &stacked, work_ctx);  // [hidden, n_token, num_layers]
+
+        struct ggml_tensor* context = nullptr;
+        projection->compute(n_threads, stacked, &context, work_ctx);  // [cross_attention_dim, n_token, 1]
+
+        return SDCondition(context, nullptr, nullptr);
     }
 };
 
