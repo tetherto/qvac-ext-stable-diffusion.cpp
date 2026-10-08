@@ -1,5 +1,5 @@
 #include "conditioning/conditioner.hpp"
-#include "model/diffusion/flux.hpp"
+#include "model/diffusion/flux_coreml_runner.h"
 #include "model/integrations/flux.hpp"
 #include "model_definition.h"
 #include "pipeline/model_builders.h"
@@ -17,7 +17,7 @@ static bool build_flux2(const sd::model_builders::Context& ctx, const TokenizerC
                                                                    false,
                                                                    weight_manager,
                                                                    tokenizers);
-    result.diffusion               = std::make_shared<Flux::FluxRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
+    result.diffusion               = std::make_shared<FluxCoreMLRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
                                                                         tensor_storage_map,
                                                                         "model.diffusion_model",
                                                                         version,

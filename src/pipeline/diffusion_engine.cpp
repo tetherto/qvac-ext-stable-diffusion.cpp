@@ -1,3 +1,4 @@
+#include "model/diffusion/flux_coreml_runner.h"
 #include "diffusion_engine.h"
 
 #include <algorithm>
@@ -323,6 +324,7 @@ bool StableDiffusionGGML::register_runner_params(ModelComponent component,
     if constexpr (std::is_base_of_v<GGMLRunner, T> ||
                   std::is_base_of_v<Conditioner, T> ||
                   std::is_base_of_v<GenerationExtension, T>) model->set_fit_module(module);
+    LOG_DEBUG("%s runtime backend: %s", model_component_name(component), ggml_backend_name(backend_for(module)));
     std::map<std::string, ggml_tensor*> group_tensors;
     std::map<ggml_tensor*, enum ggml_op> tensor_ops;
     model->get_param_tensors(group_tensors);
@@ -1120,6 +1122,11 @@ bool StableDiffusionGGML::build_core_runners() {
     ip_adapter                 = std::move(runners.ip_adapter);
     audio_encoder              = std::move(runners.audio_encoder);
 
+    auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+    if (coreml_flux_model && coreml_flux_model->is_coreml_requested() && !coreml_flux_model->is_coreml_ready()) {
+        LOG_ERROR("Core ML FLUX.2 denoiser was requested but could not be loaded");
+        return false;
+    }
     cond_stage_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::TE));
     diffusion_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::DIFFUSION));
     if (high_noise_diffusion_model) {
@@ -1355,6 +1362,10 @@ bool StableDiffusionGGML::validate_and_load_runners() {
     }
     for (auto& extension : generation_extensions) {
         extension->add_ignore_tensors(ignore_tensors);
+    }
+    auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+    if (coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+        ignore_tensors.insert("model.diffusion_model.");
     }
     ignore_tensors.insert("model.diffusion_model.__x0__");
     ignore_tensors.insert("model.diffusion_model.__32x32__");
@@ -1881,6 +1892,12 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
         extension->collect_loras(all_loras);
     }
 
+    auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+    if (!all_loras.empty() && coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+        LOG_ERROR("LoRA requests are not supported by the Core ML FLUX.2 denoiser");
+        last_lora_apply_result = {false, false};
+        return false;
+    }
     int64_t t0 = ggml_time_ms();
     end_runners();
     if (!model_manager->prepare_lora_sources(all_loras)) {
