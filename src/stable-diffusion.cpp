@@ -19,10 +19,12 @@
 #include "model_manager.h"
 #include "stable-diffusion.h"
 
+#include "abot_world.hpp"
 #include "conditioning/conditioner.hpp"
 #include "core/backend_fit.h"
 #include "core/fit_params.h"
 #include "extensions/generation_extension.h"
+#include "ltx_conditioning.hpp"
 #include "model/adapter/ip_adapter.hpp"
 #include "model/adapter/lora.hpp"
 #include "model/diffusion/anima.hpp"
@@ -30,7 +32,7 @@
 #include "model/diffusion/boogu.hpp"
 #include "model/diffusion/control.hpp"
 #include "model/diffusion/ernie_image.hpp"
-#include "model/diffusion/flux.hpp"
+#include "model/diffusion/flux_coreml_runner.h"
 #include "model/diffusion/hidream_o1.hpp"
 #include "model/diffusion/hunyuan.hpp"
 #include "model/diffusion/ideogram4.hpp"
@@ -47,7 +49,6 @@
 #include "model/diffusion/qwen_image.hpp"
 #include "model/diffusion/unet.hpp"
 #include "model/diffusion/wan.hpp"
-#include "abot_world.hpp"
 #include "model/diffusion/z_image.hpp"
 #include "model/upscaler/esrgan.hpp"
 #include "model/upscaler/ltx_latent_upscaler.hpp"
@@ -64,7 +65,6 @@
 #include "runtime/denoiser.hpp"
 #include "runtime/guidance.h"
 #include "runtime/sample-cache.h"
-#include "ltx_conditioning.hpp"
 #include "upscaler.h"
 
 #include "name_conversion.h"
@@ -350,6 +350,7 @@ public:
                       std::is_base_of_v<GenerationExtension, T>) {
             model->set_fit_module(module);
         }
+        LOG_DEBUG("%s runtime backend: %s", desc.c_str(), ggml_backend_name(backend_for(module)));
         std::map<std::string, ggml_tensor*> group_tensors;
         std::map<ggml_tensor*, enum ggml_op> tensor_ops;
         model->get_param_tensors(group_tensors);
@@ -1154,7 +1155,7 @@ public:
                                                                           tensor_storage_map,
                                                                           model_manager);
                 }
-                diffusion_model = std::make_shared<Flux::FluxRunner>(backend_for(SDBackendModule::DIFFUSION),
+                diffusion_model = std::make_shared<FluxCoreMLRunner>(backend_for(SDBackendModule::DIFFUSION),
                                                                      tensor_storage_map,
                                                                      "model.diffusion_model",
                                                                      version,
@@ -1168,12 +1169,12 @@ public:
                                                                  "",
                                                                  false,
                                                                  model_manager);
-                diffusion_model  = std::make_shared<Flux::FluxRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                     tensor_storage_map,
-                                                                     "model.diffusion_model",
-                                                                     version,
-                                                                     model_manager,
-                                                                     sd_ctx_params->model_args);
+                diffusion_model  = std::make_shared<FluxCoreMLRunner>(backend_for(SDBackendModule::DIFFUSION),
+                                                                      tensor_storage_map,
+                                                                      "model.diffusion_model",
+                                                                      version,
+                                                                      model_manager,
+                                                                      sd_ctx_params->model_args);
             } else if (sd_version_is_ltxav(version)) {
                 cond_stage_model = std::make_shared<LTXAVEmbedder>(backend_for(SDBackendModule::TE),
                                                                    tensor_storage_map,
@@ -1293,12 +1294,12 @@ public:
                                                                  "",
                                                                  true,
                                                                  model_manager);
-                diffusion_model  = std::make_shared<Flux::FluxRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                     tensor_storage_map,
-                                                                     "model.diffusion_model",
-                                                                     version,
-                                                                     model_manager,
-                                                                     sd_ctx_params->model_args);
+                diffusion_model  = std::make_shared<FluxCoreMLRunner>(backend_for(SDBackendModule::DIFFUSION),
+                                                                      tensor_storage_map,
+                                                                      "model.diffusion_model",
+                                                                      version,
+                                                                      model_manager,
+                                                                      sd_ctx_params->model_args);
             } else if (version == VERSION_HIDREAM_O1) {
                 cond_stage_model = std::make_shared<HiDreamO1::HiDreamO1Conditioner>(backend_for(SDBackendModule::TE),
                                                                                      tensor_storage_map,
@@ -1388,6 +1389,12 @@ public:
                     LOG_INFO("Using Conv2d direct in the diffusion model");
                     diffusion_model->set_conv2d_direct_enabled(true);
                 }
+            }
+
+            auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+            if (coreml_flux_model && coreml_flux_model->is_coreml_requested() && !coreml_flux_model->is_coreml_ready()) {
+                LOG_ERROR("Core ML FLUX.2 denoiser was requested but could not be loaded");
+                return false;
             }
 
             cond_stage_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::TE));
@@ -1707,6 +1714,10 @@ public:
         }
         for (auto& extension : generation_extensions) {
             extension->add_ignore_tensors(ignore_tensors);
+        }
+        auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+        if (coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+            ignore_tensors.insert("model.diffusion_model.");
         }
         ignore_tensors.insert("model.diffusion_model.__x0__");
         ignore_tensors.insert("model.diffusion_model.__32x32__");
@@ -2223,6 +2234,11 @@ public:
             extension->collect_loras(all_loras);
         }
 
+        auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+        if (!all_loras.empty() && coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+            LOG_ERROR("LoRA requests are not supported by the Core ML FLUX.2 denoiser");
+            return {false, false};
+        }
         int64_t t0 = ggml_time_ms();
         LoraApplyResult result = apply_lora_immediately
                                      ? apply_loras_immediately(all_loras)
@@ -6082,7 +6098,9 @@ SD_API bool generate_image(sd_ctx_t* sd_ctx,
     sd_ctx->sd->rng->manual_seed(request.seed);
     sd_ctx->sd->sampler_rng->manual_seed(request.seed);
     sd_ctx->sd->set_flow_shift(sd_img_gen_params->sample_params.flow_shift);
-    sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count);
+    if (!sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count).all_requested_applied) {
+        return false;
+    }
     apply_circular_axes_to_diffusion(sd_ctx, sd_img_gen_params->circular_x, sd_img_gen_params->circular_y);
 
     const RefImageParams ref_image_params = sd_ctx->sd->resolve_ref_image_params(sd_img_gen_params->ref_image_args);
@@ -7475,6 +7493,9 @@ SD_API bool generate_video(sd_ctx_t* sd_ctx,
     sd_ctx->sd->set_flow_shift(sd_vid_gen_params->sample_params.flow_shift);
     const auto lora_result = sd_ctx->sd->apply_loras(sd_vid_gen_params->loras,
                                                      sd_vid_gen_params->lora_count);
+    if (!lora_result.all_requested_applied) {
+        return false;
+    }
     if (has_ltx_reference &&
         (!lora_result.all_requested_applied || !lora_result.diffusion_lora_applied)) {
         LOG_ERROR("LTX IC-LoRA reference conditioning requires a successfully applied diffusion LoRA");

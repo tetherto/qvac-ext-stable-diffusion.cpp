@@ -76,3 +76,198 @@ Ordered from fastest to smallest-VRAM: no flags → `--offload-to-cpu` → `--of
 ## Use quantization to reduce memory usage.
 
 [quantization](./quantization_and_gguf.md)
+
+## FLUX.2-klein 4B Core ML validation
+
+The engine has an optional Core ML denoiser runtime on macOS. It accepts a
+compiled `.mlmodelc` sidecar through `SDCPP_FLUX2_COREML_MODEL`. The sidecar
+must contain the complete FLUX.2-klein denoiser. Without the variable, the
+existing GGML path remains in use.
+
+Build the runtime alongside Metal:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSD_METAL=ON -DSD_COREML=ON
+cmake --build build --config Release -j 8
+```
+
+The current sidecar interface requires fixed-shape, contiguous float32 Core ML
+multiarrays named `latent`, `timesteps`, and `context`. It may additionally
+accept `pooled` and `guidance` when present. Its float32 output must be named
+`output` and match the latent shape. Core ML dimensions reverse GGML's `ne`
+order; for example, GGML `[W,H,C,N]` maps to Core ML `[N,C,H,W]`. The runtime
+supports text-to-image without reference latents, skipped layers, or LoRA.
+Invalid sidecars and unsupported inputs fail instead of falling back to GGML.
+When Core ML is selected, the engine does not allocate or load GGML diffusion
+weights, avoiding a second denoiser copy in memory.
+
+The 16 GiB Apple M4 FLUX.1-schnell Q4_0 baseline spent 155.18 seconds in four
+denoiser calls and 178.18 seconds on generation. Its 6.23 GiB GGUF would
+require 22.15 GiB for dense FP16 weights alone, so FLUX.2-klein 4B is the
+first complete-denoiser target on that machine.
+
+Download the FLUX.2-klein 4B model, VAE, and Qwen3 4B text encoder described
+in [FLUX.2 setup](flux2.md). Record a GGML Metal baseline and capture its
+first denoiser invocation with the same prompt, seed, dimensions, and options
+that will be used for Core ML:
+
+```sh
+SDCPP_FLUX_CAPTURE_DIR=bench-results/flux2-klein-4b-1024-fixture \
+python3 script/bench_coreml_baseline.py \
+  --binary build/bin/sd-cli \
+  --output-dir bench-results/flux2-klein-4b-1024-metal \
+  --warmup 0 --runs 1 --require-flux-profile -- \
+  --diffusion-model models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --vae models/flux2-klein-4b/split_files/vae/flux2-vae.safetensors \
+  --llm models/flux2-klein-4b/Qwen3-4B-Q4_K_M.gguf \
+  -p 'a lovely cat' --seed 42 -W 1024 -H 1024 \
+  --steps 4 --sampling-method euler --cfg-scale 1 \
+  --diffusion-fa --clip-on-cpu --offload-to-cpu
+cat bench-results/flux2-klein-4b-1024-fixture/manifest.json
+```
+
+The benchmark writes a log, image, and phase timings in `report.json`. The
+fixture contains exact float32 inputs and GGML output for numerical comparison.
+For a multi-step quality investigation, set `SDCPP_FLUX_CAPTURE_ALL=1` alongside
+`SDCPP_FLUX_CAPTURE_DIR`; each denoiser call is then captured under `call-1`,
+`call-2`, and so on. Use a new capture directory for each run.
+On a 16 GiB M4 at 1024 × 1024 with four steps, one measured FLUX.2-klein 4B
+run took 154.99 seconds for generation and 132.36 seconds in four denoiser
+calls. This single run establishes the optimization target, not a speedup.
+
+The exporter imports the official
+[Black Forest Labs FLUX.2 implementation](https://github.com/black-forest-labs/flux2)
+from a separate source checkout. Use a separate Python environment with the
+versions in `script/requirements-flux2-coreml.txt`. PyTorch 2.7 is the latest
+version tested by coremltools 9, and NumPy is kept below 2.4 for conversion
+compatibility. The model checkpoint is about
+7.2 GiB, and tracing or conversion may exceed 16 GiB of memory. A Mac with
+more RAM is preferable for export; transfer the resulting `.mlpackage` to the
+M4 and compile it there if needed. Keep the captured fixture and baseline on
+the M4. The command examples below use a fresh output location and should be
+run from the repository root.
+
+```sh
+python3 -m venv .venv-flux2-export
+source .venv-flux2-export/bin/activate
+python -m pip install -r script/requirements-flux2-coreml.txt
+```
+
+First validate that the official PyTorch model reproduces the GGML call. This
+is a required gate before exporting. It is a full denoiser invocation and can
+take several minutes on CPU. The command prints separate checkpoint loading and
+denoiser timing messages. Add `--device mps` to the `check` or `trace` command
+if PyTorch MPS is available and CPU inference is too slow:
+
+```sh
+git clone --depth 1 https://github.com/black-forest-labs/flux2.git ../flux2-official
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-4b-1024-fixture
+```
+
+The check defaults to BF16, matching the checkpoint's precision. Repeat it
+with `--check-dtype fp16` before tracing; the traced model uses FP16 for Core ML.
+Both checks must meet the 0.03 normalized RMSE gate. A single-call numerical
+comparison does not establish full image quality. Also check a later denoiser
+call with `--finite-only` before tracing. This checks the official PyTorch
+model without using the captured output as a reference:
+
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --check-dtype fp16 --finite-only
+```
+
+On the 16 GiB M4, this captured second call returned 0 finite values out of
+524,288 in the official FP16 PyTorch model. The FP16 Core ML conversion also
+returned 0 finite values on the same call. The failure therefore precedes
+Core ML conversion; the current FP16 export is unsuitable for multi-step image
+generation. Do not treat its first-call parity result or measured runtime as
+a working speedup. A BF16 or numerically stable mixed-precision export is
+needed before further end-to-end benchmarking. The same second call returned
+524,288 finite values in official BF16 PyTorch. To find where FP16 first
+becomes non-finite, repeat the failing check with `--locate-nonfinite`. It
+stops at the first affected module or residual operation and reports its input
+and output ranges, without tracing or writing another model:
+
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --check-dtype fp16 --finite-only --locate-nonfinite
+```
+
+The first observed FP16 overflow is the text MLP gate multiplication in
+double block 4. Saturating these residuals to the finite FP16 range kept the
+second call finite but missed the GGML parity gate (0.0652 normalized RMSE).
+`--safe-fp16` now keeps the residual streams in float32 while retaining FP16
+linear weights and casting normalized inputs at each linear layer. Check the
+captured later call against a GGML capture before tracing or benchmarking;
+finite output alone does not establish acceptable numerical parity or image
+quality:
+
+```sh
+python3 script/export_flux2_klein_coreml.py check \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-4b-ggml-all-reference/call-2 \
+  --check-dtype fp16 --safe-fp16
+```
+
+Only after all checks pass, trace, convert, and compile in separate
+processes. Each output path must be new. The model has fixed dimensions from
+the fixture; changing image size or text length requires another export. The
+trace step runs the traced graph against the fixture and only saves it if that
+comparison passes. It uses paired cosine and sine values for RoPE so no
+intermediate tensor exceeds Core ML's rank-5 limit, and retains fractional
+timesteps in float32 through their sinusoidal embedding. Older traces must be
+regenerated. Conversion preserves the traced model's explicit float32 math.
+The exporter remains experimental until the multi-step failure is resolved.
+
+```sh
+python3 script/export_flux2_klein_coreml.py trace \
+  --source ../flux2-official \
+  --weights models/flux2-klein-4b/flux-2-klein-4b.safetensors \
+  --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --safe-fp16 \
+  --output bench-results/flux2-klein-4b-1024.pt
+python3 script/export_flux2_klein_coreml.py convert \
+  --trace bench-results/flux2-klein-4b-1024.pt \
+  --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --output bench-results/flux2-klein-4b-1024.mlpackage
+python3 script/export_flux2_klein_coreml.py compile \
+  --package bench-results/flux2-klein-4b-1024.mlpackage \
+  --output bench-results/flux2-klein-4b-1024.mlmodelc
+```
+
+After compilation, verify one Core ML call against the fixture before running
+image generation:
+
+```sh
+python3 script/compare_flux_coreml_fixture.py \
+  --model bench-results/flux2-klein-4b-1024.mlmodelc \
+  --fixture bench-results/flux2-klein-4b-1024-fixture \
+  --output bench-results/flux2-klein-4b-coreml-parity.json
+```
+
+If a later denoiser call was captured, also test that exact input before a full
+generation. This mode checks shape and finite values without comparing with
+the captured output, so it can be used when that output contains NaNs:
+
+```sh
+python3 script/compare_flux_coreml_fixture.py \
+  --model bench-results/flux2-klein-4b-1024.mlmodelc \
+  --fixture bench-results/flux2-klein-v4-failure-capture/call-2 \
+  --output bench-results/flux2-klein-4b-coreml-step2.json \
+  --finite-only
+```
+
+After these checks pass, run a full generation using
+`SDCPP_FLUX2_COREML_MODEL=/absolute/path/to/flux2-klein-4b.mlmodelc` with the
+same CLI options and a fresh output directory. Compare denoiser time,
+generation time, peak memory, and the image against the Metal baseline.

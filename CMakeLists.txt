@@ -92,6 +92,7 @@ option(SD_WEBM                       "sd: enable WebM video output support" ${SD
 option(SD_USE_SYSTEM_WEBM            "sd: link against system libwebm" OFF)
 option(SD_CUDA                       "sd: cuda backend" OFF)
 option(SD_HIPBLAS                    "sd: rocm backend" OFF)
+option(SD_COREML                     "sd: Core ML FLUX.2 denoiser sidecar" OFF)
 option(SD_METAL                      "sd: metal backend" OFF)
 option(SD_VULKAN                     "sd: vulkan backend" OFF)
 option(SD_OPENCL                     "sd: opencl backend" OFF)
@@ -245,6 +246,14 @@ file(GLOB SD_LIB_SOURCES CONFIGURE_DEPENDS
     "src/tokenizers/vocab/*.cpp"
 )
 
+if(SD_COREML)
+    if(NOT APPLE)
+        message(FATAL_ERROR "SD_COREML requires macOS")
+    endif()
+    enable_language(OBJC OBJCXX)
+    list(APPEND SD_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/flux_coreml.mm")
+endif()
+
 find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
 if(GIT_EXE)
     execute_process(COMMAND ${GIT_EXE} describe --tags --abbrev=7 --dirty=+
@@ -358,6 +367,12 @@ target_include_directories(${SD_LIB} PUBLIC . src include)
 target_include_directories(${SD_LIB} PRIVATE src/core)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)
 target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
+
+if(SD_COREML)
+    target_compile_definitions(${SD_LIB} PRIVATE SD_USE_COREML)
+    set_source_files_properties(src/flux_coreml.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(${SD_LIB} PRIVATE "-framework CoreML" "-framework Foundation")
+endif()
 
 # GGML's logical-buffer capacity query is append-only, but this branch also
 # builds against the older bundled submodule. Detect the declaration in the
