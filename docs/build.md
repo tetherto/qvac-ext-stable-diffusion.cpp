@@ -85,6 +85,15 @@ cmake --build . --config Release
 
 This provides GPU acceleration using NVIDIA GPU. Make sure to have the CUDA toolkit installed. You can download it from your Linux distro's package manager (e.g. `apt install nvidia-cuda-toolkit`) or from here: [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads). Recommended to have at least 4 GB of VRAM.
 
+When building with Clang (including libc++ toolchains), `SD_CUDA` uses the
+selected C++ compiler as NVCC's host compiler unless
+`CMAKE_CUDA_HOST_COMPILER` is set explicitly. CUDA 13 target-layout installs
+are discovered automatically; no `CUDACXX` or `CMAKE_PREFIX_PATH` workaround
+is required. Explicit `CUDAToolkit_ROOT`, `CMAKE_CUDA_COMPILER`, and
+`CMAKE_CUDA_HOST_COMPILER` settings remain authoritative. On Linux, an
+installation at `/usr/local/cuda` is preferred over an older `nvcc` found only
+through `PATH`.
+
 ```shell
 mkdir build && cd build
 cmake .. -DSD_CUDA=ON
