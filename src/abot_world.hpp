@@ -1448,7 +1448,7 @@ public:
                                                static_cast<size_t>(W * H / 4) * runner->wan_params.dim * 2 * sizeof(float)
                                          : 0);
             host_inputs        = std::max(host_inputs, input);
-            retained_inputs    = std::max(retained_inputs, tokens * runner->wan_params.axes_dim_sum * 2 * sizeof(float) +
+            retained_inputs    = std::max<size_t>(retained_inputs, tokens * runner->wan_params.axes_dim_sum * 2 * sizeof(float) +
                                                                (cfg.kv_cache ? static_cast<size_t>(Fb) * W * H * 8192 * sizeof(float) : 0));
         }
         if (!tae->measure_decode(W, H, Fb, n_threads) ||
