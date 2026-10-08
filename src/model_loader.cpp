@@ -166,6 +166,57 @@ static void apply_regular_hadamard_4(float* values, size_t stride) {
     values[3 * stride] = (-a + b + c + d) * 0.5f;
 }
 
+// Convert ComfyUI's cuBLAS blocked FP8 scale layout and interleaved FP4
+// nibbles into ggml's 64-value NVFP4 blocks. The global F32 scale remains a
+// separate Linear parameter, so this conversion does not requantize weights.
+static bool repack_comfy_nvfp4(const TensorStorage& storage,
+                                const uint8_t* packed,
+                                const uint8_t* blocked_scales,
+                                uint8_t* output,
+                                ggml_type dst_type,
+                                std::string* error) {
+    if (!storage.is_comfy_nvfp4_weight() || dst_type != GGML_TYPE_NVFP4 ||
+        ggml_blck_size(dst_type) != 64 || ggml_type_size(dst_type) != 36) {
+        *error = "invalid ComfyUI NVFP4 tensor or destination type";
+        return false;
+    }
+    const size_t columns = static_cast<size_t>(storage.ne[0]);
+    const size_t rows = static_cast<size_t>(storage.ne[1]);
+    const size_t padded_blocks = static_cast<size_t>(storage.comfy_nvfp4_block_scale.ne[0]);
+    const size_t padded_rows = static_cast<size_t>(storage.comfy_nvfp4_block_scale.ne[1]);
+    if (rows > padded_rows || padded_rows % 128 != 0 || padded_blocks % 4 != 0 ||
+        padded_blocks < columns / 16 ||
+        storage.comfy_nvfp4_block_scale.nbytes != padded_rows * padded_blocks) {
+        *error = "invalid ComfyUI NVFP4 block scale dimensions";
+        return false;
+    }
+    const size_t column_tiles = padded_blocks / 4;
+    const size_t blocks_per_row = columns / 64;
+    auto nibble = [](const uint8_t* row, size_t column) -> uint8_t {
+        const uint8_t byte = row[column / 2];
+        return (column & 1) ? byte & 0x0f : byte >> 4;
+    };
+    for (size_t row = 0; row < rows; ++row) {
+        const uint8_t* packed_row = packed + row * columns / 2;
+        for (size_t block = 0; block < blocks_per_row; ++block) {
+            uint8_t* dst = output + (row * blocks_per_row + block) * 36;
+            for (size_t sub = 0; sub < 4; ++sub) {
+                const size_t scale_col = block * 4 + sub;
+                const size_t tile = (row / 128) * column_tiles + scale_col / 4;
+                const size_t swizzled = tile * 512 + (row % 32) * 16 +
+                                        ((row % 128) / 32) * 4 + scale_col % 4;
+                dst[sub] = blocked_scales[swizzled];
+                const size_t start = block * 64 + sub * 16;
+                for (size_t j = 0; j < 8; ++j) {
+                    dst[4 + sub * 8 + j] = nibble(packed_row, start + j) |
+                                             (nibble(packed_row, start + j + 8) << 4);
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static bool dequantize_comfy_int8_tensorwise(const TensorStorage& tensor_storage,
                                              const int8_t* quantized,
                                              const float* scales,
@@ -963,6 +1014,10 @@ void ModelLoader::set_wtype_override(ggml_type wtype, std::string tensor_type_ru
         if (!tensor_should_be_converted(tensor_storage, dst_type)) {
             continue;
         }
+        if (tensor_storage.is_comfy_nvfp4) {
+            LOG_WARN("ignoring weight-type override for ComfyUI NVFP4 tensor '%s'", name.c_str());
+            continue;
+        }
         if (tensor_storage.is_comfy_int8_tensorwise && ggml_is_quantized(dst_type)) {
             LOG_WARN("ignoring quantized weight-type override for ComfyUI Int8 tensor '%s'", name.c_str());
             continue;
@@ -1077,7 +1132,8 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
             if (dst_tensor == nullptr)
                 continue;
 
-            if (tensor_storage.is_f8_e4m3 ||
+            if (tensor_storage.is_comfy_nvfp4 ||
+                tensor_storage.is_f8_e4m3 ||
                 tensor_storage.is_f8_e5m2 ||
                 tensor_storage.is_f64 ||
                 tensor_storage.is_i64 ||
@@ -1346,11 +1402,34 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                         return true;
                     };
 
+                    auto read_comfy_nvfp4_scales = [&](char* buf, size_t n) -> bool {
+                        if (zip != nullptr) {
+                            LOG_ERROR("ComfyUI NVFP4 tensor '%s' cannot be stored in a zip file", tensor_storage.name.c_str());
+                            return false;
+                        }
+                        if (mmapped) {
+                            if (!mmapped->copy_data(buf, n, tensor_storage.comfy_nvfp4_block_scale.offset)) {
+                                LOG_ERROR("read ComfyUI NVFP4 scales failed: '%s'", file_path.c_str());
+                                return false;
+                            }
+                        } else {
+                            file.clear();
+                            file.seekg(static_cast<std::streamoff>(tensor_storage.comfy_nvfp4_block_scale.offset));
+                            file.read(buf, static_cast<std::streamsize>(n));
+                            if (!file) {
+                                LOG_ERROR("read ComfyUI NVFP4 scales failed: '%s'", file_path.c_str());
+                                return false;
+                            }
+                        }
+                        return true;
+                    };
+
                     char* read_buf    = nullptr;
                     char* target_buf  = nullptr;
                     char* convert_buf = nullptr;
                     const bool is_comfy_int8 = tensor_storage.is_comfy_int8_tensorwise;
-                    if (is_comfy_int8) {
+                    const bool is_comfy_nvfp4 = tensor_storage.is_comfy_nvfp4;
+                    if (is_comfy_int8 || is_comfy_nvfp4) {
                         read_buffer.resize(nbytes_to_read);
                         read_buf = reinterpret_cast<char*>(read_buffer.data());
                         if (dst_tensor->buffer == nullptr || ggml_backend_buffer_is_host(dst_tensor->buffer)) {
@@ -1415,6 +1494,25 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                             break;
                         }
                         convert_buf = target_buf;
+                    } else if (is_comfy_nvfp4) {
+                        std::vector<uint8_t> scales(tensor_storage.comfy_nvfp4_block_scale.nbytes);
+                        if (!read_comfy_nvfp4_scales(reinterpret_cast<char*>(scales.data()), scales.size())) {
+                            failed = true;
+                            break;
+                        }
+                        std::string repack_error;
+                        if (!repack_comfy_nvfp4(tensor_storage,
+                                                 reinterpret_cast<const uint8_t*>(read_buf),
+                                                 scales.data(),
+                                                 reinterpret_cast<uint8_t*>(target_buf),
+                                                 dst_tensor->type,
+                                                 &repack_error)) {
+                            LOG_ERROR("ComfyUI NVFP4 tensor '%s' cannot be repacked: %s",
+                                      tensor_storage.name.c_str(), repack_error.c_str());
+                            failed = true;
+                            break;
+                        }
+                        convert_buf = target_buf;
                     } else if (tensor_storage.is_f8_e4m3) {
                         f8_e4m3_to_f16_vec((uint8_t*)read_buf, (uint16_t*)target_buf, tensor_storage.nelements());
                     } else if (tensor_storage.is_f8_e5m2) {
@@ -1424,7 +1522,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                     } else if (tensor_storage.is_i64) {
                         i64_to_i32_vec((int64_t*)read_buf, (int32_t*)target_buf, tensor_storage.nelements());
                     }
-                    if (!is_comfy_int8 && tensor_storage.type != dst_tensor->type) {
+                    if (!is_comfy_int8 && !is_comfy_nvfp4 && tensor_storage.type != dst_tensor->type) {
                         if (convert_buf == nullptr) {
                             LOG_ERROR("read tensor data failed: too less memory for conversion");
                             failed = true;
@@ -1439,7 +1537,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                                        tensor_storage.nelements() / tensor_storage.ne[0],
                                        tensor_storage.ne[0],
                                        std::move(imatrix));
-                    } else if (!is_comfy_int8) {
+                    } else if (!is_comfy_int8 && !is_comfy_nvfp4) {
                         convert_buf = read_buf;
                     }
                     t1 = ggml_time_ms();
@@ -1456,7 +1554,8 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                     }
 
                     bytes_processed.fetch_add((uint64_t)nbytes_to_read +
-                                              (is_comfy_int8 ? tensor_storage.comfy_int8_scale.nbytes : 0));
+                                              (is_comfy_int8 ? tensor_storage.comfy_int8_scale.nbytes : 0) +
+                                              (is_comfy_nvfp4 ? tensor_storage.comfy_nvfp4_block_scale.nbytes : 0));
                 }
                 if (zip != nullptr) {
                     zip_close(zip);
