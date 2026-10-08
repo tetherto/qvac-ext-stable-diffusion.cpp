@@ -49,6 +49,21 @@ it consistently.
 
 ## Walk memory controls
 
+`sd_abot_fit_params` estimates a session for the placement in
+`sd_abot_session_params_v2_t`. Initialize `sd_abot_fit_workload_t` with
+`sd_abot_fit_workload_init` for the default of 100 walk steps, or set
+`walk_steps` to the intended session length (1–1,000,000). The check reads only
+the DiT, taehv and scene-pack headers and measures their execution graphs;
+it does not load weights, allocate frame buffers or generate frames.
+
+The estimate includes parameter storage and staging, attention caches,
+decoder memory, full RGB frame buffers and retained latent history. A finite
+attention window bounds the attention graph, but generated latent frames
+remain in RAM for the session's lifetime. The stated length affects only the
+estimate and does not limit generation. Scene creation with umT5 and the Wan
+VAE is a separate operation and is outside this session estimate. Free the
+returned report with `sd_fit_result_free`.
+
 `sd_abot_session_params_v2_t` uses the same parameter manager and graph-cut
 executor as the normal `sd_ctx` path (including MiniMax-H3):
 

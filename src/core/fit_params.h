@@ -37,6 +37,16 @@ namespace sd::fit_params {
         std::string report;  // human readable per-device / per-module table
     };
 
+    struct BackendMemory {
+        ggml_backend_t backend = nullptr;
+        size_t bytes           = 0;
+    };
+
+    bool check_placement(const std::vector<BackendMemory>& memory,
+                         size_t host_bytes,
+                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
+                         FitPlan* plan);
+
     // derive placement specs from measured module memory and per-device budgets
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,

@@ -7968,6 +7968,119 @@ sd_abot_session_t* sd_abot_session_new_v2(const sd_abot_session_params_v2_t* p) 
         return s.release();
     } catch (const std::exception& e) { LOG_ERROR("sd_abot_session_new: %s", e.what()); return nullptr; }
 }
+
+void sd_abot_fit_workload_init(sd_abot_fit_workload_t* workload) {
+    if (workload != nullptr) {
+        *workload = {100};
+    }
+}
+
+enum sd_fit_status_t sd_abot_fit_params(const sd_abot_session_params_v2_t* params,
+                                        const sd_abot_fit_workload_t* workload,
+                                        sd_fit_result_t* result) {
+    if (result == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    *result = {};
+    if (params == nullptr || workload == nullptr || workload->walk_steps <= 0 || workload->walk_steps > 1000000 ||
+        params->num_frame_per_block < 0 || params->num_frame_per_block > 1024 ||
+        params->local_attn_size < 0 || params->local_attn_size > 1024) {
+        return SD_FIT_ERROR;
+    }
+    try {
+        SDMetadataOnlyReadScope metadata_only;
+        std::unique_ptr<sd_abot_session_t> session(sd_abot_session_new_v2(params));
+        if (!session) {
+            return SD_FIT_ERROR;
+        }
+        auto& walk = session->session;
+        std::vector<GGMLRunner::graph_memory_measurement> records;
+        struct MeasureGuard {
+            explicit MeasureGuard(std::vector<GGMLRunner::graph_memory_measurement>& records) {
+                GGMLRunner::set_measure_mode(true, &records);
+            }
+            ~MeasureGuard() { GGMLRunner::set_measure_mode(false); }
+        } measure_guard(records);
+        size_t host_bytes = 0;
+        if (!walk.measure_memory(workload->walk_steps, records, host_bytes)) {
+            return SD_FIT_ERROR;
+        }
+        std::vector<sd::fit_params::BackendMemory> memory;
+        std::string report = "ABot fit: " + std::to_string(workload->walk_steps) + " walk steps\n";
+        report += "  session host buffers: " + std::to_string(host_bytes) + " bytes\n";
+        for (auto module : {SDBackendModule::DIFFUSION, SDBackendModule::VAE}) {
+            auto runtime = session->backend_manager.runtime_backend(module);
+            auto storage = session->backend_manager.params_backend(module);
+            std::map<std::string, ggml_tensor*> tensors;
+            if (module == SDBackendModule::DIFFUSION) {
+                walk.runner->get_param_tensors(tensors, "model.diffusion_model");
+            } else {
+                walk.tae->get_param_tensors(tensors);
+            }
+            const auto buft        = ggml_backend_get_default_buffer_type(storage);
+            const size_t alignment = ggml_backend_buft_get_alignment(buft);
+            size_t params_bytes    = 0;
+            for (const auto& tensor : tensors) {
+                params_bytes += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, tensor.second), alignment);
+            }
+            size_t compute_bytes   = 0;
+            size_t measured_params = 0;
+            bool buffer_fits       = true;
+            for (const auto& record : records) {
+                if (record.module == module) {
+                    if (!record.valid) {
+                        return SD_FIT_ERROR;
+                    }
+                    compute_bytes   = std::max(compute_bytes, record.configured_compute_bytes);
+                    measured_params = std::max(measured_params, record.configured_params_bytes);
+                    buffer_fits     = buffer_fits && record.configured_buffer_bytes <= ggml_backend_get_max_buffer_capacity(runtime);
+                }
+            }
+            memory.push_back({storage, params_bytes});
+            memory.push_back({runtime, compute_bytes});
+            if (runtime != storage) {
+                const auto runtime_buft        = ggml_backend_get_default_buffer_type(runtime);
+                const size_t runtime_alignment = ggml_backend_buft_get_alignment(runtime_buft);
+                size_t staged_bytes            = 0;
+                for (const auto& tensor : tensors) {
+                    staged_bytes += GGML_PAD(ggml_backend_buft_get_alloc_size(runtime_buft, tensor.second), runtime_alignment);
+                }
+                // Disk/streaming placement releases nonresident segments after use.
+                if (module == SDBackendModule::DIFFUSION && walk.cfg.max_graph_vram_bytes > 0 &&
+                    (walk.cfg.stream_layers || walk.cfg.dit_params_on_disk) && !sd_backend_is_cpu(runtime)) {
+                    staged_bytes = std::min(staged_bytes, measured_params + tensors.size() * runtime_alignment);
+                }
+                memory.push_back({runtime, staged_bytes});
+            }
+            report += std::string("  ") + sd_backend_module_name(module) + ": params " +
+                      std::to_string(params_bytes / (1024 * 1024)) + " MiB, retained graph/cache " +
+                      std::to_string(compute_bytes / (1024 * 1024)) + " MiB\n";
+            if (!buffer_fits) {
+                report += "  graph exceeds the backend's logical buffer capacity\n";
+                result->report = static_cast<char*>(malloc(report.size() + 1));
+                if (result->report == nullptr)
+                    return SD_FIT_ERROR;
+                memcpy(result->report, report.c_str(), report.size() + 1);
+                return SD_FIT_FAILURE;
+            }
+        }
+        sd::fit_params::FitPlan plan;
+        sd::ggml_graph_cut::MaxVramAssignment budgets;
+        budgets.reset(0.f);
+        const bool checked = sd::fit_params::check_placement(memory, host_bytes, budgets, &plan);
+        report += plan.report;
+        result->report = static_cast<char*>(malloc(report.size() + 1));
+        if (result->report == nullptr) {
+            return SD_FIT_ERROR;
+        }
+        memcpy(result->report, report.c_str(), report.size() + 1);
+        return checked && plan.valid ? SD_FIT_SUCCESS : SD_FIT_FAILURE;
+    } catch (const std::exception& error) {
+        LOG_ERROR("ABot fit: %s", error.what());
+        return SD_FIT_ERROR;
+    }
+}
+
 sd_image_t* sd_abot_session_step(sd_abot_session_t* s, uint32_t action, int* n) {
     if (n) *n = 0; if (!s) return nullptr;
     try { std::vector<std::vector<uint8_t>> frames; int64_t w = 0, h = 0;

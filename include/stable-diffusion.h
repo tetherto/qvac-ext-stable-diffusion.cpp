@@ -702,6 +702,15 @@ typedef struct {
 } sd_abot_session_params_v2_t;
 SD_API void sd_abot_session_params_v2_init(sd_abot_session_params_v2_t* params);
 SD_API sd_abot_session_t* sd_abot_session_new_v2(const sd_abot_session_params_v2_t* params);
+
+typedef struct {
+    int walk_steps;
+} sd_abot_fit_workload_t;
+SD_API void sd_abot_fit_workload_init(sd_abot_fit_workload_t* workload);
+// Measures the configured session without loading weights or generating frames.
+SD_API enum sd_fit_status_t sd_abot_fit_params(const sd_abot_session_params_v2_t* params,
+                                               const sd_abot_fit_workload_t* workload,
+                                               sd_fit_result_t* result);
 SD_API sd_image_t* sd_abot_session_step(sd_abot_session_t* session, uint32_t action_mask, int* num_frames_out);
 SD_API void sd_abot_session_frames_free(sd_image_t* frames, int num_frames);
 SD_API void sd_abot_session_free(sd_abot_session_t* session);

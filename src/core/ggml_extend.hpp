@@ -1912,6 +1912,9 @@ struct GGMLRunner {
         size_t compute_bytes     = 0;
         size_t cache_bytes       = 0;
         size_t params_bytes      = 0;
+        size_t configured_compute_bytes = 0;
+        size_t configured_params_bytes  = 0;
+        size_t configured_buffer_bytes  = 0;
         std::vector<size_t> split_segment_params_bytes;
         std::vector<size_t> split_segment_compute_bytes;
         bool valid               = false;
@@ -1968,6 +1971,7 @@ protected:
         size_t alloc_bytes = 0;
     };
     std::map<std::string, measured_cache_tensor> measured_cache_tensors_;
+    std::unordered_set<ggml_tensor*> measured_resident_params_;
 
     std::vector<float> one_vec = {1.f};
     ggml_tensor* one_tensor    = nullptr;
@@ -2512,6 +2516,7 @@ protected:
         size_t sizes[1]       = {0};
         ggml_gallocr_reserve_n_size(allocr, gf, nullptr, nullptr, sizes);
         last_measurement_.compute_bytes = sizes[0];
+        last_measurement_.configured_buffer_bytes = sizes[0];
         ggml_gallocr_free(allocr);
 
         ggml_backend_buffer_type_t cache_buft =
@@ -2522,20 +2527,24 @@ protected:
             previous_cache_bytes += entry.second.alloc_bytes;
         }
         const bool replaces_cache_buffer = !cache_tensor_map.empty();
-        for (const auto& entry : cache_tensor_map) {
-            ggml_tensor* tensor = sd::ggml_graph_cut::cache_source_tensor(entry.second);
-            if (tensor == nullptr) {
-                continue;
+        auto measure_cache               = [&](const auto& entries) {
+            for (const auto& entry : entries) {
+                ggml_tensor* tensor = entry.second;
+                if (tensor == nullptr) {
+                    continue;
+                }
+                measured_cache_tensor measured;
+                measured.type = tensor->type;
+                measured.shape.assign(tensor->ne, tensor->ne + ggml_n_dims(tensor));
+                measured.alloc_bytes = ggml_backend_buft_get_alloc_size(cache_buft, tensor);
+                if (cache_alignment > 0) {
+                    measured.alloc_bytes = GGML_PAD(measured.alloc_bytes, cache_alignment);
+                }
+                measured_cache_tensors_[entry.first] = std::move(measured);
             }
-            measured_cache_tensor measured;
-            measured.type = tensor->type;
-            measured.shape.assign(tensor->ne, tensor->ne + ggml_n_dims(tensor));
-            measured.alloc_bytes = ggml_backend_buft_get_alloc_size(cache_buft, tensor);
-            if (cache_alignment > 0) {
-                measured.alloc_bytes = GGML_PAD(measured.alloc_bytes, cache_alignment);
-            }
-            measured_cache_tensors_[entry.first] = std::move(measured);
-        }
+        };
+        measure_cache(cache_tensor_map);
+        measure_cache(pending_persistent_cache_);
         for (const auto& entry : measured_cache_tensors_) {
             last_measurement_.cache_bytes += entry.second.alloc_bytes;
         }
@@ -2573,6 +2582,61 @@ protected:
                 last_measurement_.split_segment_params_bytes.push_back(segment_bytes);
                 last_measurement_.split_segment_compute_bytes.push_back(
                     segment.compute_buffer_size + live_cache_bytes);
+            }
+        }
+        last_measurement_.configured_compute_bytes = last_measurement_.compute_bytes;
+        last_measurement_.configured_params_bytes  = last_measurement_.params_bytes;
+        if (can_attempt_graph_cut_segmented_compute()) {
+            GraphCutPlan configured_plan;
+            if (!resolve_graph_cut_plan(gf, &configured_plan) || !configured_plan.valid) {
+                last_measurement_.valid = false;
+            } else if (should_use_graph_cut_segmented_compute(configured_plan)) {
+                size_t scratch = 0, cut_cache = 0, resident = 0, streamed = 0;
+                std::map<std::string, size_t> cached;
+                for (size_t index = 0; index < configured_plan.segments.size(); ++index) {
+                    const auto& segment = configured_plan.segments[index];
+                    scratch             = std::max(scratch, segment.compute_buffer_size);
+                    size_t previous     = 0;
+                    for (const auto& item : cached)
+                        previous += item.second;
+                    const auto future = sd::ggml_graph_cut::collect_future_input_names(gf, configured_plan, index);
+                    for (auto it = cached.begin(); it != cached.end();) {
+                        if (future.count(it->first) == 0)
+                            it = cached.erase(it);
+                        else
+                            ++it;
+                    }
+                    for (size_t output = 0; output < segment.output_node_indices.size(); ++output) {
+                        auto* tensor = sd::ggml_graph_cut::output_tensor(gf, segment, output);
+                        if (tensor != nullptr && sd::ggml_graph_cut::is_graph_cut_tensor(tensor) && future.count(tensor->name)) {
+                            cached[tensor->name] = GGML_PAD(ggml_backend_buft_get_alloc_size(cache_buft, tensor), cache_alignment);
+                        }
+                    }
+                    size_t next = 0;
+                    for (const auto& item : cached)
+                        next += item.second;
+                    cut_cache             = std::max(cut_cache, previous + next);
+                    size_t segment_params = 0;
+                    for (auto* raw : sd::ggml_graph_cut::param_tensors(gf, segment)) {
+                        auto* param = canonical_param_tensor(raw);
+                        if (param == nullptr) {
+                            continue;
+                        }
+                        segment_params += ggml_nbytes(param);
+                        if (segment.residency == sd::ggml_graph_cut::SegmentResidency::RESIDENT) {
+                            measured_resident_params_.insert(param);
+                        }
+                    }
+                    if (segment.residency == sd::ggml_graph_cut::SegmentResidency::STREAMED) {
+                        streamed = std::max(streamed, segment_params);
+                    }
+                }
+                for (auto* param : measured_resident_params_) {
+                    resident += ggml_nbytes(param);
+                }
+                last_measurement_.configured_compute_bytes = scratch + cut_cache + live_cache_bytes;
+                last_measurement_.configured_params_bytes  = resident + streamed;
+                last_measurement_.configured_buffer_bytes  = scratch;
             }
         }
         if (measure_collector_ != nullptr) {
@@ -3712,6 +3776,7 @@ public:
         if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
             cache_tensor_map.clear();
             measured_cache_tensors_.clear();
+            measured_resident_params_.clear();
             measure_generation_seen_ = measure_generation_;
         }
 

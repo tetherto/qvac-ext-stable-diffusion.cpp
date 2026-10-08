@@ -44,12 +44,14 @@
 #include <thread>
 
 #include "core/ggml_extend.hpp"
+#include "json.hpp"
 #include "model.h"
-#include "model_manager.h"
-#include "model/common/rope.hpp"
 #include "model/vae/vae.hpp"  // must precede tae.hpp (TinyVideoAutoEncoder's base)
-#include "model/vae/tae.hpp"
+
+#include "model/common/rope.hpp"
 #include "model/diffusion/wan.hpp"
+#include "model/vae/tae.hpp"
+#include "model_manager.h"
 
 namespace ABOT {
 
@@ -112,6 +114,71 @@ struct AbotScenePack {
     // false = text-only scene: block-0 frame 0 is generated from noise
     // instead of being pinned to first_frame_latents
     bool has_first_frame = true;
+    std::map<std::string, std::vector<int64_t>> metadata_shapes;
+
+    const std::vector<int64_t>& tensor_shape(const char* name, const sd::Tensor<float>& tensor) const {
+        const auto it = metadata_shapes.find(name);
+        return it == metadata_shapes.end() ? tensor.shape() : it->second;
+    }
+
+    bool load_metadata(const std::string& header) {
+        const auto json = nlohmann::json::parse(header);
+        auto shape      = [&](const char* name, bool required) {
+            if (!json.contains(name))
+                return !required;
+            const auto& tensor = json.at(name);
+            if (tensor.at("dtype") != "F32")
+                return false;
+            if (!tensor.at("shape").is_array() || tensor.at("shape").empty() || tensor.at("shape").size() > 6)
+                return false;
+            for (const auto& dim : tensor.at("shape")) {
+                if (!dim.is_number_integer())
+                    return false;
+            }
+            const auto dims   = tensor.at("shape").get<std::vector<int64_t>>();
+            uint64_t elements = 1;
+            for (const auto dim : dims) {
+                if (dim <= 0 || elements > (uint64_t(1) << 28) / dim)
+                    return false;
+                elements *= dim;
+            }
+            const auto& ranges = tensor.at("data_offsets");
+            if (!ranges.is_array() || ranges.size() != 2 ||
+                !ranges[0].is_number_unsigned() || !ranges[1].is_number_unsigned())
+                return false;
+            const auto offsets = ranges.get<std::vector<uint64_t>>();
+            if (offsets.size() != 2 || offsets[1] < offsets[0] ||
+                offsets[1] > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) - header.size() - 8 ||
+                offsets[1] - offsets[0] != elements * sizeof(float))
+                return false;
+            metadata_shapes[name] = dims;
+            return true;
+        };
+        if (!shape("prompt_embeds", true) || !shape("first_frame_latents", true) ||
+            !shape("ref_latents", false) || !shape("ref_mask", false) ||
+            !shape("first_frame_mask", false))
+            return false;
+        if (metadata_shapes["prompt_embeds"] != std::vector<int64_t>({1, 512, 4096}))
+            return false;
+        const auto first = metadata_shapes["first_frame_latents"];
+        if (first.size() != 5 || first[0] != 1 || first[1] != 1 || first[2] != 48 ||
+            first[3] > 4096 || first[4] > 4096 || first[3] % 2 || first[4] % 2)
+            return false;
+        metadata_shapes["prompt_embeds"]       = {4096, 512, 1, 1};
+        metadata_shapes["first_frame_latents"] = {first[4], first[3], first[2], 1};
+        const auto it                          = metadata_shapes.find("ref_latents");
+        if (it != metadata_shapes.end()) {
+            const auto ref = it->second;
+            if (ref.size() != 6 || ref[0] != 1 || ref[1] > 64 || ref[2] != 48 ||
+                ref[3] != 1 || ref[4] != 32 || ref[5] != 32 ||
+                sd::tensor_numel(metadata_shapes["ref_mask"]) != ref[1])
+                return false;
+            ref_slots                   = static_cast<int>(ref[1]);
+            it->second                  = {32, 32, ref_slots, 48};
+            metadata_shapes["ref_mask"] = {ref_slots};
+        }
+        return true;
+    }
 
     // Minimal safetensors reader (F32 tensors only — the scene pack is fp32).
     // Torch shapes map to ggml ne reversed; trailing singleton dims dropped.
@@ -150,6 +217,9 @@ struct AbotScenePack {
             return false;
         }
         const uint64_t data_base = 8 + hlen;
+        if (sd_get_metadata_only_read()) {
+            return load_metadata(header);
+        }
 
         // false = absent OR malformed; `bad` distinguishes (malformed packs
         // must fail the load even for optional tensors)
@@ -192,9 +262,8 @@ struct AbotScenePack {
                 }
                 n *= s;
             }
-            if (off0 > static_cast<uint64_t>(file_size) ||
-                data_base + off0 + static_cast<uint64_t>(n) * sizeof(float) >
-                    static_cast<uint64_t>(file_size)) {
+            if (off0 > static_cast<uint64_t>(file_size) - data_base ||
+                static_cast<uint64_t>(n) * sizeof(float) > static_cast<uint64_t>(file_size) - data_base - off0) {
                 LOG_ERROR("scene pack: tensor '%s' data exceeds the file", name.c_str());
                 bad = true;
                 return false;
@@ -664,62 +733,67 @@ struct AbotWorldRunner : public GGMLRunner {
         int fsl   = h_len * w_len;
         int n_ref = scene.ref_slots * 16 * 16;
 
-        sd::Tensor<float> x_all({lat_w, lat_h, F_vis, lat_c});
-        for (int f = 0; f < F_vis; f++) {
-            // {W,H,T,C}: strides — for each channel c, plane at [.., f, c]
-            for (int64_t c = 0; c < lat_c; c++) {
-                float* dst       = x_all.data() + (c * F_vis + f) * lat_w * lat_h;
-                const float* src = frame_latents[f] + c * lat_w * lat_h;
-                memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
+        sd::Tensor<float> x_all, act, tvec;
+        std::vector<int32_t> rows;
+        std::vector<float> mask;
+        const int64_t L = n_ref + static_cast<int64_t>(F_vis) * fsl;
+        if (!measure_mode_enabled()) {
+            x_all.resize({lat_w, lat_h, F_vis, lat_c});
+            for (int f = 0; f < F_vis; f++) {
+                // {W,H,T,C}: strides — for each channel c, plane at [.., f, c]
+                for (int64_t c = 0; c < lat_c; c++) {
+                    float* dst       = x_all.data() + (c * F_vis + f) * lat_w * lat_h;
+                    const float* src = frame_latents[f] + c * lat_w * lat_h;
+                    memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
+                }
             }
-        }
 
-        sd::Tensor<float> act({lat_w, lat_h, c_unsh, F_vis});
-        for (int f = 0; f < F_vis; f++) {
-            fill_act_plane(act.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
-                           frame_actions[f], static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
-        }
+            act.resize({lat_w, lat_h, c_unsh, F_vis});
+            for (int f = 0; f < F_vis; f++) {
+                fill_act_plane(act.data() + static_cast<size_t>(f) * c_unsh * lat_w * lat_h,
+                               frame_actions[f], static_cast<int>(lat_w), static_cast<int>(lat_h), c_unsh);
+            }
 
-        sd::Tensor<float> tvec({F_vis + 1});
-        for (int f = 0; f < F_vis; f++) {
-            tvec.data()[f] = frame_timesteps[f];
-        }
-        tvec.data()[F_vis] = 0.0f;  // ref/modulation row
+            tvec.resize({F_vis + 1});
+            for (int f = 0; f < F_vis; f++) {
+                tvec.data()[f] = frame_timesteps[f];
+            }
+            tvec.data()[F_vis] = 0.0f;  // ref/modulation row
 
-        std::vector<int32_t> rows(static_cast<size_t>(n_ref) + static_cast<size_t>(F_vis) * fsl);
-        for (int i = 0; i < n_ref; i++) {
-            rows[i] = F_vis;
-        }
-        for (int f = 0; f < F_vis; f++) {
-            std::fill(rows.begin() + n_ref + static_cast<size_t>(f) * fsl,
-                      rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
-        }
+            rows.resize(static_cast<size_t>(L));
+            for (int i = 0; i < n_ref; i++) {
+                rows[i] = F_vis;
+            }
+            for (int f = 0; f < F_vis; f++) {
+                std::fill(rows.begin() + n_ref + static_cast<size_t>(f) * fsl,
+                          rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
+            }
 
-        pe_vec                  = build_pe(scene.ref_slots, 16, frame_abs_ids, h_len, w_len);
-        std::vector<float> mask = build_mask(n_ref, frame_abs_ids, fsl);
-        const int64_t L         = n_ref + static_cast<int64_t>(F_vis) * fsl;
+            pe_vec = build_pe(scene.ref_slots, 16, frame_abs_ids, h_len, w_len);
+            mask   = build_mask(n_ref, frame_abs_ids, fsl);
+        }
 
         // ---- graph ----
         int64_t out_h = 0, out_w = 0;
         auto get_graph = [&]() -> ggml_cgraph* {
             ggml_cgraph* gf     = ggml_new_graph_custom(compute_ctx, WAN::WAN_GRAPH_SIZE, false);
-            ggml_tensor* x_in   = to_backend_input(x_all);
-            ggml_tensor* act_in = to_backend_input(act);
-            ggml_tensor* t_in   = to_backend_input(tvec);
-            ggml_tensor* ctx_in = to_backend_input(scene.prompt_embeds);
+            ggml_tensor* x_in   = to_backend_input(x_all, {lat_w, lat_h, F_vis, lat_c});
+            ggml_tensor* act_in = to_backend_input(act, {lat_w, lat_h, c_unsh, F_vis});
+            ggml_tensor* t_in   = to_backend_input(tvec, {F_vis + 1});
+            ggml_tensor* ctx_in = to_backend_input(scene.prompt_embeds, scene.tensor_shape("prompt_embeds", scene.prompt_embeds));
             ggml_tensor* ref_in = nullptr;
             ggml_tensor* rm_in  = nullptr;
             if (scene.ref_slots > 0) {
-                ref_in = to_backend_input(scene.ref_latents);
-                rm_in  = to_backend_input(scene.ref_mask);
+                ref_in = to_backend_input(scene.ref_latents, scene.tensor_shape("ref_latents", scene.ref_latents));
+                rm_in  = to_backend_input(scene.ref_mask, scene.tensor_shape("ref_mask", scene.ref_mask));
             }
             ggml_tensor* pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2,
                                                  wan_params.axes_dim_sum / 2,
-                                                 static_cast<int64_t>(pe_vec.size()) / wan_params.axes_dim_sum / 2);
+                                                 L);
             set_backend_tensor_data(pe, pe_vec.data());
             ggml_tensor* mk = ggml_new_tensor_2d(compute_ctx, GGML_TYPE_F32, L, L);
             set_backend_tensor_data(mk, mask.data());
-            ggml_tensor* rw = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_I32, static_cast<int64_t>(rows.size()));
+            ggml_tensor* rw = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_I32, L);
             set_backend_tensor_data(rw, rows.data());
 
             auto runner_ctx  = get_context();
@@ -734,7 +808,7 @@ struct AbotWorldRunner : public GGMLRunner {
         // runs 5-6 graphs per block forever, and the defaults would free and
         // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
         // automatically when the graph shape changes between denoise and append)
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk);
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk, measure_mode_enabled());
         if (!result.has_value()) {
             return {};
         }
@@ -847,80 +921,88 @@ struct AbotWorldRunner : public GGMLRunner {
         const int n_ref_cols = scene.ref_slots * 16 * 16;
         int n_ref            = with_refs ? n_ref_cols : 0;
 
-        sd::Tensor<float> x_all({lat_w, lat_h, F_cur, lat_c});
-        for (int f = 0; f < F_cur; f++) {
-            for (int64_t ch = 0; ch < lat_c; ch++) {
-                float* dst       = x_all.data() + (ch * F_cur + f) * lat_w * lat_h;
-                const float* src = frame_latents[static_cast<size_t>(f)] + ch * lat_w * lat_h;
-                memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
+        sd::Tensor<float> x_all, tvec, empty_act;
+        std::vector<int32_t> rows;
+        std::vector<float> mask;
+        const int64_t L_q  = n_ref + static_cast<int64_t>(F_cur) * fsl;
+        const int64_t T_kv = with_refs ? L_q : n_ref_cols + static_cast<int64_t>(Fb + kv_ring_slots + F_cur) * fsl;
+        if (!measure_mode_enabled()) {
+            x_all.resize({lat_w, lat_h, F_cur, lat_c});
+            for (int f = 0; f < F_cur; f++) {
+                for (int64_t ch = 0; ch < lat_c; ch++) {
+                    float* dst       = x_all.data() + (ch * F_cur + f) * lat_w * lat_h;
+                    const float* src = frame_latents[static_cast<size_t>(f)] + ch * lat_w * lat_h;
+                    memcpy(dst, src, static_cast<size_t>(lat_w) * lat_h * sizeof(float));
+                }
+            }
+            tvec.resize({F_cur + 1});
+            for (int f = 0; f < F_cur; f++) {
+                tvec.data()[f] = frame_timesteps[static_cast<size_t>(f)];
+            }
+            tvec.data()[F_cur] = 0.0f;
+
+            rows.resize(static_cast<size_t>(L_q));
+            for (int i = 0; i < n_ref; i++) {
+                rows[i] = F_cur;
+            }
+            for (int f = 0; f < F_cur; f++) {
+                std::fill(rows.begin() + n_ref + static_cast<size_t>(f) * fsl,
+                          rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
             }
         }
-        sd::Tensor<float>& act = action_planes(action_mask, F_cur, lat_w, lat_h, c_unsh);
-        sd::Tensor<float> tvec({F_cur + 1});
-        for (int f = 0; f < F_cur; f++) {
-            tvec.data()[f] = frame_timesteps[static_cast<size_t>(f)];
-        }
-        tvec.data()[F_cur] = 0.0f;
-
-        std::vector<int32_t> rows(static_cast<size_t>(n_ref) + static_cast<size_t>(F_cur) * fsl);
-        for (int i = 0; i < n_ref; i++) {
-            rows[i] = F_cur;
-        }
-        for (int f = 0; f < F_cur; f++) {
-            std::fill(rows.begin() + n_ref + static_cast<size_t>(f) * fsl,
-                      rows.begin() + n_ref + static_cast<size_t>(f + 1) * fsl, f);
-        }
-
+        sd::Tensor<float>& act = measure_mode_enabled() ? empty_act : action_planes(action_mask, F_cur, lat_w, lat_h, c_unsh);
         const bool prof       = cfg.profile || abot_prof_env();
         const int64_t prof_t0 = prof ? ggml_time_ms() : 0;
 
-        pe_vec = build_pe(with_refs ? scene.ref_slots : 0, 16, frame_abs_ids, h_len, w_len);
-        std::vector<float> mask;
-        if (mode == KvMode::INIT_CAPTURE) {
-            mask = build_mask(n_ref, frame_abs_ids, fsl);  // original full block-0 mask
-        } else {
-            mask = build_mask_kv(n_ref_cols, fsl, ring_abs, frame_abs_ids);
+        if (!measure_mode_enabled()) {
+            pe_vec = build_pe(with_refs ? scene.ref_slots : 0, 16, frame_abs_ids, h_len, w_len);
+            if (mode == KvMode::INIT_CAPTURE) {
+                mask = build_mask(n_ref, frame_abs_ids, fsl);  // original full block-0 mask
+            } else {
+                mask = build_mask_kv(n_ref_cols, fsl, ring_abs, frame_abs_ids);
+            }
         }
         const int64_t prof_t1 = prof ? ggml_time_ms() : 0;
-        const int64_t L_q  = n_ref + static_cast<int64_t>(F_cur) * fsl;
-        const int64_t T_kv = static_cast<int64_t>(mask.size()) / L_q;
 
         // zero fill for unwritten ring slots (shared per graph)
-        sd::Tensor<float> zero_k({static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
-                                  static_cast<int64_t>(fsl), wan_params.num_heads});
-        sd::Tensor<float> zero_v({static_cast<int64_t>(fsl),
-                                  static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
-                                  wan_params.num_heads});
-        std::fill_n(zero_k.data(), zero_k.numel(), 0.0f);
-        std::fill_n(zero_v.data(), zero_v.numel(), 0.0f);
+        sd::Tensor<float> zero_k, zero_v;
+        if (!measure_mode_enabled()) {
+            zero_k.resize({static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
+                           static_cast<int64_t>(fsl), wan_params.num_heads});
+            zero_v.resize({static_cast<int64_t>(fsl),
+                           static_cast<int64_t>(wan_params.dim) / wan_params.num_heads,
+                           wan_params.num_heads});
+            std::fill_n(zero_k.data(), zero_k.numel(), 0.0f);
+            std::fill_n(zero_v.data(), zero_v.numel(), 0.0f);
+        }
 
         int64_t out_h = 0, out_w = 0;
         auto get_graph = [&]() -> ggml_cgraph* {
             ggml_cgraph* gf     = ggml_new_graph_custom(compute_ctx, WAN::WAN_GRAPH_SIZE, false);
-            ggml_tensor* x_in   = to_backend_input(x_all);
-            ggml_tensor* act_in = to_backend_input(act);
-            ggml_tensor* t_in   = to_backend_input(tvec);
-            ggml_tensor* ctx_in = to_backend_input(scene.prompt_embeds);
+            ggml_tensor* x_in   = to_backend_input(x_all, {lat_w, lat_h, F_cur, lat_c});
+            ggml_tensor* act_in = to_backend_input(act, {lat_w, lat_h, c_unsh, F_cur});
+            ggml_tensor* t_in   = to_backend_input(tvec, {F_cur + 1});
+            ggml_tensor* ctx_in = to_backend_input(scene.prompt_embeds, scene.tensor_shape("prompt_embeds", scene.prompt_embeds));
             ggml_tensor* ref_in = nullptr;
             ggml_tensor* rm_in  = nullptr;
             if (with_refs && scene.ref_slots > 0) {
-                ref_in = to_backend_input(scene.ref_latents);
-                rm_in  = to_backend_input(scene.ref_mask);
+                ref_in = to_backend_input(scene.ref_latents, scene.tensor_shape("ref_latents", scene.ref_latents));
+                rm_in  = to_backend_input(scene.ref_mask, scene.tensor_shape("ref_mask", scene.ref_mask));
             }
             ggml_tensor* pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2,
                                                  wan_params.axes_dim_sum / 2,
-                                                 static_cast<int64_t>(pe_vec.size()) / wan_params.axes_dim_sum / 2);
+                                                 L_q);
             set_backend_tensor_data(pe, pe_vec.data());
             ggml_tensor* mk = ggml_new_tensor_2d(compute_ctx, GGML_TYPE_F32, T_kv, L_q);
             set_backend_tensor_data(mk, mask.data());
-            ggml_tensor* rw = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_I32, static_cast<int64_t>(rows.size()));
+            ggml_tensor* rw = ggml_new_tensor_1d(compute_ctx, GGML_TYPE_I32, L_q);
             set_backend_tensor_data(rw, rows.data());
 
             ggml_tensor* zk_in = nullptr;
             ggml_tensor* zv_in = nullptr;
             if (mode != KvMode::INIT_CAPTURE) {
-                zk_in = to_backend_input(zero_k);
-                zv_in = to_backend_input(zero_v);
+                zk_in = to_backend_input(zero_k, {wan_params.dim / wan_params.num_heads, fsl, wan_params.num_heads});
+                zv_in = to_backend_input(zero_v, {fsl, wan_params.dim / wan_params.num_heads, wan_params.num_heads});
             }
 
             auto runner_ctx = get_context();
@@ -992,7 +1074,7 @@ struct AbotWorldRunner : public GGMLRunner {
         // runs 5-6 graphs per block forever, and the defaults would free and
         // re-reserve multi-GB of VRAM on every one of them (ggml re-reserves
         // automatically when the graph shape changes between denoise and append)
-        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk);
+        auto result = GGMLRunner::compute<float>(get_graph, n_threads, false, false, cfg.dit_params_on_disk, measure_mode_enabled());
         if (prof) {
             const int64_t prof_t2 = ggml_time_ms();
             const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";
@@ -1007,8 +1089,8 @@ struct AbotWorldRunner : public GGMLRunner {
 
 private:
     template <typename T>
-    ggml_tensor* to_backend_input(sd::Tensor<T>& t) {
-        auto shape = t.shape();
+    ggml_tensor* to_backend_input(sd::Tensor<T>& t, std::vector<int64_t> measured_shape = {}) {
+        auto shape     = measure_mode_enabled() && !measured_shape.empty() ? measured_shape : t.shape();
         ggml_tensor* g = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32,
                                             shape.size() > 0 ? shape[0] : 1,
                                             shape.size() > 1 ? shape[1] : 1,
@@ -1065,6 +1147,17 @@ struct AbotRng {
 // the object behind the public sd_abot_session_* C API.
 struct AbotTinyVideoAutoEncoder : public TinyVideoAutoEncoder {
     using TinyVideoAutoEncoder::TinyVideoAutoEncoder;
+
+    bool measure_decode(int64_t w, int64_t h, int frames, int n_threads) {
+        auto graph = [&]() {
+            auto* gf = is_wide ? ggml_new_graph_custom(compute_ctx, 4096, false) : ggml_new_graph(compute_ctx);
+            auto* z  = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, w, h, frames, 48);
+            auto ctx = get_context();
+            ggml_build_forward_expand(gf, taehv.decode(&ctx, z));
+            return gf;
+        };
+        return GGMLRunner::compute<float>(graph, n_threads, false, false, false, true).has_value();
+    }
 };
 
 class AbotWalkSession {
@@ -1202,6 +1295,7 @@ public:
                                                     model_manager);  // no trailing dot: GGMLBlock::init appends its own
         runner->set_max_graph_vram_bytes(cfg.max_graph_vram_bytes);
         runner->set_stream_layers_enabled(cfg.stream_layers);
+        runner->set_fit_module(SDBackendModule::DIFFUSION);
 
 #ifdef SD_ABOT_FLASH_ATTN_DEBUG
         // Debug-only flash attention for the walk graph (ABOT_FLASH_ATTN=1 in
@@ -1259,6 +1353,7 @@ public:
         // large intermediate per conv, and the decoder is all small 3x3 convs.
         // Measured 148 -> 68 ms per block decode, bit-identical output.
         tae->set_conv2d_direct_enabled(true);
+        tae->set_fit_module(SDBackendModule::VAE);
         if (!model_manager->register_runner_params("ABot-World DiT",
                                                    *runner,
                                                    "model.diffusion_model",
@@ -1271,14 +1366,14 @@ public:
                                                    vae_backend,
                                                    vae_params_backend) ||
             !model_manager->validate_registered_tensors() ||
-            (!(cfg.dit_params_on_disk || cfg.tae_params_on_disk) && !model_manager->load_all_params_eagerly())) {
+            (!sd_get_metadata_only_read() && !(cfg.dit_params_on_disk || cfg.tae_params_on_disk) && !model_manager->load_all_params_eagerly())) {
             LOG_ERROR("abot session: model parameter registration or loading failed");
             return false;
         }
         if (!runner->scene.load(scene_path)) {
             return false;
         }
-        auto ffl      = runner->scene.first_frame_latents.shape();
+        auto ffl      = runner->scene.tensor_shape("first_frame_latents", runner->scene.first_frame_latents);
         runner->lat_w = ffl[0];
         runner->lat_h = ffl[1];
         runner->lat_c = ffl.size() > 2 ? ffl[2] : 1;
@@ -1290,6 +1385,96 @@ public:
 
     int64_t frame_elems() const {
         return runner->lat_w * runner->lat_h * runner->lat_c;
+    }
+
+    bool measure_memory(int steps, std::vector<GGMLRunner::graph_memory_measurement>& records, size_t& host_bytes) {
+        if (!GGMLRunner::measure_mode_enabled() || steps <= 0) {
+            return false;
+        }
+        const int Fb    = cfg.num_frame_per_block;
+        const int64_t W = runner->lat_w, H = runner->lat_h, C = runner->lat_c;
+        const auto& scene = runner->scene;
+        if (W <= 0 || H <= 0 || W > 4096 || H > 4096 || W % 2 || H % 2 || C != 48 ||
+            scene.tensor_shape("prompt_embeds", scene.prompt_embeds) != std::vector<int64_t>({4096, 512, 1, 1}) ||
+            (scene.ref_slots && scene.tensor_shape("ref_latents", scene.ref_latents) != std::vector<int64_t>({32, 32, scene.ref_slots, 48}))) {
+            return false;
+        }
+        const int graphs = cfg.kv_cache ? std::min(steps, 6) : std::min(steps, 2 + (cfg.local_attn_size + Fb - 1) / Fb);
+        std::array<int64_t, AbotWorldRunner::kv_ring_slots> ring;
+        ring.fill(-1);
+        int next               = 0;
+        size_t host_inputs     = 0;
+        size_t retained_inputs = 0;
+        for (int block = 0; block < graphs; ++block) {
+            const size_t before  = records.size();
+            const bool cached    = cfg.kv_cache && block > 0;
+            const int frames     = cached ? Fb : std::min(block * Fb, Fb + cfg.local_attn_size) + Fb;
+            const size_t tokens  = static_cast<size_t>(scene.ref_slots) * 256 + static_cast<size_t>(frames) * W * H / 4;
+            const size_t columns = cached ? static_cast<size_t>(scene.ref_slots) * 256 +
+                                                static_cast<size_t>(2 * Fb + AbotWorldRunner::kv_ring_slots) * W * H / 4
+                                          : tokens;
+            if (static_cast<long double>(tokens) * columns * runner->wan_params.num_heads * 16 >
+                static_cast<long double>(std::numeric_limits<int64_t>::max()))
+                return false;
+            std::vector<const float*> latents(frames, nullptr);
+            std::vector<uint8_t> actions(frames, 0);
+            std::vector<float> timesteps(frames, 0);
+            std::vector<int64_t> ids(frames, 0);
+            if (cached) {
+                runner->forward_step_kv(AbotWorldRunner::KvMode::DENOISE, latents, 0, timesteps, ids, ring, {}, n_threads);
+                std::vector<int> slots;
+                for (int f = 0; f < Fb; ++f) {
+                    slots.push_back(next);
+                    next = (next + 1) % AbotWorldRunner::kv_ring_slots;
+                }
+                runner->forward_step_kv(AbotWorldRunner::KvMode::APPEND, latents, 0, timesteps, ids, ring, slots, n_threads);
+                for (int f = 0; f < Fb; ++f) {
+                    ring[slots[f]] = static_cast<int64_t>(block) * Fb + f;
+                }
+            } else {
+                runner->forward_step(latents, actions, timesteps, ids, Fb, n_threads);
+                if (cfg.kv_cache) {
+                    runner->forward_step_kv(AbotWorldRunner::KvMode::INIT_CAPTURE, latents, 0, timesteps, ids, ring, {}, n_threads);
+                }
+            }
+            const size_t expected = cached || cfg.kv_cache ? 2 : 1;
+            if (records.size() != before + expected || !runner->get_last_measurement().valid) {
+                return false;
+            }
+            const size_t input = static_cast<size_t>(frames) * W * H * (C + 8192) * sizeof(float) +
+                                 tokens * (columns + runner->wan_params.axes_dim_sum * 4 + 17) * sizeof(float) +
+                                 static_cast<size_t>(frames + 1) * sizeof(float) +
+                                 (cached ? static_cast<size_t>(Fb) * W * H * 8192 * sizeof(float) +
+                                               static_cast<size_t>(W * H / 4) * runner->wan_params.dim * 2 * sizeof(float)
+                                         : 0);
+            host_inputs        = std::max(host_inputs, input);
+            retained_inputs    = std::max(retained_inputs, tokens * runner->wan_params.axes_dim_sum * 2 * sizeof(float) +
+                                                               (cfg.kv_cache ? static_cast<size_t>(Fb) * W * H * 8192 * sizeof(float) : 0));
+        }
+        if (!tae->measure_decode(W, H, Fb, n_threads) ||
+            (steps > 1 && !tae->measure_decode(W, H, Fb + std::min(Fb, 3), n_threads))) {
+            return false;
+        }
+        const size_t latent_bytes    = static_cast<size_t>(W * H * C) * sizeof(float);
+        const size_t retained_frames = static_cast<size_t>(steps) * Fb;
+        size_t history_capacity      = 1;
+        while (history_capacity < retained_frames) {
+            history_capacity *= 2;
+        }
+        const size_t scene_bytes    = (4096 * 512 + static_cast<size_t>(W * H * C) +
+                                       static_cast<size_t>(scene.ref_slots) * (32 * 32 * C + 1)) *
+                                      sizeof(float);
+        const size_t pixels         = static_cast<size_t>(W * H) * 256 * 3;
+        const size_t decoded_frames = 4 * (Fb + (steps > 1 ? std::min(Fb, 3) : 0)) - 3;
+        const size_t kept_frames    = steps > 1 ? 4 * Fb : decoded_frames;
+        const size_t decode_host    = latent_bytes * (3 * Fb + 3) + pixels *
+                                                                        ((decoded_frames + kept_frames) * sizeof(float) + 2 * kept_frames);
+        // Separate backends may append cached attention while the decoder runs.
+        const size_t temporary = kv_decode_overlap_safe ? host_inputs + decode_host : std::max(host_inputs, decode_host + retained_inputs);
+        host_bytes             = scene_bytes + retained_frames * latent_bytes +
+                                 2 * history_capacity * (sizeof(std::vector<float>) + sizeof(uint8_t)) +
+                                 std::max(temporary, host_inputs + 5 * Fb * latent_bytes);
+        return !records.empty();
     }
 
     // Generate the next latent block under `action_mask` (bits: W,A,S,D,I,J,K,L).
