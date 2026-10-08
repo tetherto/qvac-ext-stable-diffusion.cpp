@@ -261,7 +261,8 @@ namespace sd::fit_params {
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
                         FitPlan* plan,
                         bool offload_params_to_cpu,
-                        bool cpu_only) {
+                        bool cpu_only,
+                        bool check_requested_offload) {
         if (plan == nullptr) {
             return false;
         }
@@ -311,13 +312,16 @@ namespace sd::fit_params {
         }
 
         // check-first: the default placement puts every module on the default (first GPU) device
-        if (!offload_params_to_cpu) {
+        if (!offload_params_to_cpu || check_requested_offload) {
             int64_t params_sum = 0;
             ComputePhases compute;
             for (const ModuleMemory& m : modules) {
                 if (!m.runtime_on_cpu) {
-                    params_sum += (int64_t)m.params_bytes;
-                    compute.add(m.module, (int64_t)m.compute_bytes);
+                    const bool staged = offload_params_to_cpu && m.module != SDBackendModule::UPSCALER;
+                    if (!staged) {
+                        params_sum += (int64_t)m.params_bytes;
+                    }
+                    compute.add(m.module, (int64_t)m.compute_bytes + (staged ? (int64_t)m.params_bytes : 0));
                 }
             }
             if (params_sum + compute.peak() <= devices[0].budget_bytes) {
@@ -326,6 +330,9 @@ namespace sd::fit_params {
                             (long long)(devices[0].budget_bytes / MiB),
                             devices[0].name.c_str());
                 std::vector<Decision> resident(modules.size());
+                for (size_t i = 0; i < modules.size(); ++i) {
+                    resident[i].cpu_params = offload_params_to_cpu && modules[i].module != SDBackendModule::UPSCALER;
+                }
                 plan->valid   = host_memory_fits(modules, &resident, plan->report);
                 plan->changed = false;
                 return true;

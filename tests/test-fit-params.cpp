@@ -321,6 +321,31 @@ bool test_offloaded_upscaler_staging() {
     return expect(ok && (!plan.valid || plan.changed), "offloaded weights still need GPU staging capacity");
 }
 
+bool test_combined_offload_keeps_upscaler_resident() {
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "64")) {
+        return false;
+    }
+    const std::vector<sd::fit_params::ModuleMemory> modules = {
+        module(SDBackendModule::DIFFUSION, 4, 1),
+        module(SDBackendModule::TE, 4, 1),
+        module(SDBackendModule::UPSCALER, 1, 1),
+    };
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement(modules, budgets, &plan, true, false, true);
+    if (!expect(ok && plan.valid && !plan.changed,
+                "combined CPU offload should retain the upscaler and stage one diffusion module at a time")) {
+        return false;
+    }
+    if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "8")) {
+        return false;
+    }
+    ok = sd::fit_params::plan_placement(modules, budgets, &plan, true, false, true);
+    return expect(ok && !plan.valid, "combined offload must still fit all host weights and headroom");
+}
+
 bool test_measure_mode_preserves_outputs_and_projects_cache() {
     ggml_backend_t backend = sd_backend_cpu_init();
     if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
@@ -422,6 +447,7 @@ int main() {
         !test_explicit_cpu_uses_host_budget() ||
         !test_mixed_cpu_upscaler_placement() ||
         !test_offloaded_upscaler_staging() ||
+        !test_combined_offload_keeps_upscaler_resident() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||

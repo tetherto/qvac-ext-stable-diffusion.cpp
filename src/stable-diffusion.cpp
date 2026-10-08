@@ -4333,7 +4333,9 @@ static enum sd_fit_status_t sd_fit_params_impl(const sd_ctx_params_t* sd_ctx_par
     bool planned = sd::fit_params::plan_placement(modules,
                                                   sd_ctx->sd->max_vram_assignment,
                                                   &plan,
-                                                  offload_params_to_cpu);
+                                                  offload_params_to_cpu,
+                                                  false,
+                                                  upscaler != nullptr);
 
     delete sd_ctx->sd;
     sd_ctx->sd = nullptr;
