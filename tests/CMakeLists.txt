@@ -11,6 +11,10 @@ target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-fit-params COMMAND test-fit-params)
 
+add_executable(test-upscaler-fit test_upscaler_fit.cpp)
+target_link_libraries(test-upscaler-fit PRIVATE stable-diffusion)
+add_test(NAME test-upscaler-fit COMMAND test-upscaler-fit)
+
 add_executable(test-safetensors-metadata test_safetensors_metadata.cpp)
 target_include_directories(test-safetensors-metadata PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-safetensors-metadata PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})

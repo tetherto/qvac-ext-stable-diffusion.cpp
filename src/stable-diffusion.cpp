@@ -4062,9 +4062,10 @@ void sd_fit_workload_init(sd_fit_workload_t* workload) {
     workload->vae_tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
 }
 
-enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
-                                   const sd_fit_workload_t* workload,
-                                   sd_fit_result_t* result) {
+static enum sd_fit_status_t sd_fit_params_impl(const sd_ctx_params_t* sd_ctx_params,
+                                               const sd_fit_workload_t* workload,
+                                               const sd_upscaler_fit_params_t* upscaler,
+                                               sd_fit_result_t* result) {
     if (result == nullptr) {
         return SD_FIT_ERROR;
     }
@@ -4314,6 +4315,20 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     for (const auto& kv : module_map) {
         modules.push_back(kv.second);
     }
+    if (upscaler != nullptr) {
+        sd::fit_params::ModuleMemory memory;
+        bool measured = false;
+        try {
+            measured = sd_measure_upscaler(*upscaler, memory);
+        } catch (const std::exception& error) {
+            LOG_ERROR("fit-params: upscaler measurement failed: %s", error.what());
+        }
+        if (!measured) {
+            delete sd_ctx->sd;
+            return SD_FIT_ERROR;
+        }
+        modules.push_back(std::move(memory));
+    }
     sd::fit_params::FitPlan plan;
     bool planned = sd::fit_params::plan_placement(modules,
                                                   sd_ctx->sd->max_vram_assignment,
@@ -4343,6 +4358,25 @@ enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* sd_ctx_params,
     int64_t t1 = ggml_time_ms();
     LOG_INFO("fit-params: fitting params to free memory took %.2fs", (t1 - t0) * 1.0f / 1000);
     return SD_FIT_SUCCESS;
+}
+
+enum sd_fit_status_t sd_fit_params(const sd_ctx_params_t* ctx_params,
+                                   const sd_fit_workload_t* workload,
+                                   sd_fit_result_t* result) {
+    return sd_fit_params_impl(ctx_params, workload, nullptr, result);
+}
+
+enum sd_fit_status_t sd_fit_params_with_upscaler(const sd_ctx_params_t* ctx_params,
+                                                 const sd_fit_workload_t* workload,
+                                                 const sd_upscaler_fit_params_t* upscaler,
+                                                 sd_fit_result_t* result) {
+    if (upscaler == nullptr) {
+        if (result != nullptr) {
+            *result = {};
+        }
+        return SD_FIT_ERROR;
+    }
+    return sd_fit_params_impl(ctx_params, workload, upscaler, result);
 }
 
 void sd_fit_result_free(sd_fit_result_t* result) {

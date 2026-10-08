@@ -5,6 +5,7 @@
 #include "stable-diffusion.h"
 
 #include <cstdlib>
+#include <limits>
 #include <utility>
 
 UpscalerGGML::UpscalerGGML(int n_threads,
@@ -217,6 +218,152 @@ static const char* upscaler_pref_to_backend_spec(sd_upscaler_device_t device,
         case SD_BACKEND_PREF_OPENCL: return "opencl";
         case SD_BACKEND_PREF_GPU:
         default: return "gpu";
+    }
+}
+
+void sd_upscaler_fit_params_init(sd_upscaler_fit_params_t* params) {
+    if (params == nullptr) {
+        return;
+    }
+    *params = {};
+    params->n_threads = -1;
+    params->tile_size = 128;
+    params->width = 512;
+    params->height = 512;
+    params->repeats          = 1;
+    params->device           = SD_UPSCALER_DEVICE_GPU;
+    params->gpu_backend_pref = SD_BACKEND_PREF_GPU;
+}
+
+bool sd_measure_upscaler(const sd_upscaler_fit_params_t& params,
+                         sd::fit_params::ModuleMemory& memory) {
+    if (params.esrgan_path == nullptr || params.esrgan_path[0] == '\0' ||
+        params.width <= 0 || params.height <= 0 || params.repeats <= 0 ||
+        (params.device != SD_UPSCALER_DEVICE_CPU && params.device != SD_UPSCALER_DEVICE_GPU) ||
+        (params.gpu_backend_pref != SD_BACKEND_PREF_CPU && params.gpu_backend_pref != SD_BACKEND_PREF_GPU &&
+         params.gpu_backend_pref != SD_BACKEND_PREF_OPENCL)) {
+        return false;
+    }
+    SDMetadataOnlyReadScope metadata_only;
+    UpscalerGGML upscaler(params.n_threads, params.direct, params.tile_size,
+                          upscaler_pref_to_backend_spec(params.device, params.gpu_backend_pref),
+                          params.offload_params_to_cpu ? "cpu" : "");
+    if (!upscaler.load_from_file(params.esrgan_path, params.n_threads)) {
+        return false;
+    }
+    const int scale = upscaler.esrgan_upscaler->config.scale;
+    if (scale <= 0) {
+        return false;
+    }
+    int width  = params.width;
+    int height = params.height;
+    if (scale > 1) {
+        for (int repeat = 1; repeat < params.repeats; ++repeat) {
+            if (width > std::numeric_limits<int>::max() / scale ||
+                height > std::numeric_limits<int>::max() / scale) {
+                return false;
+            }
+            width *= scale;
+            height *= scale;
+        }
+    }
+    if (width > std::numeric_limits<int>::max() / scale ||
+        height > std::numeric_limits<int>::max() / scale) {
+        return false;
+    }
+    const uint64_t input_pixels_u64  = (uint64_t)width * height;
+    const uint64_t output_pixels_u64 = (uint64_t)(width * scale) * (height * scale);
+    // Covers float input/output, tile copies, RGB output and the caller's input.
+    // Keep arithmetic below the signed byte counts used by the placement planner.
+    const uint64_t byte_limit = std::min<uint64_t>(std::numeric_limits<size_t>::max() / 64,
+                                                   std::numeric_limits<int64_t>::max() / 64);
+    if (input_pixels_u64 > byte_limit || output_pixels_u64 > byte_limit) {
+        return false;
+    }
+    const size_t input_pixels    = (size_t)input_pixels_u64;
+    const size_t output_pixels   = (size_t)output_pixels_u64;
+    const bool tiled             = params.tile_size > 0 && (width > params.tile_size || height > params.tile_size);
+    const int tile_width         = tiled ? std::min(width, params.tile_size) : width;
+    const int tile_height        = tiled ? std::min(height, params.tile_size) : height;
+    const size_t tile_pixels     = (size_t)tile_width * tile_height;
+    const size_t original_bytes  = (size_t)params.width * params.height * 3;
+    const size_t retained_input  = params.repeats > 1 ? input_pixels * 3 : 0;
+    const size_t conversion_peak = original_bytes + retained_input + input_pixels * 12 + output_pixels * 15;
+    const size_t tile_peak       = original_bytes + retained_input + input_pixels * 12 + output_pixels * 12 +
+                                   (tiled ? tile_pixels * 12 * (1 + scale * scale) : 0);
+    memory                       = {};
+    memory.module                = SDBackendModule::UPSCALER;
+    memory.host_bytes            = std::max(conversion_peak, tile_peak);
+    memory.runtime_on_cpu        = params.device == SD_UPSCALER_DEVICE_CPU || params.gpu_backend_pref == SD_BACKEND_PREF_CPU;
+    memory.params_on_cpu         = params.offload_params_to_cpu;
+    std::vector<GGMLRunner::graph_memory_measurement> records;
+    struct MeasureModeGuard {
+        explicit MeasureModeGuard(std::vector<GGMLRunner::graph_memory_measurement>* records) {
+            GGMLRunner::set_measure_mode(true, records);
+        }
+        ~MeasureModeGuard() {
+            GGMLRunner::set_measure_mode(false);
+        }
+    } measure_guard(&records);
+    if (!upscaler.esrgan_upscaler->measure_memory(tile_width, tile_height, params.n_threads) || records.empty()) {
+        return false;
+    }
+    std::map<std::string, ggml_tensor*> tensors;
+    upscaler.esrgan_upscaler->get_param_tensors(tensors);
+    for (const auto& entry : tensors) {
+        memory.params_bytes += ggml_nbytes(entry.second);
+    }
+    for (const auto& record : records) {
+        memory.compute_bytes = std::max(memory.compute_bytes, record.compute_bytes);
+    }
+    return true;
+}
+
+enum sd_fit_status_t sd_upscaler_fit_params(const sd_upscaler_fit_params_t* params,
+                                            sd_fit_result_t* result) {
+    if (result == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    *result = {};
+    if (params == nullptr) {
+        return SD_FIT_ERROR;
+    }
+    if (params->gpu_backend_pref == SD_BACKEND_PREF_OPENCL && params->device != SD_UPSCALER_DEVICE_CPU) {
+        return SD_FIT_FAILURE;
+    }
+    try {
+        ggml_time_init();
+        sd::fit_params::ModuleMemory memory;
+        if (!sd_measure_upscaler(*params, memory)) {
+            return SD_FIT_ERROR;
+        }
+        sd::ggml_graph_cut::MaxVramAssignment budgets;
+        budgets.reset(0.f);
+        sd::fit_params::FitPlan plan;
+        const bool planned = sd::fit_params::plan_placement(
+            {memory}, budgets, &plan, false,
+            params->device == SD_UPSCALER_DEVICE_CPU || params->gpu_backend_pref == SD_BACKEND_PREF_CPU);
+        auto copy_string = [](const std::string& value) {
+            auto* copy = static_cast<char*>(malloc(value.size() + 1));
+            if (copy == nullptr) {
+                throw std::bad_alloc();
+            }
+            memcpy(copy, value.c_str(), value.size() + 1);
+            return copy;
+        };
+        result->report  = copy_string(plan.report);
+        result->changed = plan.changed;
+        if (!plan.runtime_spec.empty()) {
+            result->backend = copy_string(plan.runtime_spec);
+        }
+        if (!plan.params_spec.empty()) {
+            result->params_backend = copy_string(plan.params_spec);
+        }
+        return planned && plan.valid ? SD_FIT_SUCCESS : SD_FIT_FAILURE;
+    } catch (const std::exception& error) {
+        sd_fit_result_free(result);
+        LOG_ERROR("upscaler fit: %s", error.what());
+        return SD_FIT_ERROR;
     }
 }
 

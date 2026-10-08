@@ -220,14 +220,15 @@ namespace sd::fit_params {
             int64_t params = 0;
             ComputePhases compute;
             for (size_t i = 0; i < modules.size(); ++i) {
-                const bool on_cpu = decisions == nullptr ||
+                params += (int64_t)modules[i].host_bytes;
+                const bool on_cpu = modules[i].runtime_on_cpu || modules[i].params_on_cpu || decisions == nullptr ||
                                     (*decisions)[i].on_cpu ||
                                     (*decisions)[i].cpu_params;
                 if (!on_cpu) {
                     continue;
                 }
                 params += (int64_t)modules[i].params_bytes;
-                if (decisions == nullptr || (*decisions)[i].on_cpu) {
+                if (modules[i].runtime_on_cpu || decisions == nullptr || (*decisions)[i].on_cpu) {
                     compute.add(modules[i].module, (int64_t)modules[i].compute_bytes);
                 }
             }
@@ -259,7 +260,8 @@ namespace sd::fit_params {
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
                         FitPlan* plan,
-                        bool offload_params_to_cpu) {
+                        bool offload_params_to_cpu,
+                        bool cpu_only) {
         if (plan == nullptr) {
             return false;
         }
@@ -273,7 +275,7 @@ namespace sd::fit_params {
             }
         }
 
-        std::vector<Device> devices = enumerate_gpu_devices(budgets);
+        std::vector<Device> devices = cpu_only ? std::vector<Device>{} : enumerate_gpu_devices(budgets);
 
         report_line(plan->report, "fit-params: measured memory plan");
         report_line(plan->report, "  devices:");
@@ -313,15 +315,18 @@ namespace sd::fit_params {
             int64_t params_sum = 0;
             ComputePhases compute;
             for (const ModuleMemory& m : modules) {
-                params_sum += (int64_t)m.params_bytes;
-                compute.add(m.module, (int64_t)m.compute_bytes);
+                if (!m.runtime_on_cpu) {
+                    params_sum += (int64_t)m.params_bytes;
+                    compute.add(m.module, (int64_t)m.compute_bytes);
+                }
             }
             if (params_sum + compute.peak() <= devices[0].budget_bytes) {
                 report_line(plan->report, "  projected use %lld MiB <= budget %lld MiB on %s, no changes needed",
                             (long long)((params_sum + compute.peak()) / MiB),
                             (long long)(devices[0].budget_bytes / MiB),
                             devices[0].name.c_str());
-                plan->valid   = true;
+                std::vector<Decision> resident(modules.size());
+                plan->valid   = host_memory_fits(modules, &resident, plan->report);
                 plan->changed = false;
                 return true;
             }
@@ -361,6 +366,11 @@ namespace sd::fit_params {
             };
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
+                if (m.runtime_on_cpu) {
+                    resident[mi].placed = true;
+                    resident[mi].on_cpu = true;
+                    continue;
+                }
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     resident[mi].placed = true;
                     continue;
@@ -471,7 +481,12 @@ namespace sd::fit_params {
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
                 Decision& decision    = decisions[mi];
-                decision              = {};
+                if (m.runtime_on_cpu) {
+                    decision.placed = true;
+                    decision.on_cpu = true;
+                    continue;
+                }
+                decision = {};
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     decision.placed = true;
                     continue;

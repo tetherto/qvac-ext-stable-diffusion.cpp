@@ -615,6 +615,31 @@ SD_API bool upscale(upscaler_ctx_t* upscaler_ctx,
 
 SD_API int get_upscale_factor(upscaler_ctx_t* upscaler_ctx);
 
+typedef struct {
+    const char* esrgan_path;
+    int n_threads;
+    int tile_size;  // <= 0 disables tiling
+    int width;
+    int height;
+    int repeats;
+    bool direct;
+    bool offload_params_to_cpu;
+    enum sd_upscaler_device_t device;
+    enum sd_backend_preference_t gpu_backend_pref;
+} sd_upscaler_fit_params_t;
+
+SD_API void sd_upscaler_fit_params_init(sd_upscaler_fit_params_t* params);
+// Reads only model metadata and measures the largest requested tile graph.
+// Includes host image buffers and repeated scaling without allocating images.
+SD_API enum sd_fit_status_t sd_upscaler_fit_params(const sd_upscaler_fit_params_t* params,
+                                                   sd_fit_result_t* result);
+// ESRGAN weights remain resident across subsequent generation calls. Measures
+// both modules together, including CPU upscaling and full-image host buffers.
+SD_API enum sd_fit_status_t sd_fit_params_with_upscaler(const sd_ctx_params_t* ctx_params,
+                                                        const sd_fit_workload_t* workload,
+                                                        const sd_upscaler_fit_params_t* upscaler,
+                                                        sd_fit_result_t* result);
+
 typedef struct adetailer_ctx_t adetailer_ctx_t;
 
 typedef struct {

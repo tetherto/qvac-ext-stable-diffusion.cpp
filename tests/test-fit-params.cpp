@@ -267,6 +267,60 @@ bool test_cpu_param_offload_is_planned() {
                   "CPU parameter offload must fail when its weights exceed host memory");
 }
 
+bool test_host_buffers_checked_with_gpu_weights() {
+    auto memory       = module(SDBackendModule::UPSCALER, 1, 1);
+    memory.host_bytes = 4 * GiB;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 0.f, {memory}, &plan, 4.f);
+    if (!expect(ok && !plan.valid, "GPU placement must still fit the host image buffers")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:8", 0.f, {memory}, &plan, 5.f);
+    return expect(ok && plan.valid && !plan.changed, "host buffers should fit independently of GPU weights");
+}
+
+bool test_explicit_cpu_uses_host_budget() {
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:64") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "4")) {
+        return false;
+    }
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement({module(SDBackendModule::UPSCALER, 3, 1)}, budgets, &plan, false, true);
+    return expect(ok && !plan.valid, "explicit CPU placement must not use spare GPU capacity");
+}
+
+bool test_mixed_cpu_upscaler_placement() {
+    auto upscaler           = module(SDBackendModule::UPSCALER, 3, 1);
+    upscaler.runtime_on_cpu = true;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:3", 0.f,
+                                {module(SDBackendModule::DIFFUSION, 1, 1), upscaler}, &plan, 5.f);
+    if (!expect(ok && plan.valid && !plan.changed, "CPU upscaler weights must not consume diffusion's GPU budget")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:3", 0.f,
+                           {module(SDBackendModule::DIFFUSION, 1, 1), upscaler}, &plan, 4.f);
+    return expect(ok && !plan.valid, "CPU upscaler weights and graph must fit alongside host buffers");
+}
+
+bool test_offloaded_upscaler_staging() {
+    auto upscaler          = module(SDBackendModule::UPSCALER, 3, 1);
+    upscaler.params_on_cpu = true;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 0.f, {upscaler}, &plan, 4.f);
+    if (!expect(ok && plan.valid && !plan.changed, "offloaded upscaler should fit CPU weights and GPU staging")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:8", 0.f, {upscaler}, &plan, 3.f);
+    if (!expect(ok && !plan.valid, "GPU staging does not replace the host parameter allocation")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:4", 0.f, {upscaler}, &plan, 5.f);
+    return expect(ok && (!plan.valid || plan.changed), "offloaded weights still need GPU staging capacity");
+}
+
 bool test_measure_mode_preserves_outputs_and_projects_cache() {
     ggml_backend_t backend = sd_backend_cpu_init();
     if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
@@ -364,6 +418,10 @@ int main() {
         !test_controlnet_compute_is_concurrent() ||
         !test_cpu_fallback_checks_host_memory() ||
         !test_cpu_param_offload_is_planned() ||
+        !test_host_buffers_checked_with_gpu_weights() ||
+        !test_explicit_cpu_uses_host_budget() ||
+        !test_mixed_cpu_upscaler_placement() ||
+        !test_offloaded_upscaler_staging() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||
