@@ -267,6 +267,273 @@ bool test_cpu_param_offload_is_planned() {
                   "CPU parameter offload must fail when its weights exceed host memory");
 }
 
+bool test_host_buffers_checked_with_gpu_weights() {
+    auto memory       = module(SDBackendModule::UPSCALER, 1, 1);
+    memory.host_bytes = 4 * GiB;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 0.f, {memory}, &plan, 4.f);
+    if (!expect(ok && !plan.valid, "GPU placement must still fit the host image buffers")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:8", 0.f, {memory}, &plan, 5.f);
+    return expect(ok && plan.valid && !plan.changed, "host buffers should fit independently of GPU weights");
+}
+
+bool test_explicit_cpu_uses_host_budget() {
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:64") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "4")) {
+        return false;
+    }
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement({module(SDBackendModule::UPSCALER, 3, 1)}, budgets, &plan, false, true);
+    return expect(ok && !plan.valid, "explicit CPU placement must not use spare GPU capacity");
+}
+
+bool test_mixed_cpu_upscaler_placement() {
+    auto upscaler           = module(SDBackendModule::UPSCALER, 3, 1);
+    upscaler.runtime_on_cpu = true;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:3", 0.f,
+                                {module(SDBackendModule::DIFFUSION, 1, 1), upscaler}, &plan, 5.f);
+    if (!expect(ok && plan.valid && !plan.changed, "CPU upscaler weights must not consume diffusion's GPU budget")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:3", 0.f,
+                           {module(SDBackendModule::DIFFUSION, 1, 1), upscaler}, &plan, 4.f);
+    return expect(ok && !plan.valid, "CPU upscaler weights and graph must fit alongside host buffers");
+}
+
+bool test_offloaded_upscaler_staging() {
+    auto upscaler          = module(SDBackendModule::UPSCALER, 3, 1);
+    upscaler.params_on_cpu = true;
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 0.f, {upscaler}, &plan, 4.f);
+    if (!expect(ok && plan.valid && !plan.changed, "offloaded upscaler should fit CPU weights and GPU staging")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:8", 0.f, {upscaler}, &plan, 3.f);
+    if (!expect(ok && !plan.valid, "GPU staging does not replace the host parameter allocation")) {
+        return false;
+    }
+    ok = plan_with_devices("GPU0:4", 0.f, {upscaler}, &plan, 5.f);
+    return expect(ok && (!plan.valid || plan.changed), "offloaded weights still need GPU staging capacity");
+}
+
+bool test_combined_offload_keeps_upscaler_resident() {
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "64")) {
+        return false;
+    }
+    auto upscaler                                           = module(SDBackendModule::UPSCALER, 1, 1);
+    upscaler.fixed_residency                                = true;
+    const std::vector<sd::fit_params::ModuleMemory> modules = {
+        module(SDBackendModule::DIFFUSION, 4, 1),
+        module(SDBackendModule::TE, 4, 1),
+        upscaler,
+    };
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement(modules, budgets, &plan, true, false, true);
+    if (!expect(ok && plan.valid && !plan.changed,
+                "combined CPU offload should retain the upscaler and stage one diffusion module at a time")) {
+        return false;
+    }
+    if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "8")) {
+        return false;
+    }
+    ok = sd::fit_params::plan_placement(modules, budgets, &plan, true, false, true);
+    return expect(ok && !plan.valid, "combined offload must still fit all host weights and headroom");
+}
+
+bool test_retained_upscaler_time_share() {
+    auto upscaler            = module(SDBackendModule::UPSCALER, 1, 0);
+    upscaler.params_bytes    = 3 * GiB / 2;
+    upscaler.compute_bytes   = GiB / 2;
+    upscaler.fixed_residency = true;
+    const auto diffusion     = module(SDBackendModule::DIFFUSION, 6, 1);
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "64")) {
+        return false;
+    }
+    for (bool offload : {false, true}) {
+        sd::ggml_graph_cut::MaxVramAssignment budgets;
+        budgets.reset(0.f);
+        sd::fit_params::FitPlan plan;
+        bool ok = sd::fit_params::plan_placement({diffusion, upscaler}, budgets, &plan, offload, false, true);
+        if (!expect(ok && plan.valid && plan.runtime_spec == "diffusion=cpu" && plan.params_spec.empty(),
+                    "time sharing must reserve the separate upscaler and never emit its placement")) {
+            return false;
+        }
+    }
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 0.f, {diffusion, upscaler}, &plan, 4.f);
+    return expect(ok && !plan.valid, "reject when neither retained GPU placement nor CPU fallback fits");
+}
+
+bool test_hires_and_separate_upscalers() {
+    auto separate            = module(SDBackendModule::UPSCALER, 1, 1);
+    separate.fixed_residency = true;
+    const auto hires         = module(SDBackendModule::UPSCALER, 2, 1);
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "4")) {
+        return false;
+    }
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement({module(SDBackendModule::DIFFUSION, 3, 1), hires, separate},
+                                             budgets, &plan, true, false, true);
+    if (!expect(ok && !plan.valid, "CPU-offloaded hires upscaler must count against host RAM")) {
+        return false;
+    }
+    ok                    = plan_with_devices("GPU0:5", 0.f, {module(SDBackendModule::DIFFUSION, 3, 1), hires, separate}, &plan);
+    const auto assignment = plan.runtime_spec.find("upscaler=");
+    return expect(ok && plan.valid && plan.changed && assignment != std::string::npos &&
+                      plan.runtime_spec.find("upscaler=", assignment + 1) == std::string::npos,
+                  "only the context hires upscaler may emit an upscaler assignment");
+}
+
+bool test_cpu_upscaler_keeps_offload_assignments_separate() {
+    auto upscaler            = module(SDBackendModule::UPSCALER, 1, 1);
+    upscaler.fixed_residency = true;
+    upscaler.runtime_on_cpu  = true;
+    if (!set_test_env("SD_FIT_DEBUG_DEVICES", "GPU0:8") ||
+        !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "64")) {
+        return false;
+    }
+    sd::ggml_graph_cut::MaxVramAssignment budgets;
+    budgets.reset(0.f);
+    sd::fit_params::FitPlan plan;
+    bool ok = sd::fit_params::plan_placement({module(SDBackendModule::DIFFUSION, 4, 1),
+                                              module(SDBackendModule::TE, 4, 1), upscaler},
+                                             budgets, &plan, true);
+    return expect(ok && plan.valid && plan.time_share,
+                  "CPU ESRGAN should fit alongside time-shared diffusion") &&
+           expect(plan.runtime_spec == "diffusion=GPU0,te=GPU0" &&
+                      plan.params_spec == "diffusion=cpu,te=cpu",
+                  "separate CPU ESRGAN must not alter the diffusion offload assignments");
+}
+
+bool test_shared_memory_placements() {
+    auto diffusion           = module(SDBackendModule::DIFFUSION, 2, 1);
+    diffusion.host_bytes     = GiB;
+    auto upscaler            = module(SDBackendModule::UPSCALER, 1, 1);
+    upscaler.fixed_residency = true;
+    sd::fit_params::FitPlan plan;
+    for (const char* devices : {"GPU0:8", "MTL0:8:shared"}) {
+        const bool shared = std::string(devices).find("shared") != std::string::npos;
+        for (float host : {5.f, 6.f}) {
+            bool ok = plan_with_devices(devices, 0.f, {diffusion, upscaler}, &plan, host);
+            if (!expect(ok && plan.valid == (!shared || host == 6.f),
+                        "resident GPU weights, retained ESRGAN and host buffers must fit a shared pool")) {
+                return false;
+            }
+        }
+    }
+
+    const auto large = module(SDBackendModule::DIFFUSION, 5, 2);
+    const auto text  = module(SDBackendModule::TE, 3, 1);
+    for (float host : {10.f, 11.f}) {
+        bool ok = plan_with_devices("MTL0:9:shared,GPU1:9", 0.f, {large, text}, &plan, host);
+        if (!expect(ok && plan.valid, "only shared-device allocations should consume host RAM in a spread placement") ||
+            !expect(plan.changed && !plan.time_share, "spread regression must exercise resident device assignment")) {
+            return false;
+        }
+        ok = plan_with_devices("MTL0:9:shared,MTL1:9:shared", 0.f, {large, text}, &plan, host);
+        if (!expect(ok && plan.valid == (host == 11.f), "resident allocations across shared devices must be combined")) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_shared_memory_time_share_and_offload() {
+    auto diffusion           = module(SDBackendModule::DIFFUSION, 4, 1);
+    diffusion.host_bytes     = GiB;
+    auto upscaler            = module(SDBackendModule::UPSCALER, 1, 1);
+    upscaler.fixed_residency = true;
+    const auto text          = module(SDBackendModule::TE, 4, 1);
+    for (bool offload : {false, true}) {
+        for (bool check_first : {false, true}) {
+            for (float host : {7.f, 15.f, 16.f}) {
+                if (!set_test_env("SD_FIT_DEBUG_DEVICES", "MTL0:8:shared") ||
+                    !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", std::to_string(host))) {
+                    return false;
+                }
+                sd::ggml_graph_cut::MaxVramAssignment budgets;
+                budgets.reset(0.f);
+                sd::fit_params::FitPlan plan;
+                bool ok         = sd::fit_params::plan_placement({diffusion, text, upscaler}, budgets, &plan,
+                                                                 offload, false, check_first);
+                const bool fits = offload ? host == 16.f : host != 7.f;
+                if (!expect(ok && plan.valid == fits,
+                            "shared time sharing must count retained ESRGAN, GPU staging and CPU weight copies")) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool test_shared_memory_streaming_and_split() {
+    auto memory = module(SDBackendModule::DIFFUSION, 20, 2, true);
+    sd::fit_params::FitPlan plan;
+    for (float host : {22.f, 23.f}) {
+        bool ok = plan_with_devices("MTL0:6:shared", 6.f, {memory}, &plan, host);
+        if (!expect(ok && plan.valid == (host == 23.f),
+                    "shared streaming must count CPU weights plus the measured GPU segment")) {
+            return false;
+        }
+        if (plan.valid && !expect(plan.stream_layers, "shared streaming must not charge the full GPU parameter allocation")) {
+            return false;
+        }
+    }
+    memory            = module(SDBackendModule::DIFFUSION, 8, 2, true);
+    memory.host_bytes = GiB;
+    for (float host : {13.f, 14.f}) {
+        bool ok = plan_with_devices("MTL0:7:shared,MTL1:7:shared", 7.f, {memory}, &plan, host);
+        if (!expect(ok && plan.valid == (host == 14.f),
+                    "split placement must combine measured shard allocations across a shared pool")) {
+            return false;
+        }
+        if (plan.valid && !expect(plan.runtime_spec == "diffusion=MTL0&MTL1", "split test must exercise both devices")) {
+            return false;
+        }
+    }
+    auto upscaler           = module(SDBackendModule::UPSCALER, 1, 2);
+    upscaler.runtime_on_cpu = true;
+    bool ok                 = plan_with_devices("MTL0:8:shared", 0.f,
+                                                {module(SDBackendModule::DIFFUSION, 2, 1), upscaler}, &plan, 6.f);
+    return expect(ok && plan.valid, "sequential CPU upscaling and shared GPU graphs should use their phase peak");
+}
+
+bool test_shared_memory_tiling() {
+    auto memory       = module(SDBackendModule::VAE, 1, 5, false, 512);
+    memory.host_bytes = GiB;
+    for (bool offload : {false, true}) {
+        for (float host : {2.5f, 3.f, 3.5f, 4.f}) {
+            if (!set_test_env("SD_FIT_DEBUG_DEVICES", "MTL0:4:shared") ||
+                !set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", std::to_string(host))) {
+                return false;
+            }
+            sd::ggml_graph_cut::MaxVramAssignment budgets;
+            budgets.reset(4.f);
+            sd::fit_params::FitPlan plan;
+            bool ok   = sd::fit_params::plan_placement({memory}, budgets, &plan, offload);
+            bool fits = offload ? host >= 4.f : host >= 3.f;
+            if (!expect(ok && plan.valid == fits, "shared tiling must price its chosen graph and CPU parameter copy") ||
+                (plan.valid && !expect(plan.vae_tiling, "shared tiling must avoid charging the full decode graph"))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool test_measure_mode_preserves_outputs_and_projects_cache() {
     ggml_backend_t backend = sd_backend_cpu_init();
     if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
@@ -364,6 +631,18 @@ int main() {
         !test_controlnet_compute_is_concurrent() ||
         !test_cpu_fallback_checks_host_memory() ||
         !test_cpu_param_offload_is_planned() ||
+        !test_host_buffers_checked_with_gpu_weights() ||
+        !test_explicit_cpu_uses_host_budget() ||
+        !test_mixed_cpu_upscaler_placement() ||
+        !test_offloaded_upscaler_staging() ||
+        !test_combined_offload_keeps_upscaler_resident() ||
+        !test_retained_upscaler_time_share() ||
+        !test_hires_and_separate_upscalers() ||
+        !test_cpu_upscaler_keeps_offload_assignments_separate() ||
+        !test_shared_memory_placements() ||
+        !test_shared_memory_time_share_and_offload() ||
+        !test_shared_memory_streaming_and_split() ||
+        !test_shared_memory_tiling() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||

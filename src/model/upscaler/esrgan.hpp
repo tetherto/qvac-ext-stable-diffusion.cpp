@@ -268,6 +268,18 @@ struct ESRGAN : public GGMLRunner {
         auto result    = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
         return result;
     }
+
+    bool measure_memory(int width, int height, int n_threads) {
+        auto get_graph = [&]() {
+            ggml_cgraph* graph = new_graph_custom(1 << 16);
+            ggml_tensor* input = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, width, height, 3, 1);
+            ggml_set_input(input);
+            auto context = get_context();
+            ggml_build_forward_expand(graph, rrdb_net->forward(&context, input));
+            return graph;
+        };
+        return GGMLRunner::compute<float>(get_graph, n_threads, false, true, false, true).has_value();
+    }
 };
 
 #endif  // __SD_MODEL_UPSCALER_ESRGAN_HPP__
