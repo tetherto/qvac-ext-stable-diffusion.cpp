@@ -1451,8 +1451,9 @@ public:
             retained_inputs    = std::max<size_t>(retained_inputs, tokens * runner->wan_params.axes_dim_sum * 2 * sizeof(float) +
                                                                (cfg.kv_cache ? static_cast<size_t>(Fb) * W * H * 8192 * sizeof(float) : 0));
         }
+        const int decode_lead = std::min(3, (steps - 1) * Fb);
         if (!tae->measure_decode(W, H, Fb, n_threads) ||
-            (steps > 1 && !tae->measure_decode(W, H, Fb + std::min(Fb, 3), n_threads))) {
+            (decode_lead > 0 && !tae->measure_decode(W, H, Fb + decode_lead, n_threads))) {
             return false;
         }
         const size_t latent_bytes    = static_cast<size_t>(W * H * C) * sizeof(float);
@@ -1465,7 +1466,7 @@ public:
                                        static_cast<size_t>(scene.ref_slots) * (32 * 32 * C + 1)) *
                                       sizeof(float);
         const size_t pixels         = static_cast<size_t>(W * H) * 256 * 3;
-        const size_t decoded_frames = 4 * (Fb + (steps > 1 ? std::min(Fb, 3) : 0)) - 3;
+        const size_t decoded_frames = 4 * (Fb + decode_lead) - 3;
         const size_t kept_frames    = steps > 1 ? 4 * Fb : decoded_frames;
         const size_t decode_host    = latent_bytes * (3 * Fb + 3) + pixels *
                                                                         ((decoded_frames + kept_frames) * sizeof(float) + 2 * kept_frames);

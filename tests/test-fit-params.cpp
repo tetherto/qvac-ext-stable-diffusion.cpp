@@ -5,6 +5,7 @@
 #include <thread>
 #include <vector>
 
+#include "../ggml/src/ggml-backend-impl.h"
 #include "core/fit_params.h"
 #include "core/ggml_extend.hpp"
 
@@ -380,6 +381,41 @@ bool test_measure_mode_preserves_outputs_and_projects_cache() {
     return passed;
 }
 
+bool test_unified_memory_checks_combined_host_use() {
+    if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "2")) {
+        return false;
+    }
+    ggml_backend_reg reg{};
+    reg.iface.get_name = [](ggml_backend_reg_t) { return "MTL"; };
+    ggml_backend_device device{};
+    device.reg              = &reg;
+    device.iface.get_name   = [](ggml_backend_dev_t) { return "GPU0"; };
+    device.iface.get_memory = [](ggml_backend_dev_t, size_t* free, size_t* total) {
+        *free = *total = 16 * GiB;
+    };
+    device.iface.get_type = [](ggml_backend_dev_t dev) {
+        return *static_cast<enum ggml_backend_dev_type*>(dev->context);
+    };
+    ggml_backend backend{};
+    backend.device = &device;
+    for (auto type : {GGML_BACKEND_DEVICE_TYPE_IGPU, GGML_BACKEND_DEVICE_TYPE_GPU}) {
+        device.context = &type;
+        sd::ggml_graph_cut::MaxVramAssignment budgets;
+        budgets.reset(0.f);
+        sd::fit_params::FitPlan plan;
+        bool unified = type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+#if defined(__APPLE__) && defined(__aarch64__)
+        unified = true;
+#endif
+        const bool ok = sd::fit_params::check_placement({{&backend, GiB}}, GiB, budgets, &plan);
+        if (!expect(ok && plan.valid == !unified,
+                    "unified device and host allocations must fit the same host pool")) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool test_measure_mode_is_thread_local() {
     std::vector<GGMLRunner::graph_memory_measurement> records;
     GGMLRunner::set_measure_mode(true, &records);
@@ -448,6 +484,7 @@ int main() {
         !test_mixed_cpu_upscaler_placement() ||
         !test_offloaded_upscaler_staging() ||
         !test_combined_offload_keeps_upscaler_resident() ||
+        !test_unified_memory_checks_combined_host_use() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||

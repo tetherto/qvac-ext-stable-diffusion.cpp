@@ -8036,9 +8036,12 @@ enum sd_fit_status_t sd_abot_fit_params(const sd_abot_session_params_v2_t* param
                     buffer_fits     = buffer_fits && record.configured_buffer_bytes <= ggml_backend_get_max_buffer_capacity(runtime);
                 }
             }
-            memory.push_back({storage, params_bytes});
+            const bool on_disk = module == SDBackendModule::DIFFUSION && walk.cfg.dit_params_on_disk;
+            if (!on_disk) {
+                memory.push_back({storage, params_bytes});
+            }
             memory.push_back({runtime, compute_bytes});
-            if (runtime != storage) {
+            if (runtime != storage || on_disk) {
                 const auto runtime_buft        = ggml_backend_get_default_buffer_type(runtime);
                 const size_t runtime_alignment = ggml_backend_buft_get_alignment(runtime_buft);
                 size_t staged_bytes            = 0;

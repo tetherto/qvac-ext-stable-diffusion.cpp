@@ -89,6 +89,32 @@ namespace abot_fit_test {
         GGML_ASSERT(!strict.load(scene));
     }
 
+    void test_decode_overlap(const std::string& dit, const std::string& tae, const std::string& scene) {
+        SDMetadataOnlyReadScope metadata;
+        for (const auto& block : std::vector<std::array<int, 3>>{{1, 1, 1}, {1, 2, 2}, {1, 4, 4}, {2, 2, 4}, {2, 3, 5}}) {
+            SDBackendHandle backend(sd_backend_cpu_init());
+            GGML_ASSERT(backend);
+            ABOT::AbotWorldConfig config;
+            config.num_frame_per_block = block[0];
+            ABOT::AbotWalkSession session;
+            GGML_ASSERT(session.load(backend.get(), backend.get(), backend.get(), backend.get(), dit, tae, scene, config, 42, 1));
+            std::vector<GGMLRunner::graph_memory_measurement> records;
+            GGMLRunner::set_measure_mode(true, &records);
+            size_t host = 0;
+            GGML_ASSERT(session.measure_memory(block[1], records, host));
+            size_t estimated = 0;
+            for (const auto& record : records) {
+                if (record.module == SDBackendModule::VAE) {
+                    estimated = std::max(estimated, record.compute_bytes);
+                }
+            }
+            records.clear();
+            GGML_ASSERT(session.tae->measure_decode(2, 2, block[2], 1));
+            GGML_ASSERT(!records.empty() && estimated == records.back().compute_bytes);
+            GGMLRunner::set_measure_mode(false);
+        }
+    }
+
     void test_real_model(const char* dit, const char* tae, const char* scene, const char* backend, const char* budget) {
         sd_abot_session_params_v2_t params;
         sd_abot_session_params_v2_init(&params);
@@ -108,6 +134,15 @@ namespace abot_fit_test {
             GGML_ASSERT(status != SD_FIT_ERROR && result.report != nullptr);
             std::printf("%s\n", result.report);
             sd_fit_result_free(&result);
+            if (budget != nullptr) {
+                params.params_backend  = "diffusion=disk";
+                const auto disk_status = sd_abot_fit_params(&params, &workload, &result);
+                GGML_ASSERT(disk_status != SD_FIT_ERROR && result.report != nullptr);
+                GGML_ASSERT(disk_status == status);
+                std::printf("disk placement: %s\n", result.report);
+                sd_fit_result_free(&result);
+                params.params_backend = nullptr;
+            }
         }
     }
 }
@@ -152,6 +187,7 @@ int main(int argc, char** argv) {
     }
     abot_fit_test::write_header(scene, header);
     abot_fit_test::test_fit(dit.string(), tae.string(), scene.string());
+    abot_fit_test::test_decode_overlap(dit.string(), tae.string(), scene.string());
     {
         SDMetadataOnlyReadScope metadata;
         ABOT::AbotScenePack pack;

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -259,6 +260,19 @@ namespace sd::fit_params {
 
     }  // namespace
 
+    static bool device_shares_host_memory(ggml_backend_dev_t device) {
+        if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            return true;
+        }
+#if defined(__APPLE__) && defined(__aarch64__)
+        const auto reg   = ggml_backend_dev_backend_reg(device);
+        const char* name = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
+        return name != nullptr && std::strcmp(name, "MTL") == 0;
+#else
+        return false;
+#endif
+    }
+
     bool check_placement(const std::vector<BackendMemory>& memory,
                          size_t host_bytes,
                          sd::ggml_graph_cut::MaxVramAssignment& budgets,
@@ -295,7 +309,7 @@ namespace sd::fit_params {
                 const auto device = ggml_backend_get_device(item.backend);
                 if (device == nullptr || !add(use[device], item.bytes))
                     return false;
-                if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU && !add(host, item.bytes))
+                if (device_shares_host_memory(device) && !add(host, item.bytes))
                     return false;
             }
         }
