@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
+#include <map>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -278,6 +280,73 @@ namespace sd::fit_params {
         }
 
     }  // namespace
+
+    bool check_placement(const std::vector<BackendMemory>& memory,
+                         size_t host_bytes,
+                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
+                         FitPlan* plan) {
+        if (plan == nullptr) {
+            return false;
+        }
+        *plan = {};
+        std::string error;
+        if (!budgets.canonicalize_backend_keys(&error)) {
+            return false;
+        }
+        std::map<ggml_backend_dev_t, size_t> use;
+        auto add = [](size_t& total, size_t bytes) {
+            if (bytes > static_cast<size_t>(std::numeric_limits<int64_t>::max()) - total) {
+                return false;
+            }
+            total += bytes;
+            return true;
+        };
+        size_t host = 0;
+        if (!add(host, host_bytes)) {
+            return false;
+        }
+        for (const auto& item : memory) {
+            if (item.backend == nullptr) {
+                return false;
+            }
+            if (sd_backend_is_cpu(item.backend)) {
+                if (!add(host, item.bytes)) {
+                    return false;
+                }
+            } else {
+                const auto device = ggml_backend_get_device(item.backend);
+                if (device == nullptr || !add(use[device], item.bytes))
+                    return false;
+                if (device_shares_host_memory(device) && !add(host, item.bytes))
+                    return false;
+            }
+        }
+        plan->valid = true;
+        report_line(plan->report, "fit-params: measured configured placement");
+        const int64_t available   = available_host_memory();
+        const int64_t host_budget = available < 0 ? -1 : std::max<int64_t>(available - MEMORY_RESERVE, 0);
+        report_line(plan->report, "  host memory: available %lld MiB, budget %lld MiB, projected use %lld MiB",
+                    (long long)(available / MiB), (long long)(host_budget / MiB), (long long)(host / MiB));
+        plan->valid = host_budget >= 0 && host <= static_cast<size_t>(host_budget);
+        for (const auto& item : use) {
+            if (item.first == nullptr) {
+                return false;
+            }
+            Device device;
+            device.dev        = item.first;
+            device.name       = ggml_backend_dev_name(item.first);
+            size_t free_bytes = 0, total_bytes = 0;
+            ggml_backend_dev_memory(item.first, &free_bytes, &total_bytes);
+            device.free_bytes  = static_cast<int64_t>(free_bytes);
+            device.total_bytes = static_cast<int64_t>(total_bytes);
+            apply_device_budget(device, budgets);
+            report_line(plan->report, "  %-12s available %lld MiB, budget %lld MiB, projected use %lld MiB",
+                        device.name.c_str(), (long long)(device.free_bytes / MiB),
+                        (long long)(device.budget_bytes / MiB), (long long)(item.second / MiB));
+            plan->valid = plan->valid && item.second <= static_cast<size_t>(device.budget_bytes);
+        }
+        return true;
+    }
 
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
