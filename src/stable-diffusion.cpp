@@ -4062,6 +4062,20 @@ void sd_fit_workload_init(sd_fit_workload_t* workload) {
     workload->vae_tiling_params = {false, false, 0, 0, 0.5f, 0, 0, nullptr};
 }
 
+bool sd_model_supports_video(const char* model_path) {
+    if (model_path == nullptr || model_path[0] == '\0') {
+        return false;
+    }
+    try {
+        SDMetadataOnlyReadScope metadata_only;
+        ModelLoader loader;
+        return loader.init_from_file_and_convert_name(model_path) &&
+               sd_version_supports_video_generation(loader.get_sd_version());
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 static enum sd_fit_status_t sd_fit_params_impl(const sd_ctx_params_t* sd_ctx_params,
                                                const sd_fit_workload_t* workload,
                                                const sd_upscaler_fit_params_t* upscaler,
@@ -4133,6 +4147,9 @@ static enum sd_fit_status_t sd_fit_params_impl(const sd_ctx_params_t* sd_ctx_par
         return SD_FIT_ERROR;
     }
     const bool video = workload->video_gen_params != nullptr || model_video_only || animatediff_video;
+    if (video) {
+        upscaler = nullptr;
+    }
 
     sd_tiling_params_t requested_tiling = workload->vae_tiling_params;
     if (workload->image_gen_params != nullptr) {

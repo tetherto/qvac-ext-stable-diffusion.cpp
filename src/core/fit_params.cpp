@@ -317,7 +317,7 @@ namespace sd::fit_params {
             ComputePhases compute;
             for (const ModuleMemory& m : modules) {
                 if (!m.runtime_on_cpu) {
-                    const bool staged = offload_params_to_cpu && m.module != SDBackendModule::UPSCALER;
+                    const bool staged = offload_params_to_cpu && !m.fixed_residency;
                     if (!staged) {
                         params_sum += (int64_t)m.params_bytes;
                     }
@@ -331,7 +331,7 @@ namespace sd::fit_params {
                             devices[0].name.c_str());
                 std::vector<Decision> resident(modules.size());
                 for (size_t i = 0; i < modules.size(); ++i) {
-                    resident[i].cpu_params = offload_params_to_cpu && modules[i].module != SDBackendModule::UPSCALER;
+                    resident[i].cpu_params = offload_params_to_cpu && !modules[i].fixed_residency;
                 }
                 plan->valid   = host_memory_fits(modules, &resident, plan->report);
                 plan->changed = false;
@@ -344,6 +344,9 @@ namespace sd::fit_params {
             order[i] = i;
         }
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            if (modules[a].fixed_residency != modules[b].fixed_residency) {
+                return modules[a].fixed_residency;
+            }
             return modules[a].params_bytes > modules[b].params_bytes;
         });
 
@@ -360,6 +363,9 @@ namespace sd::fit_params {
             auto find_device = [&](const ModuleMemory& m, int64_t compute) -> int {
                 int best = -1;
                 for (size_t di = 0; di < devices.size(); di++) {
+                    if (m.fixed_residency && di != 0) {
+                        continue;
+                    }
                     ComputePhases candidate = compute_phases[di];
                     candidate.add(m.module, compute);
                     int64_t need = params_sum[di] + (int64_t)m.params_bytes +
@@ -412,6 +418,19 @@ namespace sd::fit_params {
 
         // time-share plan: phases run sequentially, heavy modules load per phase and free after
         if (time_share) {
+            int64_t retained_params  = 0;
+            int64_t retained_compute = 0;
+            for (const auto& m : modules) {
+                if (m.fixed_residency && !m.runtime_on_cpu) {
+                    retained_params += static_cast<int64_t>(m.params_bytes);
+                    retained_compute = std::max(retained_compute, static_cast<int64_t>(m.compute_bytes));
+                }
+            }
+            if (retained_params + retained_compute > devices[0].budget_bytes) {
+                report_line(plan->report, "  retained upscaler does not fit its configured GPU");
+                return true;
+            }
+            devices[0].budget_bytes -= retained_params;
             std::vector<ComputePhases> compute_phases(devices.size());
             auto set_params_residency = [offload_params_to_cpu](Decision& decision) {
                 decision.cpu_params  = offload_params_to_cpu;
@@ -494,6 +513,11 @@ namespace sd::fit_params {
                     continue;
                 }
                 decision = {};
+                if (m.fixed_residency) {
+                    decision.placed = true;
+                    decision.device_idxs.push_back(0);
+                    continue;
+                }
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     decision.placed = true;
                     continue;
@@ -627,7 +651,7 @@ namespace sd::fit_params {
         for (size_t mi = 0; mi < modules.size(); mi++) {
             const ModuleMemory& m    = modules[mi];
             const Decision& decision = decisions[mi];
-            if (m.params_bytes == 0 && m.compute_bytes == 0) {
+            if (m.fixed_residency || (m.params_bytes == 0 && m.compute_bytes == 0)) {
                 continue;
             }
             const std::string key = module_spec_key(m.module);

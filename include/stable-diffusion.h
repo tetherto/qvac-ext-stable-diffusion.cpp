@@ -629,6 +629,9 @@ typedef struct {
 } sd_upscaler_fit_params_t;
 
 SD_API void sd_upscaler_fit_params_init(sd_upscaler_fit_params_t* params);
+// Metadata-only queries for fit validation. Invalid files return 0 / false.
+SD_API int sd_upscaler_model_scale(const char* esrgan_path);
+SD_API bool sd_model_supports_video(const char* model_path);
 // Reads only model metadata and measures the largest requested tile graph.
 // Includes host image buffers and repeated scaling without allocating images.
 SD_API enum sd_fit_status_t sd_upscaler_fit_params(const sd_upscaler_fit_params_t* params,

@@ -10,7 +10,7 @@
 
 namespace upscaler_fit_test {
 
-    size_t write_model(const std::filesystem::path& path) {
+    size_t write_model(const std::filesystem::path& path, int scale = 4) {
         ggml_init_params init{};
         init.mem_size     = 2 * 1024 * 1024;
         init.no_alloc     = true;
@@ -18,6 +18,7 @@ namespace upscaler_fit_test {
         GGML_ASSERT(ctx != nullptr);
         ESRGANConfig config;
         config.num_block = 1;
+        config.scale     = scale;
         RRDBNet network(config);
         network.init(ctx, {}, "");
         std::map<std::string, ggml_tensor*> tensors;
@@ -128,7 +129,16 @@ int main() {
     ggml_time_init();
     const auto path           = std::filesystem::temp_directory_path() / "sd-test-upscaler-fit.safetensors";
     const size_t params_bytes = upscaler_fit_test::write_model(path);
+    GGML_ASSERT(sd_upscaler_model_scale(path.string().c_str()) == 4);
+    GGML_ASSERT(sd_upscaler_model_scale(nullptr) == 0);
+    GGML_ASSERT(sd_upscaler_model_scale("missing-esrgan.safetensors") == 0);
+    GGML_ASSERT(!sd_model_supports_video(nullptr));
+    GGML_ASSERT(!sd_model_supports_video("missing-model.gguf"));
     upscaler_fit_test::test_measurement(path.string(), params_bytes);
+    for (int scale : {1, 2}) {
+        upscaler_fit_test::write_model(path, scale);
+        GGML_ASSERT(sd_upscaler_model_scale(path.string().c_str()) == scale);
+    }
     std::filesystem::remove(path);
     return 0;
 }

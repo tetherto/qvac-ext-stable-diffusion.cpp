@@ -235,6 +235,26 @@ void sd_upscaler_fit_params_init(sd_upscaler_fit_params_t* params) {
     params->gpu_backend_pref = SD_BACKEND_PREF_GPU;
 }
 
+int sd_upscaler_model_scale(const char* esrgan_path) {
+    if (esrgan_path == nullptr || esrgan_path[0] == '\0') {
+        return 0;
+    }
+    try {
+        SDMetadataOnlyReadScope metadata_only;
+        ModelLoader loader;
+        if (!loader.init_from_file_and_convert_name(esrgan_path, "", VERSION_ESRGAN)) {
+            return 0;
+        }
+        const auto& tensors = loader.get_tensor_storage_map();
+        if (tensors.count("conv_first.weight") == 0 || tensors.count("conv_last.weight") == 0) {
+            return 0;
+        }
+        return ESRGANConfig::detect_from_weights(tensors).scale;
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 bool sd_measure_upscaler(const sd_upscaler_fit_params_t& params,
                          sd::fit_params::ModuleMemory& memory) {
     if (params.esrgan_path == nullptr || params.esrgan_path[0] == '\0' ||
@@ -296,6 +316,7 @@ bool sd_measure_upscaler(const sd_upscaler_fit_params_t& params,
     memory.host_bytes            = std::max(conversion_peak, tile_peak);
     memory.runtime_on_cpu        = params.device == SD_UPSCALER_DEVICE_CPU || params.gpu_backend_pref == SD_BACKEND_PREF_CPU;
     memory.params_on_cpu         = params.offload_params_to_cpu;
+    memory.fixed_residency       = true;
     std::vector<GGMLRunner::graph_memory_measurement> records;
     struct MeasureModeGuard {
         explicit MeasureModeGuard(std::vector<GGMLRunner::graph_memory_measurement>* records) {

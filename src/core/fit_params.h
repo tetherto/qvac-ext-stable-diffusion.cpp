@@ -18,6 +18,7 @@ namespace sd::fit_params {
         size_t host_bytes          = 0;  // host buffers retained alongside parameters and graph memory
         bool runtime_on_cpu        = false;
         bool params_on_cpu         = false;
+        bool fixed_residency       = false;  // separate context, outside generated placement assignments
         bool splittable            = false;
         // Ordered, de-duplicated parameter bytes per graph-cut segment for each
         // measured graph. Multi-device placement must fit these indivisible
