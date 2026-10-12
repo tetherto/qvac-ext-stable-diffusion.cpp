@@ -146,6 +146,9 @@ struct GGMLRunner {
         size_t compute_bytes     = 0;
         size_t cache_bytes       = 0;
         size_t params_bytes      = 0;
+        size_t configured_compute_bytes = 0;
+        size_t configured_params_bytes = 0;
+        size_t configured_buffer_bytes = 0;
         std::vector<size_t> split_segment_params_bytes;
         std::vector<size_t> split_segment_compute_bytes;
         bool valid               = false;
@@ -212,6 +215,7 @@ protected:
         size_t alloc_bytes = 0;
     };
     std::map<std::string, measured_cache_tensor> measured_cache_tensors_;
+    std::unordered_set<ggml_tensor*> measured_resident_params_;
 
     void measure_graph_memory(ggml_cgraph* graph);
 
