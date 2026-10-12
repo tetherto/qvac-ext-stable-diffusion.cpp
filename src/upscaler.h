@@ -2,6 +2,7 @@
 #define __SD_UPSCALER_H__
 
 #include "core/ggml_extend_backend.h"
+#include "core/fit_params.h"
 #include "core/tensor.hpp"
 #include "model/upscaler/esrgan.hpp"
 #include "model_manager.h"
@@ -40,5 +41,8 @@ struct UpscalerGGML {
     sd::Tensor<float> upscale_tensor(const sd::Tensor<float>& input_tensor);
     sd_image_t upscale(sd_image_t input_image, uint32_t upscale_factor);
 };
+
+bool sd_measure_upscaler(const sd_upscaler_fit_params_t& params,
+                         sd::fit_params::ModuleMemory& memory);
 
 #endif  // __SD_UPSCALER_H__

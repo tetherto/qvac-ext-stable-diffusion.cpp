@@ -186,6 +186,22 @@ compute buffers fit currently available host memory. Callers must leave
 `backend` unset and `params_backend` either unset or exactly `*=cpu` while
 requesting a fit.
 
+ESRGAN has an independent metadata-only fit API, `sd_upscaler_fit_params()`.
+Initialize its request with `sd_upscaler_fit_params_init()`, then provide the
+checkpoint, input dimensions, tile size, repeat count, direct-convolution flag,
+and CPU/GPU placement used by the real upscaler. The measurement includes
+registered weights, the largest tile graph, full-image float/RGB buffers and
+repeated scaling. Tiling reduces graph memory but does not remove full-image
+host buffers. CPU parameter offload counts both host weights and GPU staging.
+
+For an upscaler retained alongside a diffusion context, use
+`sd_fit_params_with_upscaler()` with the same generation workload and upscaler
+request. It accounts for both models together, including a CPU upscaler running
+after GPU generation. As with `sd_fit_params()`, a successful result with
+`changed=true` proposes different placement; it does not confirm that the
+original configuration fits. Free either API's result with
+`sd_fit_result_free()`.
+
 ## Modules
 
 | Module | Purpose | Accepted names |

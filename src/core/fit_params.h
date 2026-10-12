@@ -15,6 +15,10 @@ namespace sd::fit_params {
         size_t params_bytes        = 0;  // weights registered for the module
         size_t compute_bytes       = 0;  // largest measured compute buffer among the module's graphs
         size_t compute_bytes_tiled = 0;  // VAE only: compute buffer with tiling enabled, 0 if not measured
+        size_t host_bytes          = 0;  // host buffers retained alongside parameters and graph memory
+        bool runtime_on_cpu        = false;
+        bool params_on_cpu         = false;
+        bool fixed_residency       = false;  // separate context, outside generated placement assignments
         bool splittable            = false;
         // Ordered, de-duplicated parameter bytes per graph-cut segment for each
         // measured graph. Multi-device placement must fit these indivisible
@@ -24,10 +28,10 @@ namespace sd::fit_params {
     };
 
     struct FitPlan {
-        bool valid      = false;
-        bool changed    = false;  // false = current/default placement already fits
-        bool time_share = false;
-        bool vae_tiling = false;
+        bool valid         = false;
+        bool changed       = false;  // false = current/default placement already fits
+        bool time_share    = false;
+        bool vae_tiling    = false;
         bool stream_layers = false;
         std::string runtime_spec;
         std::string params_spec;
@@ -38,7 +42,9 @@ namespace sd::fit_params {
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
                         FitPlan* plan,
-                        bool offload_params_to_cpu = false);
+                        bool offload_params_to_cpu   = false,
+                        bool cpu_only                = false,
+                        bool check_requested_offload = false);
 
 }  // namespace sd::fit_params
 

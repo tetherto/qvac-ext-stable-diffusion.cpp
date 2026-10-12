@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 
 #if defined(_WIN32)
@@ -28,6 +29,19 @@ namespace sd::fit_params {
         constexpr int64_t GiB = 1024ll * MiB;
         constexpr int64_t MEMORY_RESERVE = 512 * MiB;
 
+        bool device_shares_host_memory(ggml_backend_dev_t device) {
+            if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                return true;
+            }
+#if defined(__APPLE__) && defined(__aarch64__)
+            const auto reg   = ggml_backend_dev_backend_reg(device);
+            const char* name = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
+            return name != nullptr && std::strcmp(name, "MTL") == 0;
+#else
+            return false;
+#endif
+        }
+
         struct Device {
             ggml_backend_dev_t dev = nullptr;
             std::string name;
@@ -36,6 +50,7 @@ namespace sd::fit_params {
             int64_t total_bytes  = 0;
             int64_t budget_bytes = 0;
             bool graph_budget_enabled = false;
+            bool shares_host_memory   = false;
         };
 
         struct Decision {
@@ -46,6 +61,7 @@ namespace sd::fit_params {
             bool tiled       = false;
             bool stream_layers = false;
             std::vector<size_t> device_idxs;
+            std::vector<int64_t> device_bytes;
         };
 
         struct ComputePhases {
@@ -139,7 +155,7 @@ namespace sd::fit_params {
         }
 
         // debug override to exercise multi-device planning on any machine,
-        // e.g. SD_FIT_DEBUG_DEVICES="CUDA0:24,CUDA1:16" (name:free_gib)
+        // e.g. SD_FIT_DEBUG_DEVICES="CUDA0:24,MTL0:16:shared" (name:free_gib[:shared])
         std::vector<Device> simulated_devices(const char* spec, sd::ggml_graph_cut::MaxVramAssignment& budgets) {
             std::vector<Device> out;
             std::string s = spec;
@@ -157,6 +173,8 @@ namespace sd::fit_params {
                 d.description = "simulated device";
                 d.free_bytes  = (int64_t)(std::stof(entry.substr(colon + 1)) * 1024.0 * 1024.0 * 1024.0);
                 d.total_bytes = d.free_bytes;
+                const size_t memory_kind = entry.find(':', colon + 1);
+                d.shares_host_memory     = memory_kind != std::string::npos && entry.substr(memory_kind + 1) == "shared";
                 apply_device_budget(d, budgets);
                 out.push_back(d);
             }
@@ -180,6 +198,7 @@ namespace sd::fit_params {
                 d.dev             = dev;
                 d.name            = ggml_backend_dev_name(dev);
                 d.description     = ggml_backend_dev_description(dev);
+                d.shares_host_memory = device_shares_host_memory(dev);
                 size_t free_bytes = 0, total_bytes = 0;
                 ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
                 d.free_bytes  = (int64_t)free_bytes;
@@ -216,18 +235,20 @@ namespace sd::fit_params {
         }
 
         int64_t host_memory_requirement(const std::vector<ModuleMemory>& modules,
-                                        const std::vector<Decision>* decisions) {
-            int64_t params = 0;
-            ComputePhases compute;
+                                        const std::vector<Decision>* decisions,
+                                        int64_t shared_params,
+                                        ComputePhases compute) {
+            int64_t params = shared_params;
             for (size_t i = 0; i < modules.size(); ++i) {
-                const bool on_cpu = decisions == nullptr ||
+                params += (int64_t)modules[i].host_bytes;
+                const bool on_cpu = modules[i].runtime_on_cpu || modules[i].params_on_cpu || decisions == nullptr ||
                                     (*decisions)[i].on_cpu ||
                                     (*decisions)[i].cpu_params;
                 if (!on_cpu) {
                     continue;
                 }
                 params += (int64_t)modules[i].params_bytes;
-                if (decisions == nullptr || (*decisions)[i].on_cpu) {
+                if (modules[i].runtime_on_cpu || decisions == nullptr || (*decisions)[i].on_cpu) {
                     compute.add(modules[i].module, (int64_t)modules[i].compute_bytes);
                 }
             }
@@ -236,8 +257,10 @@ namespace sd::fit_params {
 
         bool host_memory_fits(const std::vector<ModuleMemory>& modules,
                               const std::vector<Decision>* decisions,
-                              std::string& report) {
-            const int64_t required = host_memory_requirement(modules, decisions);
+                              std::string& report,
+                              int64_t shared_params        = 0,
+                              ComputePhases shared_compute = {}) {
+            const int64_t required = host_memory_requirement(modules, decisions, shared_params, shared_compute);
             if (required == 0) {
                 return true;
             }
@@ -259,7 +282,9 @@ namespace sd::fit_params {
     bool plan_placement(const std::vector<ModuleMemory>& modules,
                         sd::ggml_graph_cut::MaxVramAssignment& budgets,
                         FitPlan* plan,
-                        bool offload_params_to_cpu) {
+                        bool offload_params_to_cpu,
+                        bool cpu_only,
+                        bool check_requested_offload) {
         if (plan == nullptr) {
             return false;
         }
@@ -273,7 +298,7 @@ namespace sd::fit_params {
             }
         }
 
-        std::vector<Device> devices = enumerate_gpu_devices(budgets);
+        std::vector<Device> devices = cpu_only ? std::vector<Device>{} : enumerate_gpu_devices(budgets);
 
         report_line(plan->report, "fit-params: measured memory plan");
         report_line(plan->report, "  devices:");
@@ -309,19 +334,30 @@ namespace sd::fit_params {
         }
 
         // check-first: the default placement puts every module on the default (first GPU) device
-        if (!offload_params_to_cpu) {
+        if (!offload_params_to_cpu || check_requested_offload) {
             int64_t params_sum = 0;
             ComputePhases compute;
             for (const ModuleMemory& m : modules) {
-                params_sum += (int64_t)m.params_bytes;
-                compute.add(m.module, (int64_t)m.compute_bytes);
+                if (!m.runtime_on_cpu) {
+                    const bool staged = offload_params_to_cpu && !m.fixed_residency;
+                    if (!staged) {
+                        params_sum += (int64_t)m.params_bytes;
+                    }
+                    compute.add(m.module, (int64_t)m.compute_bytes + (staged ? (int64_t)m.params_bytes : 0));
+                }
             }
             if (params_sum + compute.peak() <= devices[0].budget_bytes) {
                 report_line(plan->report, "  projected use %lld MiB <= budget %lld MiB on %s, no changes needed",
                             (long long)((params_sum + compute.peak()) / MiB),
                             (long long)(devices[0].budget_bytes / MiB),
                             devices[0].name.c_str());
-                plan->valid   = true;
+                std::vector<Decision> resident(modules.size());
+                for (size_t i = 0; i < modules.size(); ++i) {
+                    resident[i].cpu_params = offload_params_to_cpu && !modules[i].fixed_residency;
+                }
+                plan->valid   = host_memory_fits(modules, &resident, plan->report,
+                                                 devices[0].shares_host_memory ? params_sum : 0,
+                                                 devices[0].shares_host_memory ? compute : ComputePhases{});
                 plan->changed = false;
                 return true;
             }
@@ -332,6 +368,9 @@ namespace sd::fit_params {
             order[i] = i;
         }
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            if (modules[a].fixed_residency != modules[b].fixed_residency) {
+                return modules[a].fixed_residency;
+            }
             return modules[a].params_bytes > modules[b].params_bytes;
         });
 
@@ -348,6 +387,9 @@ namespace sd::fit_params {
             auto find_device = [&](const ModuleMemory& m, int64_t compute) -> int {
                 int best = -1;
                 for (size_t di = 0; di < devices.size(); di++) {
+                    if (m.fixed_residency && di != 0) {
+                        continue;
+                    }
                     ComputePhases candidate = compute_phases[di];
                     candidate.add(m.module, compute);
                     int64_t need = params_sum[di] + (int64_t)m.params_bytes +
@@ -361,6 +403,11 @@ namespace sd::fit_params {
             };
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
+                if (m.runtime_on_cpu) {
+                    resident[mi].placed = true;
+                    resident[mi].on_cpu = true;
+                    continue;
+                }
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     resident[mi].placed = true;
                     continue;
@@ -395,6 +442,19 @@ namespace sd::fit_params {
 
         // time-share plan: phases run sequentially, heavy modules load per phase and free after
         if (time_share) {
+            int64_t retained_params  = 0;
+            int64_t retained_compute = 0;
+            for (const auto& m : modules) {
+                if (m.fixed_residency && !m.runtime_on_cpu) {
+                    retained_params += static_cast<int64_t>(m.params_bytes);
+                    retained_compute = std::max(retained_compute, static_cast<int64_t>(m.compute_bytes));
+                }
+            }
+            if (retained_params + retained_compute > devices[0].budget_bytes) {
+                report_line(plan->report, "  retained upscaler does not fit its configured GPU");
+                return true;
+            }
+            devices[0].budget_bytes -= retained_params;
             std::vector<ComputePhases> compute_phases(devices.size());
             auto set_params_residency = [offload_params_to_cpu](Decision& decision) {
                 decision.cpu_params  = offload_params_to_cpu;
@@ -423,7 +483,8 @@ namespace sd::fit_params {
             };
             auto split_graphs_fit = [&](const ModuleMemory& m,
                                         const std::vector<size_t>& device_idxs,
-                                        int64_t compute) {
+                                        int64_t compute,
+                                        std::vector<int64_t>& usage) {
                 if (m.split_graph_segment_params.empty()) {
                     return false;
                 }
@@ -432,6 +493,7 @@ namespace sd::fit_params {
                 for (size_t device_idx : device_idxs) {
                     capacities.push_back(std::max<int64_t>(devices[device_idx].budget_bytes - compute, 0));
                 }
+                usage.assign(device_idxs.size(), 0);
                 for (const auto& graph_segments : m.split_graph_segment_params) {
                     size_t device_pos = 0;
                     int64_t used      = 0;
@@ -445,6 +507,7 @@ namespace sd::fit_params {
                             return false;
                         }
                         used += (int64_t)segment_bytes;
+                        usage[device_pos] = std::max(usage[device_pos], used);
                     }
                 }
                 return true;
@@ -471,7 +534,17 @@ namespace sd::fit_params {
             for (size_t mi : order) {
                 const ModuleMemory& m = modules[mi];
                 Decision& decision    = decisions[mi];
-                decision              = {};
+                if (m.runtime_on_cpu) {
+                    decision.placed = true;
+                    decision.on_cpu = true;
+                    continue;
+                }
+                decision = {};
+                if (m.fixed_residency) {
+                    decision.placed = true;
+                    decision.device_idxs.push_back(0);
+                    continue;
+                }
                 if (m.params_bytes == 0 && m.compute_bytes == 0) {
                     decision.placed = true;
                     continue;
@@ -488,6 +561,7 @@ namespace sd::fit_params {
                     decision.placed = true;
                     set_params_residency(decision);
                     decision.device_idxs.push_back((size_t)best);
+                    decision.device_bytes.push_back((int64_t)m.params_bytes + (int64_t)m.compute_bytes);
                     compute_phases[best].add(m.module, (int64_t)m.compute_bytes);
                     continue;
                 }
@@ -505,6 +579,7 @@ namespace sd::fit_params {
                         decision.tiled       = true;
                         plan->vae_tiling     = true;
                         decision.device_idxs.push_back((size_t)best);
+                        decision.device_bytes.push_back((int64_t)m.params_bytes + (int64_t)m.compute_bytes_tiled);
                         compute_phases[best].add(m.module, (int64_t)m.compute_bytes_tiled);
                         continue;
                     }
@@ -527,10 +602,14 @@ namespace sd::fit_params {
                         split_compute = std::max(split_compute,
                                                  compute_with_concurrent_phase(di, m.module, (int64_t)m.compute_bytes));
                     }
-                    if ((int64_t)m.params_bytes <= capacity && split_graphs_fit(m, idxs, split_compute)) {
+                    std::vector<int64_t> usage;
+                    if ((int64_t)m.params_bytes <= capacity && split_graphs_fit(m, idxs, split_compute, usage)) {
                         decision.placed = true;
                         set_params_residency(decision);
                         decision.device_idxs = std::move(idxs);
+                        for (int64_t params : usage) {
+                            decision.device_bytes.push_back(params + (int64_t)m.compute_bytes);
+                        }
                         for (size_t di : decision.device_idxs) {
                             compute_phases[di].add(m.module, (int64_t)m.compute_bytes);
                         }
@@ -553,6 +632,14 @@ namespace sd::fit_params {
                         decision.stream_layers = true;
                         plan->stream_layers    = true;
                         decision.device_idxs.push_back((size_t)best);
+                        int64_t peak = 0;
+                        for (size_t graph = 0; graph < m.split_graph_segment_params.size(); ++graph) {
+                            for (size_t segment = 0; segment < m.split_graph_segment_params[graph].size(); ++segment) {
+                                peak = std::max(peak, (int64_t)m.split_graph_segment_params[graph][segment] +
+                                                          (int64_t)m.split_graph_segment_compute[graph][segment]);
+                            }
+                        }
+                        decision.device_bytes.push_back(peak);
                         compute_phases[best].add(m.module, (int64_t)m.compute_bytes);
                         continue;
                     }
@@ -562,7 +649,26 @@ namespace sd::fit_params {
             }
         }
 
-        if (!host_memory_fits(modules, &decisions, plan->report)) {
+        int64_t shared_params = 0;
+        ComputePhases shared_compute;
+        for (size_t mi = 0; mi < modules.size(); ++mi) {
+            const auto& m        = modules[mi];
+            const auto& decision = decisions[mi];
+            int64_t staged       = 0;
+            for (size_t k = 0; k < decision.device_idxs.size(); ++k) {
+                if (!devices[decision.device_idxs[k]].shares_host_memory) {
+                    continue;
+                }
+                if (!time_share || m.fixed_residency) {
+                    shared_params += (int64_t)m.params_bytes;
+                    staged += (int64_t)(decision.tiled ? m.compute_bytes_tiled : m.compute_bytes);
+                } else {
+                    staged += decision.device_bytes[k];
+                }
+            }
+            shared_compute.add(m.module, staged);
+        }
+        if (!host_memory_fits(modules, &decisions, plan->report, shared_params, shared_compute)) {
             report_line(plan->report, "  no placement fits available host memory");
             plan->valid = false;
             return true;
@@ -605,7 +711,7 @@ namespace sd::fit_params {
         for (size_t mi = 0; mi < modules.size(); mi++) {
             const ModuleMemory& m    = modules[mi];
             const Decision& decision = decisions[mi];
-            if (m.params_bytes == 0 && m.compute_bytes == 0) {
+            if (m.fixed_residency || (m.params_bytes == 0 && m.compute_bytes == 0)) {
                 continue;
             }
             const std::string key = module_spec_key(m.module);
