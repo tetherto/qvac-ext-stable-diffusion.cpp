@@ -744,6 +744,7 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
     size_t sizes[1]       = {0};
     ggml_gallocr_reserve_n_size(allocr, gf, nullptr, nullptr, sizes);
     last_measurement_.compute_bytes = sizes[0];
+    last_measurement_.configured_buffer_bytes = sizes[0];
     ggml_gallocr_free(allocr);
 
     ggml_backend_buffer_type_t cache_buft =
@@ -807,6 +808,60 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
                 segment.compute_buffer_size + live_cache_bytes);
         }
     }
+        last_measurement_.configured_compute_bytes = last_measurement_.compute_bytes;
+        last_measurement_.configured_params_bytes  = last_measurement_.params_bytes;
+        auto manager = residency_manager.lock();
+        if (!is_multi_device() && !sd_backend_is_cpu(runtime_backend) && manager &&
+            manager->segmented_compute_enabled()) {
+            const auto& configured_plan = resolve_graph_cut_plan(gf);
+            if (!configured_plan.valid) {
+                last_measurement_.valid = false;
+            } else if (configured_plan.has_cuts && configured_plan.segments.size() > 1 &&
+                       !fits(memory_requests({{runtime_backend, last_measurement_.compute_bytes}}, 0), used_params)) {
+                size_t scratch = 0, cut_cache = 0, resident = 0, streamed = 0;
+                std::map<std::string, size_t> cached;
+                for (size_t index = 0; index < configured_plan.segments.size(); ++index) {
+                    const auto& segment = configured_plan.segments[index];
+                    scratch             = std::max(scratch, segment.compute_buffer_size);
+                    size_t previous     = 0;
+                    for (const auto& item : cached)
+                        previous += item.second;
+                    const auto future = segment.future_cut_names;
+                    for (auto it = cached.begin(); it != cached.end();) {
+                        if (future.count(it->first) == 0)
+                            it = cached.erase(it);
+                        else
+                            ++it;
+                    }
+                    for (size_t output = 0; output < segment.output_node_indices.size(); ++output) {
+                        auto* tensor = sd::ggml_graph_cut::output_tensor(gf, segment, output);
+                        if (tensor != nullptr && sd::ggml_graph_cut::is_graph_cut_tensor(tensor) && future.count(tensor->name)) {
+                            cached[tensor->name] = GGML_PAD(ggml_backend_buft_get_alloc_size(cache_buft, tensor), cache_alignment);
+                        }
+                    }
+                    size_t next = 0;
+                    for (const auto& item : cached)
+                        next += item.second;
+                    cut_cache             = std::max(cut_cache, previous + next);
+                    size_t segment_params = 0;
+                    for (auto* raw : sd::ggml_graph_cut::param_tensors(gf, segment)) {
+                        auto* param = canonical_param_tensor(raw);
+                        if (param == nullptr) {
+                            continue;
+                        }
+                        segment_params += ggml_nbytes(param);
+                        measured_resident_params_.insert(param);
+                    }
+                    streamed = std::max(streamed, segment_params);
+                }
+                for (auto* param : measured_resident_params_) {
+                    resident += ggml_nbytes(param);
+                }
+                last_measurement_.configured_compute_bytes = scratch + cut_cache + live_cache_bytes;
+                last_measurement_.configured_params_bytes  = resident;
+                last_measurement_.configured_buffer_bytes  = scratch;
+            }
+        }
     if (measure_collector_ != nullptr) {
         measure_collector_->push_back(last_measurement_);
     }
@@ -822,6 +877,7 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
     if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
         cache_.clear();
         measured_cache_tensors_.clear();
+        measured_resident_params_.clear();
         measure_generation_seen_ = measure_generation_;
     }
     if (graph_active_) {
