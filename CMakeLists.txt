@@ -92,7 +92,7 @@ option(SD_WEBM                       "sd: enable WebM video output support" ${SD
 option(SD_USE_SYSTEM_WEBM            "sd: link against system libwebm" OFF)
 option(SD_CUDA                       "sd: cuda backend" OFF)
 option(SD_HIPBLAS                    "sd: rocm backend" OFF)
-option(SD_COREML                     "sd: Core ML FLUX.2 denoiser sidecar" OFF)
+option(SD_COREML                     "sd: Core ML FLUX.2 denoiser and VAE sidecars" OFF)
 option(SD_METAL                      "sd: metal backend" OFF)
 option(SD_VULKAN                     "sd: vulkan backend" OFF)
 option(SD_OPENCL                     "sd: opencl backend" OFF)

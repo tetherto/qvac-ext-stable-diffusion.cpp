@@ -53,7 +53,7 @@
 #include "model/diffusion/z_image.hpp"
 #include "model/upscaler/esrgan.hpp"
 #include "model/upscaler/ltx_latent_upscaler.hpp"
-#include "model/vae/auto_encoder_kl.hpp"
+#include "model/vae/flux2_coreml_vae.h"
 #include "model/vae/hunyuan_vae.hpp"
 #include "model/vae/ltx_audio_vae.hpp"
 #include "model/vae/ltx_vae.hpp"
@@ -1494,6 +1494,13 @@ public:
                 vae_version = sd_vae_format_to_version(vae_format, vae_version);
             }
 
+            const char* coreml_vae_path = std::getenv("SDCPP_FLUX2_COREML_VAE_MODEL");
+            if (coreml_vae_path && coreml_vae_path[0] &&
+                (!sd_version_uses_flux2_vae(vae_version) || (use_tae && !tae_preview_only))) {
+                LOG_ERROR("SDCPP_FLUX2_COREML_VAE_MODEL requires the full FLUX.2 VAE");
+                return false;
+            }
+
             auto create_vae = [&]() -> std::shared_ptr<VAE> {
                 if (sd_version_is_ltxav(version)) {
                     return std::make_shared<LTXVideoVAE>(backend_for(SDBackendModule::VAE),
@@ -1527,13 +1534,11 @@ public:
                                                                vae_version,
                                                                model_manager);
                 } else {
-                    auto model = std::make_shared<AutoEncoderKL>(backend_for(SDBackendModule::VAE),
-                                                                 tensor_storage_map,
-                                                                 "first_stage_model",
-                                                                 false,
-                                                                 false,
-                                                                 vae_version,
-                                                                 model_manager);
+                    auto model = std::make_shared<Flux2CoreMLVAE>(backend_for(SDBackendModule::VAE),
+                                                                  tensor_storage_map,
+                                                                  "first_stage_model",
+                                                                  vae_version,
+                                                                  model_manager);
                     if (sd_version_is_sdxl(version) &&
                         (strlen(SAFE_STR(sd_ctx_params->vae_path)) == 0 || sd_ctx_params->force_sdxl_vae_conv_scale || external_vae_is_invalid)) {
                         float vae_conv_2d_scale = 1.f / 32.f;
@@ -1571,6 +1576,10 @@ public:
             } else {
                 LOG_INFO("using VAE for encoding / decoding");
                 first_stage_model = create_vae();
+                auto coreml_vae   = std::dynamic_pointer_cast<Flux2CoreMLVAE>(first_stage_model);
+                if (coreml_vae && coreml_vae->is_coreml_requested() && !coreml_vae->is_coreml_ready()) {
+                    return false;
+                }
                 first_stage_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::VAE));
                 if (!register_runner_params("VAE",
                                             first_stage_model,
@@ -1726,6 +1735,11 @@ public:
         auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
         if (coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
             ignore_tensors.insert("model.diffusion_model.");
+        }
+        auto coreml_vae = std::dynamic_pointer_cast<Flux2CoreMLVAE>(first_stage_model);
+        if (coreml_vae && coreml_vae->is_coreml_requested()) {
+            ignore_tensors.insert("first_stage_model.decoder.");
+            ignore_tensors.insert("first_stage_model.post_quant_conv.");
         }
         ignore_tensors.insert("model.diffusion_model.__x0__");
         ignore_tensors.insert("model.diffusion_model.__32x32__");
