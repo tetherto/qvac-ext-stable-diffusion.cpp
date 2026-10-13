@@ -101,6 +101,7 @@ option(SD_MUSA                       "sd: musa backend" OFF)
 option(SD_BUILD_SHARED_LIBS          "sd: build shared libs" OFF)
 option(SD_BUILD_SHARED_GGML_LIB      "sd: build ggml as a separate shared lib" OFF)
 option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" OFF)
+option(SD_LTO                        "sd: enable link time optimization" OFF)
 #option(SD_BUILD_SERVER               "sd: build server example"                           ON)
 
 set(CMAKE_C_STANDARD 11)
@@ -360,6 +361,26 @@ if (NOT TARGET ggml)
 endif()
 
 add_subdirectory(thirdparty)
+
+if(SD_LTO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT SD_IPO_SUPPORTED OUTPUT SD_IPO_ERROR LANGUAGES C CXX)
+    if(NOT SD_IPO_SUPPORTED)
+        message(FATAL_ERROR "SD_LTO requires IPO support: ${SD_IPO_ERROR}")
+    endif()
+endif()
+
+foreach(SD_TARGET IN ITEMS ${SD_LIB} zip)
+    if(MSVC)
+        # Static-library consumers can discard unused code and embedded data.
+        target_compile_options(${SD_TARGET} PRIVATE
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:/Gy>"
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:/Gw>")
+    endif()
+    if(SD_LTO)
+        set_property(TARGET ${SD_TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endforeach()
 
 target_sources(${SD_LIB} PRIVATE $<TARGET_OBJECTS:zip>)
 target_link_libraries(${SD_LIB} PUBLIC ggml)
