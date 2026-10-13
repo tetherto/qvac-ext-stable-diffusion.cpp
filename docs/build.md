@@ -43,6 +43,22 @@ vendored builds the in-tree `add_definitions(-DGGML_MAX_NAME=128)` applies.
 The GPU backend flags below (`-DSD_METAL=ON`, `-DSD_CUDA=ON`, ...) apply to both
 paths.
 
+## Link-time optimization
+
+Pass `-DSD_LTO=ON` to enable CMake's interprocedural optimization for the engine
+and its embedded zip object library. With clang-cl this uses ThinLTO; the final
+consumer must use a compatible LLVM toolchain (`llvm-lib` and `lld-link`).
+Configuration fails if the compiler/linker combination cannot support IPO.
+
+Enable `-DGGML_LTO=ON` when building ggml too. For `SD_USE_SYSTEM_GGML=ON`, that
+option belongs in the separate ggml build. Both options default to `OFF`.
+
+Windows release builds package functions and data in individual sections
+(`/Gy`, `/Gw`). A consuming DLL or executable can discard unused sections and
+fold identical data with `/OPT:REF` and `/OPT:ICF`. In particular, these settings
+allow unused and duplicate embedded Vulkan shaders to be removed at the final
+link. The library does not change the consumer's exports or optimization level.
+
 ## WebP and WebM Support in Examples
 
 The example applications (`examples/cli` and `examples/server`) use `libwebp` to support WebP image I/O, and `examples/cli` can also use `libwebm` for `.webm` video output. Both are enabled by default. WebM output currently reuses `libwebp` to encode each frame as VP8 before muxing with `libwebm`.
