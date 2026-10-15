@@ -75,3 +75,8 @@ target_include_directories(test-safetensors-convrot PRIVATE
     "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-safetensors-convrot PRIVATE stable-diffusion zip ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-safetensors-convrot COMMAND test-safetensors-convrot)
+
+add_executable(test-qwen-image-21 test_qwen_image_21.cpp)
+target_include_directories(test-qwen-image-21 PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-qwen-image-21 PRIVATE stable-diffusion)
+add_test(NAME test-qwen-image-21 COMMAND test-qwen-image-21)

@@ -164,6 +164,7 @@ namespace WAN {
     protected:
         int64_t dim;
         std::string mode;
+        bool skip_first_temporal_upsample = false;
 
     public:
         Resample(int64_t dim, const std::string& mode, bool wan2_2 = false, bool is_2D = false)
@@ -201,6 +202,10 @@ namespace WAN {
             }
         }
 
+        void set_skip_first_temporal_upsample(bool enabled) {
+            skip_first_temporal_upsample = enabled;
+        }
+
         ggml_tensor* forward(GGMLRunnerContext* ctx,
                              ggml_tensor* x,
                              int64_t b,
@@ -218,36 +223,38 @@ namespace WAN {
                 if (feat_cache.size() > 0) {
                     int idx = feat_idx;
                     feat_idx += 1;
-                    auto time_conv_it = blocks.find("time_conv");
-                    GGML_ASSERT(time_conv_it != blocks.end());
-                    auto time_conv = std::dynamic_pointer_cast<CausalConv3d>(time_conv_it->second);
-                    GGML_ASSERT(time_conv != nullptr);
+                    if (!(skip_first_temporal_upsample && chunk_idx == 0)) {
+                        auto time_conv_it = blocks.find("time_conv");
+                        GGML_ASSERT(time_conv_it != blocks.end());
+                        auto time_conv = std::dynamic_pointer_cast<CausalConv3d>(time_conv_it->second);
+                        GGML_ASSERT(time_conv != nullptr);
 
-                    // mirrors the reference (vae2_2.py Resample.forward):
-                    //   cache_x = x[:, :, -CACHE_T:].clone()
-                    //   if feat_cache[idx] == "Rep": x = time_conv(x)          # chunk 0: causal zero pad
-                    //   else: <prepend last cached frame if short>; x = time_conv(x, feat_cache[idx])
-                    //   feat_cache[idx] = cache_x
-                    auto cache_x = ggml_ext_slice(ctx->ggml_ctx, x, 2, -CACHE_T, x->ne[2]);
-                    if (chunk_idx == 0) {  // "Rep"
-                        x = time_conv->forward(ctx, x);
-                    } else {
-                        if (cache_x->ne[2] < 2 && feat_cache[idx] != nullptr) {
-                            // cache last frame of last two chunk
-                            cache_x = ggml_concat(ctx->ggml_ctx,
-                                                  ggml_ext_slice(ctx->ggml_ctx, feat_cache[idx], 2, -1, feat_cache[idx]->ne[2]),
-                                                  cache_x,
-                                                  2);
+                        // mirrors the reference (vae2_2.py Resample.forward):
+                        //   cache_x = x[:, :, -CACHE_T:].clone()
+                        //   if feat_cache[idx] == "Rep": x = time_conv(x)          # chunk 0: causal zero pad
+                        //   else: <prepend last cached frame if short>; x = time_conv(x, feat_cache[idx])
+                        //   feat_cache[idx] = cache_x
+                        auto cache_x = ggml_ext_slice(ctx->ggml_ctx, x, 2, -CACHE_T, x->ne[2]);
+                        if (chunk_idx == 0) {  // "Rep"
+                            x = time_conv->forward(ctx, x);
+                        } else {
+                            if (cache_x->ne[2] < 2 && feat_cache[idx] != nullptr) {
+                                // cache last frame of last two chunk
+                                cache_x = ggml_concat(ctx->ggml_ctx,
+                                                      ggml_ext_slice(ctx->ggml_ctx, feat_cache[idx], 2, -1, feat_cache[idx]->ne[2]),
+                                                      cache_x,
+                                                      2);
+                            }
+                            x = time_conv->forward(ctx, x, feat_cache[idx]);
                         }
-                        x = time_conv->forward(ctx, x, feat_cache[idx]);
-                    }
-                    feat_cache[idx] = cache_x;
-                    x               = ggml_reshape_4d(ctx->ggml_ctx, x, w * h, t, c, 2);                                   // (2, c, t, h*w)
-                    x               = ggml_ext_cont(ctx->ggml_ctx, ggml_ext_torch_permute(ctx->ggml_ctx, x, 0, 3, 1, 2));  // (c, t, 2, h*w)
-                    x               = ggml_reshape_4d(ctx->ggml_ctx, x, w, h, 2 * t, c);                                   // (c, t*2, h, w)
-                    if (chunk_idx == 0) {
-                        // reference: if first_chunk: x = x[:, :, 1:]
-                        x = ggml_ext_slice(ctx->ggml_ctx, x, 2, 1, x->ne[2]);
+                        feat_cache[idx] = cache_x;
+                        x               = ggml_reshape_4d(ctx->ggml_ctx, x, w * h, t, c, 2);                                   // (2, c, t, h*w)
+                        x               = ggml_ext_cont(ctx->ggml_ctx, ggml_ext_torch_permute(ctx->ggml_ctx, x, 0, 3, 1, 2));  // (c, t, 2, h*w)
+                        x               = ggml_reshape_4d(ctx->ggml_ctx, x, w, h, 2 * t, c);                                   // (c, t*2, h, w)
+                        if (chunk_idx == 0) {
+                            // reference: if first_chunk: x = x[:, :, 1:]
+                            x = ggml_ext_slice(ctx->ggml_ctx, x, 2, 1, x->ne[2]);
+                        }
                     }
                 }
             }
@@ -1132,7 +1139,10 @@ namespace WAN {
                 std::vector<GGMLBlock*> all_blocks;
                 get_all_blocks(all_blocks);
                 for (auto block : all_blocks) {
-                    if (auto conv = dynamic_cast<Conv2d*>(block)) {
+                    if (auto resample = dynamic_cast<Resample*>(block)) {
+                        // Qwen's image VAE skips temporal upsampling for its only frame.
+                        resample->set_skip_first_temporal_upsample(true);
+                    } else if (auto conv = dynamic_cast<Conv2d*>(block)) {
                         conv->set_scale(conv_scale);
                     } else if (auto conv = dynamic_cast<CausalConv3d*>(block)) {
                         conv->set_scale(conv_scale);

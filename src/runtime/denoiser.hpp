@@ -735,6 +735,9 @@ struct FluxScheduler : SigmaScheduler {
     float max_shift        = 1.15f;
     float shift_terminal   = 0.0f;
 
+    explicit FluxScheduler(int image_seq_len, const char* extra_sample_args = nullptr)
+        : FluxScheduler(image_seq_len, VERSION_FLUX, extra_sample_args) {}
+
     FluxScheduler(int image_seq_len, SDVersion version, const char* extra_sample_args = nullptr)
         : image_seq_len(image_seq_len) {
         if (version == VERSION_QWEN_IMAGE_2_1) {

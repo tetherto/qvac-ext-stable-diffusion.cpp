@@ -14,6 +14,7 @@
 #include <vector>
 
 // #include "preprocessing.hpp"
+#include "ggml-backend.h"
 #include "stable-diffusion.h"
 
 #include "common/common.h"
@@ -691,6 +692,7 @@ int main(int argc, const char* argv[]) {
                             cli_params.preview_noisy,
                             (void*)&cli_params);
 
+    ggml_backend_load_all();
     LOG_VERBOSE("version: %s", version_string().c_str());
     LOG_VERBOSE("%s", sd_get_system_info());
     LOG_DEBUG("%s", cli_params.to_string().c_str());
