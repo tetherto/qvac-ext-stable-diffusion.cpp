@@ -470,6 +470,10 @@ SD_API void sd_set_backend_eval_callback(sd_graph_eval_callback_t cb, void* data
 SD_API int32_t sd_get_num_physical_cores();
 SD_API const char* sd_get_system_info();
 SD_API bool sd_ctx_supports_image_generation(const sd_ctx_t* sd_ctx);
+// Reference-editing models start from noise and condition on ordered ref_images.
+SD_API bool sd_ctx_uses_reference_images(const sd_ctx_t* sd_ctx);
+// Required decoded image channels; zero for an invalid context.
+SD_API int sd_ctx_get_image_channels(const sd_ctx_t* sd_ctx);
 SD_API bool sd_ctx_supports_video_generation(const sd_ctx_t* sd_ctx);
 
 // ControlNet hot-swap APIs are not safe to call while generation is in flight.
