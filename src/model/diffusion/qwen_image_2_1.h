@@ -53,6 +53,9 @@ namespace Qwen {
                 LOG_DEBUG("qwen_image_2_1: layers = %d, hidden_size = %" PRId64 ", context_dim = %" PRId64,
                           layers, config.hidden_size, config.context_dim);
             }
+            if (config.head_dim != config.axes_dim[0] + config.axes_dim[1] + config.axes_dim[2]) {
+                throw std::runtime_error("Qwen Image 2.1: unsupported attention head size");
+            }
             return config;
         }
     };

@@ -11,6 +11,28 @@ static void require(bool condition, const char* message) {
     }
 }
 
+static void test_attention_head_size() {
+    const std::string prefix = "model.diffusion_model";
+    String2TensorStorage weights;
+    require(Qwen::QwenImage21Config::detect_from_weights(weights, prefix).head_dim == 128,
+            "default attention head size");
+    auto& norm_q  = weights[prefix + ".transformer_blocks.0.attn.norm_q.weight"];
+    norm_q.n_dims = 1;
+    norm_q.ne[0]  = 128;
+    require(Qwen::QwenImage21Config::detect_from_weights(weights, prefix).head_dim == 128,
+            "checkpoint attention head size");
+    for (int64_t head_dim : {-128, 0, 64, 256}) {
+        norm_q.ne[0]  = head_dim;
+        bool rejected = false;
+        try {
+            Qwen::QwenImage21Config::detect_from_weights(weights, prefix);
+        } catch (const std::runtime_error& error) {
+            rejected = std::string(error.what()) == "Qwen Image 2.1: unsupported attention head size";
+        }
+        require(rejected, "invalid attention head size must fail before model construction");
+    }
+}
+
 // Inspect dependencies, not just the output shape: the erroneous temporal
 // convolution also produces one frame, but corrupts the decoded image.
 static bool depends_on(ggml_tensor* tensor, ggml_tensor* parameter, std::set<ggml_tensor*>& visited) {
@@ -71,6 +93,7 @@ static void test_first_frame_upsampling() {
 }
 
 int main() {
+    test_attention_head_size();
     test_first_frame_upsampling();
     auto text = Qwen::QwenImage21Layout::build(3, {}, {{4, 4}});
     require(text.prefix_length == 3 && text.positions.size() == 19, "text and target token layout");
@@ -94,5 +117,5 @@ int main() {
     FluxScheduler flux(1024);
     require(flux.shift_terminal == 0.f && flux.max_image_seq_len == 4096, "FLUX defaults preserved");
     require(!sd_ctx_uses_reference_images(nullptr) && sd_ctx_get_image_channels(nullptr) == 0, "null capability query");
-    std::puts("Qwen Image 2.1 layout and schedule tests passed");
+    std::puts("Qwen Image 2.1 configuration, layout, VAE and schedule tests passed");
 }
