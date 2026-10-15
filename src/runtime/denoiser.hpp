@@ -724,12 +724,23 @@ inline float flux_time_shift(float mu, float sigma, float t) {
 
 // https://github.com/black-forest-labs/flux/blob/main/src/flux/sampling.py#L289
 struct FluxScheduler : SigmaScheduler {
-    int image_seq_len = 0;
-    float base_shift  = 0.5f;
-    float max_shift   = 1.15f;
+    int image_seq_len      = 0;
+    int base_image_seq_len = 256;
+    int max_image_seq_len  = 4096;
+    float base_shift       = 0.5f;
+    float max_shift        = 1.15f;
+    float shift_terminal   = 0.0f;
 
     explicit FluxScheduler(int image_seq_len, const char* extra_sample_args = nullptr)
+        : FluxScheduler(image_seq_len, VERSION_FLUX, extra_sample_args) {}
+
+    FluxScheduler(int image_seq_len, SDVersion version, const char* extra_sample_args = nullptr)
         : image_seq_len(image_seq_len) {
+        if (version == VERSION_QWEN_IMAGE_2_1) {
+            max_image_seq_len = 8192;
+            max_shift         = 0.9f;
+            shift_terminal    = 0.02f;
+        }
         parse_extra_sample_args(extra_sample_args);
     }
 
@@ -748,10 +759,8 @@ struct FluxScheduler : SigmaScheduler {
     }
 
     float compute_mu() const {
-        constexpr float base_shift_anchor = 256.0f;
-        constexpr float max_shift_anchor  = 4096.0f;
-        float m                           = (max_shift - base_shift) / (max_shift_anchor - base_shift_anchor);
-        float b                           = base_shift - m * base_shift_anchor;
+        float m = (max_shift - base_shift) / static_cast<float>(max_image_seq_len - base_image_seq_len);
+        float b = base_shift - m * static_cast<float>(base_image_seq_len);
         return static_cast<float>(image_seq_len) * m + b;
     }
 
@@ -773,6 +782,16 @@ struct FluxScheduler : SigmaScheduler {
                 sigmas.push_back(0.0f);
             } else {
                 sigmas.push_back(flux_time_shift(mu, 1.0f, t));
+            }
+        }
+
+        if (shift_terminal > 0.0f && n > 1) {
+            // The terminal shift applies to the last model evaluation, not the final zero sigma.
+            float scale_factor = (1.0f - sigmas[n - 1]) / (1.0f - shift_terminal);
+            if (std::isfinite(scale_factor) && scale_factor > 0.0f) {
+                for (uint32_t i = 0; i < n; ++i) {
+                    sigmas[i] = 1.0f - (1.0f - sigmas[i]) / scale_factor;
+                }
             }
         }
 
@@ -1111,7 +1130,7 @@ struct Denoiser {
             }
             case FLUX_SCHEDULER: {
                 LOG_INFO("get_sigmas with Flux scheduler");
-                scheduler = std::make_shared<FluxScheduler>(image_seq_len, extra_sample_args);
+                scheduler = std::make_shared<FluxScheduler>(image_seq_len, version, extra_sample_args);
                 break;
             }
             default:

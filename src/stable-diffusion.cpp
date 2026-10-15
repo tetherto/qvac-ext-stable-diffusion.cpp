@@ -47,6 +47,7 @@
 #include "model/diffusion/model.hpp"
 #include "model/diffusion/pid.hpp"
 #include "model/diffusion/qwen_image.hpp"
+#include "model/diffusion/qwen_image_2_1.h"
 #include "model/diffusion/unet.hpp"
 #include "model/diffusion/wan.hpp"
 #include "model/diffusion/z_image.hpp"
@@ -107,6 +108,7 @@ const char* model_version_to_str[] = {
     "LingBot Video",
     "Qwen Image",
     "Qwen Image Layered",
+    "Qwen Image 2.1",
     "Hunyuan Video",
     "Anima",
     "Flux.2",
@@ -159,7 +161,7 @@ const char* sampling_methods_str[] = {
 static bool sd_version_supports_ref_latent_img_cfg(SDVersion version) {
     return version == VERSION_FLUX ||
            sd_version_is_flux2(version) ||
-           sd_version_is_qwen_image(version) ||
+           (sd_version_is_qwen_image(version) && version != VERSION_QWEN_IMAGE_2_1) ||
            sd_version_is_mage_flow(version) ||
            sd_version_is_longcat(version) ||
            sd_version_is_z_image(version) ||
@@ -1270,12 +1272,18 @@ public:
                                                                  "",
                                                                  enable_vision,
                                                                  model_manager);
-                diffusion_model    = std::make_shared<Qwen::QwenImageRunner>(backend_for(SDBackendModule::DIFFUSION),
-                                                                          tensor_storage_map,
-                                                                          "model.diffusion_model",
-                                                                          version,
-                                                                          model_manager,
-                                                                          sd_ctx_params->model_args);
+                if (version == VERSION_QWEN_IMAGE_2_1) {
+                    diffusion_model = std::make_shared<Qwen::QwenImage21Runner>(backend_for(SDBackendModule::DIFFUSION),
+                                                                                tensor_storage_map,
+                                                                                "model.diffusion_model", model_manager);
+                } else {
+                    diffusion_model = std::make_shared<Qwen::QwenImageRunner>(backend_for(SDBackendModule::DIFFUSION),
+                                                                              tensor_storage_map,
+                                                                              "model.diffusion_model",
+                                                                              version,
+                                                                              model_manager,
+                                                                              sd_ctx_params->model_args);
+                }
             } else if (sd_version_is_mage_flow(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
                                                                  tensor_storage_map,
@@ -2856,6 +2864,8 @@ public:
                 } else if (sd_version_is_flux(version) || sd_version_is_flux2(version) || sd_version_is_longcat(version) || sd_version_is_sefi_image(version)) {
                     diffusion_params.extra = FluxDiffusionExtra{&guidance_tensor,
                                                                 local_skip_layers};
+                } else if (version == VERSION_QWEN_IMAGE_2_1) {
+                    diffusion_params.extra = QwenImage21DiffusionExtra{&condition.c_token_types};
                 } else if (sd_version_is_anima(version)) {
                     diffusion_params.extra = AnimaDiffusionExtra{condition.c_t5_ids.empty() ? nullptr : &condition.c_t5_ids,
                                                                  condition.c_t5_weights.empty() ? nullptr : &condition.c_t5_weights};
@@ -3060,7 +3070,7 @@ public:
     int get_diffusion_model_down_factor() {
         int down_factor = 8;  // unet
         if (sd_version_is_dit(version)) {
-            if (sd_version_is_wan(version) || sd_version_is_lingbot_video(version) || sd_version_is_minimax_h3(version)) {
+            if (version == VERSION_QWEN_IMAGE_2_1 || sd_version_is_wan(version) || sd_version_is_lingbot_video(version) || sd_version_is_minimax_h3(version)) {
                 down_factor = 2;
             } else {
                 down_factor = 1;
@@ -3076,6 +3086,8 @@ public:
                 latent_channel = 128;
             } else if (sd_version_is_minimax_h3(version)) {
                 latent_channel = 24;
+            } else if (version == VERSION_QWEN_IMAGE_2_1) {
+                latent_channel = 64;
             } else if (sd_version_is_wan_ti2v_family(version)) {
                 latent_channel = 48;
             } else if (sd_version_is_hunyuan_video(version)) {
@@ -3102,7 +3114,7 @@ public:
     }
 
     int get_image_channels() const {
-        return version == VERSION_QWEN_IMAGE_LAYERED ? 4 : 3;
+        return version == VERSION_QWEN_IMAGE_LAYERED || version == VERSION_QWEN_IMAGE_2_1 ? 4 : 3;
     }
 
     int get_image_seq_len(int h, int w) {
@@ -4450,6 +4462,15 @@ void free_sd_audio(sd_audio_t* audio) {
     free(audio);
 }
 
+SD_API bool sd_ctx_uses_reference_images(const sd_ctx_t* sd_ctx) {
+    return sd_ctx != nullptr && sd_ctx->sd != nullptr &&
+           (sd_version_is_flux2(sd_ctx->sd->version) || sd_ctx->sd->version == VERSION_QWEN_IMAGE_2_1);
+}
+
+SD_API int sd_ctx_get_image_channels(const sd_ctx_t* sd_ctx) {
+    return sd_ctx != nullptr && sd_ctx->sd != nullptr ? sd_ctx->sd->get_image_channels() : 0;
+}
+
 SD_API bool sd_ctx_supports_image_generation(const sd_ctx_t* sd_ctx) {
     if (sd_ctx == nullptr || sd_ctx->sd == nullptr) {
         return false;
@@ -4511,7 +4532,7 @@ enum scheduler_t sd_get_default_scheduler(const sd_ctx_t* sd_ctx, enum sample_me
         return LCM_SCHEDULER;
     } else if (sample_method == DDIM_TRAILING_SAMPLE_METHOD) {
         return SIMPLE_SCHEDULER;
-    } else if (sd_ctx != nullptr && sd_ctx->sd != nullptr && sd_version_is_flux(sd_ctx->sd->version)) {
+    } else if (sd_ctx != nullptr && sd_ctx->sd != nullptr && (sd_version_is_flux(sd_ctx->sd->version) || sd_ctx->sd->version == VERSION_QWEN_IMAGE_2_1)) {
         return FLUX_SCHEDULER;
     } else if (sd_ctx != nullptr && sd_ctx->sd != nullptr && sd_version_is_flux2(sd_ctx->sd->version)) {
         return FLUX2_SCHEDULER;
@@ -5610,7 +5631,8 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
                 vae_width  = request->width;
                 vae_height = request->height;
             } else {
-                int target_pixels  = ref_image_params.vae_input_max_pixels > 0 ? ref_image_params.vae_input_max_pixels : 1024 * 1024;
+                int default_pixels = sd_ctx->sd->version == VERSION_QWEN_IMAGE_2_1 ? request->width * request->height : 1024 * 1024;
+                int target_pixels  = ref_image_params.vae_input_max_pixels > 0 ? ref_image_params.vae_input_max_pixels : default_pixels;
                 int vae_image_size = std::min(target_pixels, request->width * request->height);
                 vae_width          = sqrt(vae_image_size * ref_images[i].shape()[0] / ref_images[i].shape()[1]);
                 vae_height         = vae_width * ref_images[i].shape()[1] / ref_images[i].shape()[0];
@@ -5634,6 +5656,9 @@ static std::optional<ImageGenerationLatents> prepare_image_generation_latents(sd
                       resized_ref_img.shape()[0]);
 
             ref_latent = sd_ctx->sd->encode_first_stage(resized_ref_img);
+            if (sd_ctx->sd->version == VERSION_QWEN_IMAGE_2_1) {
+                ref_images[i] = std::move(resized_ref_img);
+            }
         } else {
             ref_latent = sd_ctx->sd->encode_first_stage(ref_images[i]);
         }
