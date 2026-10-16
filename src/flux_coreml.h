@@ -12,6 +12,7 @@ struct FluxCoreMLTensor {
 };
 
 struct FluxCoreMLModel;
+struct FluxCoreMLVAEModel;
 
 FluxCoreMLModel* flux_coreml_open(const char* path, std::string* error);
 void flux_coreml_close(FluxCoreMLModel* model);
@@ -23,5 +24,13 @@ bool flux_coreml_predict(FluxCoreMLModel* model,
                          const FluxCoreMLTensor* guidance,
                          float* output,
                          std::string* error);
+
+FluxCoreMLVAEModel* flux_coreml_vae_open(const char* path, std::string* error);
+void flux_coreml_vae_close(FluxCoreMLVAEModel* model);
+bool flux_coreml_vae_matches_input(FluxCoreMLVAEModel* model, const int64_t ne[4]);
+bool flux_coreml_vae_predict(FluxCoreMLVAEModel* model,
+                             const FluxCoreMLTensor& latent,
+                             float* output,
+                             std::string* error);
 
 #endif

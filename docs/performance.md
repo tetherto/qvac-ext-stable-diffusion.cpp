@@ -271,3 +271,83 @@ After these checks pass, run a full generation using
 `SDCPP_FLUX2_COREML_MODEL=/absolute/path/to/flux2-klein-4b.mlmodelc` with the
 same CLI options and a fresh output directory. Compare denoiser time,
 generation time, peak memory, and the image against the Metal baseline.
+
+## FLUX.2 Core ML VAE decoder
+
+With `SD_COREML=ON`, `SDCPP_FLUX2_COREML_VAE_MODEL` selects a compiled
+FLUX.2 VAE decoder independently of the denoiser. The decoder uses Core ML
+CPU+GPU compute units. On an M3 Ultra, the mixed-precision decoder measured
+about 0.58 seconds per warm 1024 × 1024 decode, versus 7.44 seconds for
+default GGML Metal and 4.42 seconds for GGML Metal direct convolution.
+These are isolated decoder measurements, not end-to-end speedups.
+The `ALL` compute-unit configuration was substantially slower in that experiment.
+
+The exporter constructs the graph directly in MIL without PyTorch. Convolutions
+use FP16; GroupNorm reductions, attention, and residual additions use FP32.
+The compiled model accepts a contiguous float32 `latent` multiarray with shape
+`[1,128,H/16,W/16]` and returns float32 raw RGB named `output` with shape
+`[1,3,H,W]`. The engine reverses latent normalization before prediction and
+applies RGB scaling and clamping afterward. The sidecar includes latent
+unpacking and `post_quant_conv`, but must not apply latent normalization again.
+The decoder targets macOS 15 or newer. Compile and run it on macOS.
+
+The original `--vae` checkpoint is still required for model metadata and the
+GGML encoder. When the sidecar is selected, native decoder weights are excluded
+from loading. Native backend options continue to control encoding; decoding
+uses Core ML CPU+GPU. Image editing can use the native encoder with the Core ML
+decoder. Video, VAE tiling, circular padding, and VAE weight adapters are not
+supported by the sidecar. Missing models, unsupported requests, shape
+mismatches, and non-finite predictions fail without a GGML decoder fallback.
+Different image dimensions require a matching export. Without the environment
+variable, VAE execution uses the existing GGML path. GGML memory-fit estimates
+do not include Core ML model allocations.
+
+Install the conversion dependencies in a separate environment:
+
+```sh
+python3 -m venv .venv-flux2-vae
+source .venv-flux2-vae/bin/activate
+python -m pip install -r script/requirements-flux2-vae-coreml.txt
+```
+
+Capture one native decode by setting `SDCPP_VAE_CAPTURE_DIR` on a normal
+FLUX.2 generation, without the VAE sidecar variable or tiling. The capture
+contains the exact denormalized packed latent and raw RGB output before
+clamping. Use a fresh directory for each capture:
+
+```sh
+SDCPP_VAE_CAPTURE_DIR=bench-results/flux2-vae-fixture \
+  build/bin/sd-cli --diffusion-model models/flux2-klein-4b.safetensors \
+  --vae models/flux2-vae.safetensors --llm models/Qwen3-4B-Q4_K_M.gguf \
+  -p 'a lovely cat' --seed 42 -W 1024 -H 1024 --steps 4 \
+  --cfg-scale 1 --sampling-method euler --diffusion-fa -v -o baseline.png
+
+python3 script/export_flux2_vae_coreml.py export \
+  --weights models/flux2-vae.safetensors \
+  --fixture bench-results/flux2-vae-fixture \
+  --output bench-results/flux2-vae-1024.mlpackage
+python3 script/export_flux2_vae_coreml.py compile \
+  --package bench-results/flux2-vae-1024.mlpackage \
+  --output bench-results/flux2-vae-1024.mlmodelc
+python3 script/export_flux2_vae_coreml.py check \
+  --model bench-results/flux2-vae-1024.mlmodelc \
+  --fixture bench-results/flux2-vae-fixture \
+  --output bench-results/flux2-vae-parity.json
+```
+
+Without a fixture, export dimensions default to 1024 × 1024 and can be set
+with `--width` and `--height`, both multiples of 16. The check defaults to
+CPU+GPU, one warmup call, five measured calls, and a 0.001 normalized RMSE
+gate. It reports raw RGB error, RGB PSNR, model load time, and prediction time.
+Validate additional prompts and sizes before relying on an export for quality.
+
+After the comparison passes, run the same generation with
+`SDCPP_FLUX2_COREML_VAE_MODEL=/absolute/path/to/flux2-vae-1024.mlmodelc`.
+This may be combined with `SDCPP_FLUX2_COREML_MODEL` for the denoiser.
+For model-backed engine checks, set `SDCPP_TEST_SD_CLI`,
+`SDCPP_TEST_FLUX2_DIFFUSION`, `SDCPP_TEST_FLUX2_VAE`, `SDCPP_TEST_FLUX2_LLM`,
+and `SDCPP_TEST_FLUX2_COREML_VAE` to existing absolute paths, then run:
+
+```sh
+python3 -m unittest discover -s script -p 'test*vae_coreml*.py'
+```

@@ -15,6 +15,13 @@ struct FluxCoreMLModel {
     std::mutex prediction_mutex;
 };
 
+struct FluxCoreMLVAEModel {
+    MLModel* __strong model = nil;
+    int64_t input_ne[4]{};
+    int64_t output_ne[4]{};
+    std::mutex prediction_mutex;
+};
+
 namespace flux_coreml_detail {
 
     bool matches_shape(NSArray<NSNumber*>* shape, const int64_t ne[4]) {
@@ -173,6 +180,104 @@ bool flux_coreml_predict(FluxCoreMLModel* model,
         }
         std::memcpy(output, array.dataPointer,
                     static_cast<size_t>(array.count) * sizeof(float));
+        return true;
+    }
+}
+
+FluxCoreMLVAEModel* flux_coreml_vae_open(const char* path, std::string* error) {
+    @autoreleasepool {
+        NSString* string_path = path ? [NSString stringWithUTF8String:path] : nil;
+        if (!string_path.length) {
+            *error = "Core ML VAE model path is empty or invalid UTF-8";
+            return nullptr;
+        }
+        MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
+        config.computeUnits          = MLComputeUnitsCPUAndGPU;
+        NSError* ns_error            = nil;
+        MLModel* model               = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:string_path]
+                                           configuration:config
+                                                   error:&ns_error];
+        if (!model) {
+            *error = ns_error ? ns_error.localizedDescription.UTF8String : "Core ML VAE model load failed";
+            return nullptr;
+        }
+        auto inputs                  = model.modelDescription.inputDescriptionsByName;
+        auto outputs                 = model.modelDescription.outputDescriptionsByName;
+        MLFeatureDescription* input  = inputs[@"latent"];
+        MLFeatureDescription* output = outputs[@"output"];
+        if (inputs.count != 1 || outputs.count != 1 ||
+            input.type != MLFeatureTypeMultiArray || output.type != MLFeatureTypeMultiArray ||
+            input.multiArrayConstraint.dataType != MLMultiArrayDataTypeFloat32 ||
+            output.multiArrayConstraint.dataType != MLMultiArrayDataTypeFloat32 ||
+            input.multiArrayConstraint.shape.count != 4 || output.multiArrayConstraint.shape.count != 4) {
+            *error = "Core ML VAE requires one rank-4 float32 latent input and output multiarray";
+            return nullptr;
+        }
+        auto input_shape  = input.multiArrayConstraint.shape;
+        auto output_shape = output.multiArrayConstraint.shape;
+        int64_t input_ne[4], output_ne[4];
+        for (int i = 0; i < 4; ++i) {
+            input_ne[i]  = input_shape[3 - i].longLongValue;
+            output_ne[i] = output_shape[3 - i].longLongValue;
+        }
+        if (input_ne[3] != 1 || input_ne[2] != 128 || input_ne[0] <= 0 || input_ne[1] <= 0 ||
+            input_ne[0] > INT64_MAX / 16 || input_ne[1] > INT64_MAX / 16 ||
+            output_ne[3] != 1 || output_ne[2] != 3 ||
+            output_ne[0] != input_ne[0] * 16 || output_ne[1] != input_ne[1] * 16) {
+            *error = "Core ML VAE must map [1,128,H,W] latents to [1,3,16*H,16*W] RGB";
+            return nullptr;
+        }
+        auto* result  = new FluxCoreMLVAEModel();
+        result->model = model;
+        std::memcpy(result->input_ne, input_ne, sizeof(input_ne));
+        std::memcpy(result->output_ne, output_ne, sizeof(output_ne));
+        return result;
+    }
+}
+
+void flux_coreml_vae_close(FluxCoreMLVAEModel* model) {
+    delete model;
+}
+
+bool flux_coreml_vae_matches_input(FluxCoreMLVAEModel* model, const int64_t ne[4]) {
+    return model && std::memcmp(model->input_ne, ne, sizeof(model->input_ne)) == 0;
+}
+
+bool flux_coreml_vae_predict(FluxCoreMLVAEModel* model,
+                             const FluxCoreMLTensor& latent,
+                             float* output,
+                             std::string* error) {
+    @autoreleasepool {
+        if (!model || !latent.data || !output || !flux_coreml_vae_matches_input(model, latent.ne)) {
+            *error = "Core ML VAE latent shape does not match the compiled decoder";
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(model->prediction_mutex);
+        auto description    = model->model.modelDescription.inputDescriptionsByName[@"latent"];
+        MLMultiArray* input = flux_coreml_detail::make_input(description, latent, error);
+        if (!input)
+            return false;
+        NSError* ns_error                     = nil;
+        MLDictionaryFeatureProvider* provider = [[MLDictionaryFeatureProvider alloc]
+            initWithDictionary:@{@"latent" : [MLFeatureValue featureValueWithMultiArray:input]}
+                         error:&ns_error];
+        if (!provider) {
+            *error = ns_error ? ns_error.localizedDescription.UTF8String : "Core ML VAE input provider failed";
+            return false;
+        }
+        id<MLFeatureProvider> prediction = [model->model predictionFromFeatures:provider error:&ns_error];
+        if (!prediction) {
+            *error = ns_error ? ns_error.localizedDescription.UTF8String : "Core ML VAE prediction failed";
+            return false;
+        }
+        MLMultiArray* result = [prediction featureValueForName:@"output"].multiArrayValue;
+        if (!result || result.dataType != MLMultiArrayDataTypeFloat32 ||
+            !flux_coreml_detail::matches_shape(result.shape, model->output_ne) ||
+            !flux_coreml_detail::is_contiguous(result)) {
+            *error = "Core ML VAE output must be contiguous float32 RGB with the compiled shape";
+            return false;
+        }
+        std::memcpy(output, result.dataPointer, static_cast<size_t>(result.count) * sizeof(float));
         return true;
     }
 }
