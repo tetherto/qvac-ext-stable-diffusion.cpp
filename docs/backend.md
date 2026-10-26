@@ -173,15 +173,16 @@ placement.
 
 The same measurement is available to library users through `sd_fit_params()`
 in `stable-diffusion.h`, which takes the context params plus an
-`sd_fit_workload_t` and returns the derived specs and a report. The workload can
+`sd_fit_workload_t` and returns the derived specs, a report, and the projected
+memory use of each device and of the host (`devices`). The workload can
 be the simple scalar fields (`prompt`, `width`, `height`, `video_frames`) or one
 complete representative request through `image_gen_params` or
 `video_gen_params`. Use the full request form when conditioning, LoRAs, hires,
 cache settings, image/video/audio inputs, or VAE tiling settings materially
-affect the graph being measured. Result strings are owned by `sd_fit_result_t`
-and must be released with `sd_fit_result_free()`. Persistent cache buffers and
-the concurrent diffusion/ControlNet compute phase are included in the measured
-peak. CPU fallbacks are accepted only when the projected CPU parameters and
+affect the graph being measured. Result strings and device entries are owned by
+`sd_fit_result_t` and must be released with `sd_fit_result_free()`. Persistent
+cache buffers and the concurrent diffusion/ControlNet compute phase are included
+in the measured peak. CPU fallbacks are accepted only when the projected CPU parameters and
 compute buffers fit currently available host memory. Callers must leave
 `backend` unset and `params_backend` either unset or exactly `*=cpu` while
 requesting a fit.

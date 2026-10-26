@@ -4372,6 +4372,10 @@ static enum sd_fit_status_t sd_fit_params_impl(const sd_ctx_params_t* sd_ctx_par
     result->report        = strdup(plan.report.c_str());
     result->vae_tiling    = plan.vae_tiling;
     result->stream_layers = plan.stream_layers;
+    if (!sd::fit_params::write_device_use(plan, result)) {
+        sd_fit_result_free(result);
+        return SD_FIT_ERROR;
+    }
     if (!planned || !plan.valid) {
         return SD_FIT_FAILURE;
     }
@@ -4417,6 +4421,7 @@ void sd_fit_result_free(sd_fit_result_t* result) {
     free(result->backend);
     free(result->params_backend);
     free(result->report);
+    free(result->devices);
     *result = {};
 }
 
@@ -8119,6 +8124,10 @@ enum sd_fit_status_t sd_abot_fit_params(const sd_abot_session_params_v2_t* param
             return SD_FIT_ERROR;
         }
         memcpy(result->report, report.c_str(), report.size() + 1);
+        if (!sd::fit_params::write_device_use(plan, result)) {
+            sd_fit_result_free(result);
+            return SD_FIT_ERROR;
+        }
         return checked && plan.valid ? SD_FIT_SUCCESS : SD_FIT_FAILURE;
     } catch (const std::exception& error) {
         LOG_ERROR("ABot fit: %s", error.what());

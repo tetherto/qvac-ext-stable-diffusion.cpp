@@ -380,6 +380,9 @@ enum sd_fit_status_t sd_upscaler_fit_params(const sd_upscaler_fit_params_t* para
         if (!plan.params_spec.empty()) {
             result->params_backend = copy_string(plan.params_spec);
         }
+        if (!sd::fit_params::write_device_use(plan, result)) {
+            throw std::bad_alloc();
+        }
         return planned && plan.valid ? SD_FIT_SUCCESS : SD_FIT_FAILURE;
     } catch (const std::exception& error) {
         sd_fit_result_free(result);
