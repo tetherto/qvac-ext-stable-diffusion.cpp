@@ -112,8 +112,17 @@ cmake --build . --config Release
 
 Build both CUDA and Vulkan as runtime-loaded modules to allow automatic
 selection to use Vulkan when CUDA cannot load or has no compatible device.
-Use CUDA 13.0.3 (nvcc 13.0.88) for the server release build and set the GPU
-targets explicitly. From the repository root:
+Use CUDA 13.0.3 (nvcc 13.0.88) for the server release build. Non-native
+Linux CUDA 13 builds match qvac-fabric's packaged targets:
+
+| Linux package | CUDA architectures |
+| --- | --- |
+| x64 | `75-virtual;80-real;86-real;89-real;90-virtual;120a-real` |
+| ARM64 | `121a-real` |
+
+ARM64 ships only DGX Spark code to keep the npm platform package within its
+size limit. From the repository root, configure the bundled ggml with
+`GGML_NATIVE=OFF` to select the target platform's list:
 
 ```sh
 cmake -S . -B build-server \
@@ -121,16 +130,15 @@ cmake -S . -B build-server \
   -DCMAKE_CUDA_COMPILER="$CUDA_PATH/bin/nvcc" \
   -DCUDAToolkit_ROOT="$CUDA_PATH" \
   -DSD_CUDA=ON -DSD_VULKAN=ON \
-  -DGGML_BACKEND_DL=ON -DGGML_CPU_STATIC=ON -DGGML_NATIVE=OFF \
-  '-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;80-real;86-real;89-real;90-virtual;120a-real;121a-real'
+  -DGGML_BACKEND_DL=ON -DGGML_CPU_STATIC=ON -DGGML_NATIVE=OFF
 cmake --build build-server --config Release -j
 ```
 
 Set `CUDA_PATH` to the CUDA 13.0.3 installation before configuring. Keep both
 backend modules beside the executable when distributing the build. `virtual`
 targets provide PTX for driver compilation; `real` targets provide native GPU
-code, including SM80 for A100 and SM121a for DGX Spark. This builds the server
-module only, with no separate Jetson module.
+code. An explicit `CMAKE_CUDA_ARCHITECTURES` overrides the source defaults.
+This builds the server module only, with no separate Jetson module.
 
 With `SD_USE_SYSTEM_GGML=ON`, build and configure these backends and CUDA
 architectures in the separate ggml dependency; configuring stable-diffusion
