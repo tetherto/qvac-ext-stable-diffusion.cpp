@@ -7,6 +7,20 @@
 
 If `--params-backend` is not set, parameters use the same backend as their module runtime backend.
 
+## Automatic CUDA fallback
+
+Leave `--backend` and `--params-backend` unset to use automatic selection.
+The bundled ggml checks whether CUDA code can run on each device before
+registering it. An incompatible CUDA device is skipped, allowing a loaded
+Vulkan backend or ultimately CPU to be selected. Vulkan fallback requires
+building and shipping the Vulkan backend alongside CUDA; see the
+[Linux server build instructions](build.md#linux-server-builds-with-cuda-fallback).
+
+Set `GGML_DISABLE_CUDA=1` before starting the process to disable CUDA.
+An explicit `--backend cuda0` requires that device and fails if it is
+unavailable. Comma-separated assignments select backends for modules;
+`--backend cuda,vulkan` is not a fallback priority list.
+
 ## Syntax
 
 A backend assignment can be a single backend name:
