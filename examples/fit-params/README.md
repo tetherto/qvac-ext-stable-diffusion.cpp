@@ -10,7 +10,8 @@ generation still requires complete model files.
 Shaped host tensors are still materialized to carry state between graph builds;
 allocation failures are reported as fit errors. The measured per-module memory
 includes projected persistent cache buffers and is packed against the free
-memory of every GPU device. A 512 MiB safety margin is retained after applying
+memory of the GPU devices the runtime prefers: every discrete GPU, or the
+integrated GPUs when there is no discrete one. A 512 MiB safety margin is retained after applying
 either detected or explicit `--max-vram` limits, and the resulting placement is
 printed to stdout as `--backend` / `--params-backend` / `--vae-tiling` /
 `--stream-layers` arguments.
@@ -179,12 +180,36 @@ image-only model returns `SD_FIT_ERROR`.
 - `SD_FIT_ERROR`: invalid inputs or a hard measurement error such as an
   unreadable model.
 
-`sd_fit_result_t` owns `backend`, `params_backend`, and `report`; always call
-`sd_fit_result_free()`. If `result.changed` is false, the current/default
-placement already fits and the placement strings are null. If
+`sd_fit_result_t` owns `backend`, `params_backend`, `report`, and `devices`;
+always call `sd_fit_result_free()`. If `result.changed` is false, the
+current/default placement already fits and the placement strings are null. If
 `result.stream_layers` is true, preserve the caller's nonzero `ctx.max_vram`
 when applying the result and also enable `--stream-layers`; the max-VRAM value
 is not duplicated in the result.
+
+`result.devices` holds `result.device_count` entries: one per GPU device the
+placement uses, then a host entry (`host` is true) named after the CPU device.
+Each entry gives the projected `used_bytes` with the `free_bytes` and
+`total_bytes` read while planning. The host entry counts host memory outside
+the GPU devices' own allocations, so a shared-memory GPU's use appears only in
+its own entry. `shares_host_memory` marks a GPU that draws from host RAM: an
+integrated GPU, Apple silicon's Metal GPU, Android's OpenCL GPU, and a GPU that
+reports no memory of its own, which carries the host's figures. Its free memory
+is capped at the host's. The host's free memory is what the OS would grant a
+new allocation: available physical memory on Windows, `MemAvailable` on Linux
+and Android, total less wired and compressed pages on macOS (the figure ggml's
+CPU and Metal devices report), and the app's own limit on an iOS device, which
+is 0 once the app has used it up. On `SD_FIT_FAILURE` the entries describe the placement that was
+checked. `devices` is null when no placement was measured, such as on
+`SD_FIT_ERROR` or when the caller already set an explicit placement.
+
+```c
+for (int i = 0; i < result.device_count; i++) {
+    const sd_fit_device_t* d = &result.devices[i];
+    printf("%s%s: uses %zu of %zu free bytes\n", d->name, d->host ? " (host)" : "",
+           d->used_bytes, d->free_bytes);
+}
+```
 
 ## Debugging the planner
 

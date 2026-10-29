@@ -9,6 +9,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -16,9 +17,12 @@
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach/mach.h>
-#elif defined(__linux__)
-#include <sys/sysinfo.h>
+#include <sys/sysctl.h>
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+#include <os/proc.h>
+#endif
 #endif
 
 #include "core/util.h"
@@ -31,14 +35,25 @@ namespace sd::fit_params {
         constexpr int64_t GiB = 1024ll * MiB;
         constexpr int64_t MEMORY_RESERVE = 512 * MiB;
 
+        // A device that draws from host RAM: an integrated GPU, Apple silicon's
+        // Metal GPU, Android's OpenCL GPU, and a device that reports no memory of
+        // its own.
         bool device_shares_host_memory(ggml_backend_dev_t device) {
             if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU) {
                 return true;
             }
+            size_t free_bytes  = 0;
+            size_t total_bytes = 0;
+            ggml_backend_dev_memory(device, &free_bytes, &total_bytes);
+            if (total_bytes == 0) {
+                return true;
+            }
+            [[maybe_unused]] const auto reg   = ggml_backend_dev_backend_reg(device);
+            [[maybe_unused]] const char* name = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
 #if defined(__APPLE__) && defined(__aarch64__)
-            const auto reg   = ggml_backend_dev_backend_reg(device);
-            const char* name = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
             return name != nullptr && std::strcmp(name, "MTL") == 0;
+#elif defined(__ANDROID__)
+            return name != nullptr && std::strcmp(name, "OpenCL") == 0;
 #else
             return false;
 #endif
@@ -86,26 +101,44 @@ namespace sd::fit_params {
             }
         };
 
-        int64_t available_host_memory() {
-            const char* debug_gib = getenv("SD_FIT_DEBUG_HOST_MEMORY_GIB");
-            if (debug_gib != nullptr && debug_gib[0] != '\0') {
-                return std::max<int64_t>((int64_t)(std::strtod(debug_gib, nullptr) * GiB), 0);
+        int64_t host_total_memory() {
+            ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            size_t free_bytes      = 0;
+            size_t total_bytes     = 0;
+            if (cpu != nullptr) {
+                ggml_backend_dev_memory(cpu, &free_bytes, &total_bytes);
             }
+            return (int64_t)total_bytes;
+        }
+
+        // The memory a new allocation could take, as the OS would grant it:
+        // available physical memory on Windows, MemAvailable on Linux and
+        // Android, total less wired and compressed pages on macOS (the figure
+        // ggml's CPU and Metal devices report), and the app's own limit on an
+        // iOS device, which is 0 once the app has used it up. The iOS simulator
+        // has no app limit and reads the Mac's figure. Empty when the query fails.
+        std::optional<int64_t> os_available_memory() {
 #if defined(_WIN32)
             MEMORYSTATUSEX status{};
             status.dwLength = sizeof(status);
-            return GlobalMemoryStatusEx(&status) ? (int64_t)status.ullAvailPhys : -1;
+            if (GlobalMemoryStatusEx(&status)) {
+                return (int64_t)status.ullAvailPhys;
+            }
+#elif defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+            return (int64_t)os_proc_available_memory();
 #elif defined(__APPLE__)
             vm_statistics64_data_t stats{};
             mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
             vm_size_t page_size          = 0;
-            if (host_page_size(mach_host_self(), &page_size) != KERN_SUCCESS ||
+            uint64_t total               = 0;
+            size_t total_size            = sizeof(total);
+            if (host_page_size(mach_host_self(), &page_size) == KERN_SUCCESS &&
                 host_statistics64(mach_host_self(), HOST_VM_INFO64,
-                                  reinterpret_cast<host_info64_t>(&stats), &count) != KERN_SUCCESS) {
-                return -1;
+                                  reinterpret_cast<host_info64_t>(&stats), &count) == KERN_SUCCESS &&
+                sysctlbyname("hw.memsize", &total, &total_size, nullptr, 0) == 0) {
+                const int64_t held = (int64_t)(stats.wire_count + stats.compressor_page_count) * (int64_t)page_size;
+                return std::max<int64_t>((int64_t)total - held, 0);
             }
-            return (int64_t)(stats.free_count + stats.inactive_count + stats.speculative_count) *
-                   (int64_t)page_size;
 #elif defined(__linux__)
             std::ifstream meminfo("/proc/meminfo");
             std::string key;
@@ -116,21 +149,22 @@ namespace sd::fit_params {
                     return value * 1024;
                 }
             }
-            struct sysinfo info {};
-            if (sysinfo(&info) == 0) {
-                return (int64_t)(info.freeram + info.bufferram) * (int64_t)info.mem_unit;
-            }
-            return -1;
-#else
-            ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-            if (cpu == nullptr) {
-                return -1;
-            }
-            size_t free_bytes = 0;
-            size_t total_bytes = 0;
-            ggml_backend_dev_memory(cpu, &free_bytes, &total_bytes);
-            return free_bytes > 0 ? (int64_t)free_bytes : -1;
 #endif
+            return std::nullopt;
+        }
+
+        int64_t available_host_memory() {
+            const char* debug_gib = getenv("SD_FIT_DEBUG_HOST_MEMORY_GIB");
+            if (debug_gib != nullptr && debug_gib[0] != '\0') {
+                return std::max<int64_t>((int64_t)(std::strtod(debug_gib, nullptr) * GiB), 0);
+            }
+            ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            size_t cpu_free  = 0;
+            size_t cpu_total = 0;
+            if (cpu != nullptr) {
+                ggml_backend_dev_memory(cpu, &cpu_free, &cpu_total);
+            }
+            return host_memory_or_fallback(os_available_memory(), (int64_t)cpu_free);
         }
 
         void apply_device_budget(Device& d, sd::ggml_graph_cut::MaxVramAssignment& budgets) {
@@ -183,6 +217,31 @@ namespace sd::fit_params {
             return out;
         }
 
+        // A device's memory as the planner budgets it. A device that draws from
+        // host RAM has no more free than the host, and one that reports no
+        // memory of its own takes the host's figures.
+        Device measure_device(ggml_backend_dev_t dev, sd::ggml_graph_cut::MaxVramAssignment& budgets) {
+            Device d;
+            d.dev                = dev;
+            d.name               = ggml_backend_dev_name(dev);
+            d.shares_host_memory = device_shares_host_memory(dev);
+            size_t free_bytes = 0, total_bytes = 0;
+            ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
+            d.free_bytes  = (int64_t)free_bytes;
+            d.total_bytes = (int64_t)total_bytes;
+            if (d.shares_host_memory) {
+                const int64_t host_free = available_host_memory();
+                if (total_bytes == 0) {
+                    d.free_bytes  = std::max<int64_t>(host_free, 0);
+                    d.total_bytes = host_total_memory();
+                } else if (host_free >= 0) {
+                    d.free_bytes = std::min(d.free_bytes, host_free);
+                }
+            }
+            apply_device_budget(d, budgets);
+            return d;
+        }
+
         std::vector<Device> enumerate_gpu_devices(sd::ggml_graph_cut::MaxVramAssignment& budgets) {
             const char* debug_devices = getenv("SD_FIT_DEBUG_DEVICES");
             if (debug_devices != nullptr && debug_devices[0] != '\0') {
@@ -190,22 +249,14 @@ namespace sd::fit_params {
                 return simulated_devices(debug_devices, budgets);
             }
 
-            std::vector<Device> out;
+            std::vector<ggml_backend_dev_t> registered;
             for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
-                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-                if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
-                    continue;
-                }
-                Device d;
-                d.dev             = dev;
-                d.name            = ggml_backend_dev_name(dev);
-                d.description     = ggml_backend_dev_description(dev);
-                d.shares_host_memory = device_shares_host_memory(dev);
-                size_t free_bytes = 0, total_bytes = 0;
-                ggml_backend_dev_memory(dev, &free_bytes, &total_bytes);
-                d.free_bytes  = (int64_t)free_bytes;
-                d.total_bytes = (int64_t)total_bytes;
-                apply_device_budget(d, budgets);
+                registered.push_back(ggml_backend_dev_get(i));
+            }
+            std::vector<Device> out;
+            for (ggml_backend_dev_t dev : placement_devices(registered)) {
+                Device d      = measure_device(dev, budgets);
+                d.description = ggml_backend_dev_description(dev);
                 out.push_back(d);
             }
             return out;
@@ -279,7 +330,67 @@ namespace sd::fit_params {
             return required <= budget;
         }
 
+        DeviceUse device_use(const Device& device, int64_t used_bytes) {
+            return {device.name, used_bytes, device.free_bytes, device.total_bytes, device.shares_host_memory};
+        }
+
+        // Mirrors the shared-memory accounting in plan_placement: resident and
+        // retained modules keep their params on the device next to their graph,
+        // time-shared modules hold their measured bytes for their phase only.
+        void record_placement(const std::vector<ModuleMemory>& modules,
+                              const std::vector<Decision>& decisions,
+                              const std::vector<Device>& devices,
+                              bool time_share,
+                              FitPlan* plan) {
+            std::vector<int64_t> params(devices.size(), 0);
+            std::vector<ComputePhases> phases(devices.size());
+            for (size_t mi = 0; mi < modules.size(); ++mi) {
+                const auto& m        = modules[mi];
+                const auto& decision = decisions[mi];
+                for (size_t k = 0; k < decision.device_idxs.size(); ++k) {
+                    const size_t di = decision.device_idxs[k];
+                    if (!time_share || m.fixed_residency) {
+                        params[di] += (int64_t)m.params_bytes;
+                        phases[di].add(m.module, (int64_t)(decision.tiled ? m.compute_bytes_tiled : m.compute_bytes));
+                    } else {
+                        phases[di].add(m.module, decision.device_bytes[k]);
+                    }
+                }
+            }
+            plan->devices.clear();
+            for (size_t di = 0; di < devices.size(); ++di) {
+                const int64_t used = params[di] + phases[di].peak();
+                if (used > 0) {
+                    plan->devices.push_back(device_use(devices[di], used));
+                }
+            }
+            plan->host_bytes = host_memory_requirement(modules, &decisions, 0, {});
+            plan->measured   = true;
+        }
+
     }  // namespace
+
+    int64_t host_memory_or_fallback(std::optional<int64_t> os_available, int64_t cpu_device_free) {
+        if (os_available.has_value()) {
+            return std::max<int64_t>(*os_available, 0);
+        }
+        return cpu_device_free > 0 ? cpu_device_free : -1;
+    }
+
+    std::vector<ggml_backend_dev_t> placement_devices(const std::vector<ggml_backend_dev_t>& devices) {
+        for (auto type : {GGML_BACKEND_DEVICE_TYPE_GPU, GGML_BACKEND_DEVICE_TYPE_IGPU}) {
+            std::vector<ggml_backend_dev_t> out;
+            for (ggml_backend_dev_t dev : devices) {
+                if (ggml_backend_dev_type(dev) == type) {
+                    out.push_back(dev);
+                }
+            }
+            if (!out.empty()) {
+                return out;
+            }
+        }
+        return {};
+    }
 
     bool check_placement(const std::vector<BackendMemory>& memory,
                          size_t host_bytes,
@@ -305,12 +416,13 @@ namespace sd::fit_params {
         if (!add(host, host_bytes)) {
             return false;
         }
+        size_t host_only = host;
         for (const auto& item : memory) {
             if (item.backend == nullptr) {
                 return false;
             }
             if (sd_backend_is_cpu(item.backend)) {
-                if (!add(host, item.bytes)) {
+                if (!add(host, item.bytes) || !add(host_only, item.bytes)) {
                     return false;
                 }
             } else {
@@ -332,19 +444,15 @@ namespace sd::fit_params {
             if (item.first == nullptr) {
                 return false;
             }
-            Device device;
-            device.dev        = item.first;
-            device.name       = ggml_backend_dev_name(item.first);
-            size_t free_bytes = 0, total_bytes = 0;
-            ggml_backend_dev_memory(item.first, &free_bytes, &total_bytes);
-            device.free_bytes  = static_cast<int64_t>(free_bytes);
-            device.total_bytes = static_cast<int64_t>(total_bytes);
-            apply_device_budget(device, budgets);
+            const Device device = measure_device(item.first, budgets);
             report_line(plan->report, "  %-12s available %lld MiB, budget %lld MiB, projected use %lld MiB",
                         device.name.c_str(), (long long)(device.free_bytes / MiB),
                         (long long)(device.budget_bytes / MiB), (long long)(item.second / MiB));
             plan->valid = plan->valid && item.second <= static_cast<size_t>(device.budget_bytes);
+            plan->devices.push_back(device_use(device, static_cast<int64_t>(item.second)));
         }
+        plan->host_bytes = static_cast<int64_t>(host_only);
+        plan->measured   = true;
         return true;
     }
 
@@ -397,7 +505,9 @@ namespace sd::fit_params {
 
         if (devices.empty()) {
             report_line(plan->report, "  no usable GPU devices; checking the default CPU backend");
-            plan->valid   = host_memory_fits(modules, nullptr, plan->report);
+            plan->host_bytes = host_memory_requirement(modules, nullptr, 0, {});
+            plan->measured   = true;
+            plan->valid      = host_memory_fits(modules, nullptr, plan->report);
             plan->changed = false;
             return true;
         }
@@ -415,15 +525,19 @@ namespace sd::fit_params {
                     compute.add(m.module, (int64_t)m.compute_bytes + (staged ? (int64_t)m.params_bytes : 0));
                 }
             }
+            std::vector<Decision> resident(modules.size());
+            for (size_t i = 0; i < modules.size(); ++i) {
+                resident[i].cpu_params = offload_params_to_cpu && !modules[i].fixed_residency;
+            }
+            // the default placement's figures stand unless a fitted placement replaces them
+            plan->devices    = {device_use(devices[0], params_sum + compute.peak())};
+            plan->host_bytes = host_memory_requirement(modules, &resident, 0, {});
+            plan->measured   = true;
             if (params_sum + compute.peak() <= devices[0].budget_bytes) {
                 report_line(plan->report, "  projected use %lld MiB <= budget %lld MiB on %s, no changes needed",
                             (long long)((params_sum + compute.peak()) / MiB),
                             (long long)(devices[0].budget_bytes / MiB),
                             devices[0].name.c_str());
-                std::vector<Decision> resident(modules.size());
-                for (size_t i = 0; i < modules.size(); ++i) {
-                    resident[i].cpu_params = offload_params_to_cpu && !modules[i].fixed_residency;
-                }
                 plan->valid   = host_memory_fits(modules, &resident, plan->report,
                                                  devices[0].shares_host_memory ? params_sum : 0,
                                                  devices[0].shares_host_memory ? compute : ComputePhases{});
@@ -737,6 +851,7 @@ namespace sd::fit_params {
             }
             shared_compute.add(m.module, staged);
         }
+        record_placement(modules, decisions, devices, time_share, plan);
         if (!host_memory_fits(modules, &decisions, plan->report, shared_params, shared_compute)) {
             report_line(plan->report, "  no placement fits available host memory");
             plan->valid = false;
@@ -809,6 +924,45 @@ namespace sd::fit_params {
         plan->valid      = true;
         plan->changed    = true;
         plan->time_share = time_share;
+        return true;
+    }
+
+    bool write_device_use(const FitPlan& plan, sd_fit_result_t* result) {
+        if (result == nullptr) {
+            return false;
+        }
+        if (!plan.measured) {
+            return true;
+        }
+        const size_t count = plan.devices.size() + 1;
+        auto* entries      = static_cast<sd_fit_device_t*>(calloc(count, sizeof(sd_fit_device_t)));
+        if (entries == nullptr) {
+            return false;
+        }
+        auto fill = [](sd_fit_device_t& entry, const char* name, int64_t used, int64_t free_bytes, int64_t total_bytes) {
+            snprintf(entry.name, sizeof(entry.name), "%s", name);
+            entry.used_bytes  = (size_t)std::max<int64_t>(used, 0);
+            entry.free_bytes  = (size_t)std::max<int64_t>(free_bytes, 0);
+            entry.total_bytes = (size_t)std::max<int64_t>(total_bytes, 0);
+        };
+        for (size_t i = 0; i < plan.devices.size(); ++i) {
+            const DeviceUse& use = plan.devices[i];
+            fill(entries[i], use.name.c_str(), use.used_bytes, use.free_bytes, use.total_bytes);
+            entries[i].shares_host_memory = use.shares_host_memory;
+        }
+        ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        size_t cpu_free        = 0;
+        size_t cpu_total       = 0;
+        if (cpu != nullptr) {
+            ggml_backend_dev_memory(cpu, &cpu_free, &cpu_total);
+        }
+        sd_fit_device_t& host = entries[count - 1];
+        fill(host, cpu != nullptr ? ggml_backend_dev_name(cpu) : "CPU", plan.host_bytes,
+             available_host_memory(), (int64_t)cpu_total);
+        host.host = true;
+
+        result->devices   = entries;
+        result->device_count = (int)count;
         return true;
     }
 

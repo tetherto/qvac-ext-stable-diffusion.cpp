@@ -525,6 +525,16 @@ enum sd_fit_status_t {
     SD_FIT_ERROR   = 2,  // a hard error occurred, e.g. the model could not be read
 };
 
+// projected memory use of one device by the measured placement
+typedef struct {
+    char name[64];       // ggml device name; the host entry carries the CPU device name
+    bool host;                // the host entry: memory outside every GPU device's own allocations
+    bool shares_host_memory;  // a GPU drawing from host RAM; its free memory is capped at the host's
+    size_t used_bytes;        // projected use; a shared-memory GPU's use is not repeated in the host entry
+    size_t free_bytes;        // free memory read while planning
+    size_t total_bytes;       // total memory; a GPU that reports none carries the host's
+} sd_fit_device_t;
+
 typedef struct {
     bool changed;          // false = current/default placement already fits, specs below are NULL
     char* backend;         // fitted runtime placement spec for --backend, owned by the result
@@ -532,6 +542,11 @@ typedef struct {
     bool vae_tiling;       // recommend enabling VAE tiling
     bool stream_layers;    // recommend enabling graph-cut streaming layers
     char* report;          // human readable per-device / per-module memory table
+    // the GPU devices the placement uses, then the host entry; NULL when no
+    // placement was measured. On SD_FIT_FAILURE the figures are those of the
+    // placement that was checked. Owned by the result.
+    sd_fit_device_t* devices;
+    int device_count;
 } sd_fit_result_t;
 
 SD_API void sd_fit_workload_init(sd_fit_workload_t* workload);
