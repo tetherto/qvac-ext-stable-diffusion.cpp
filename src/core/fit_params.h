@@ -1,6 +1,8 @@
 #ifndef __SD_FIT_PARAMS_H__
 #define __SD_FIT_PARAMS_H__
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,21 +29,43 @@ namespace sd::fit_params {
         std::vector<std::vector<size_t>> split_graph_segment_compute;
     };
 
+    // projected use of one GPU device by a placement
+    struct DeviceUse {
+        std::string name;
+        int64_t used_bytes  = 0;
+        int64_t free_bytes  = 0;
+        int64_t total_bytes = 0;
+        bool shares_host_memory = false;
+    };
+
     struct FitPlan {
         bool valid         = false;
         bool changed       = false;  // false = current/default placement already fits
         bool time_share    = false;
         bool vae_tiling    = false;
         bool stream_layers = false;
+        bool measured      = false;  // devices and host_bytes describe the checked placement
         std::string runtime_spec;
         std::string params_spec;
         std::string report;  // human readable per-device / per-module table
+        std::vector<DeviceUse> devices;
+        // host memory outside the GPU devices' own allocations; a shared-memory
+        // device's use stays in its own entry
+        int64_t host_bytes = 0;
     };
 
     struct BackendMemory {
         ggml_backend_t backend = nullptr;
         size_t bytes           = 0;
     };
+
+    // the host's available memory: the OS figure whenever the OS gave one, 0
+    // included, else the CPU device's free memory; -1 when neither is known
+    int64_t host_memory_or_fallback(std::optional<int64_t> os_available, int64_t cpu_device_free);
+
+    // the devices the planner places modules on, in the runtime's default
+    // preference: the discrete GPUs, or the integrated GPUs when there is none
+    std::vector<ggml_backend_dev_t> placement_devices(const std::vector<ggml_backend_dev_t>& devices);
 
     bool check_placement(const std::vector<BackendMemory>& memory,
                          size_t host_bytes,
@@ -55,6 +79,9 @@ namespace sd::fit_params {
                         bool offload_params_to_cpu   = false,
                         bool cpu_only                = false,
                         bool check_requested_offload = false);
+
+    // copy a measured plan's device and host use into a public result
+    bool write_device_use(const FitPlan& plan, sd_fit_result_t* result);
 
 }  // namespace sd::fit_params
 

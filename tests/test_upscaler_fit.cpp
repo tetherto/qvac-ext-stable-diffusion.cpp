@@ -99,6 +99,8 @@ namespace upscaler_fit_test {
         GGML_ASSERT(!result.changed && result.report != nullptr);
         GGML_ASSERT(std::string(result.report).find("upscaler") != std::string::npos);
         GGML_ASSERT(std::string(result.report).find("host memory") != std::string::npos);
+        GGML_ASSERT(result.device_count == 1 && result.devices[0].host);
+        GGML_ASSERT(result.devices[0].used_bytes >= repeated.host_bytes + repeated.params_bytes);
         sd_fit_result_free(&result);
         set_host_memory("0.5");
         GGML_ASSERT(sd_upscaler_fit_params(&params, &result) == SD_FIT_FAILURE);
