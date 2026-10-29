@@ -327,8 +327,11 @@ jobs:
           sysctl -a
           mkdir build
           cd build
-          cmake .. -DGGML_AVX2=ON -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DSD_BUILD_SHARED_LIBS=ON
+          cmake .. -DGGML_AVX2=ON -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_TESTS=ON
           cmake --build . --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
       - name: Get commit hash
         id: commit

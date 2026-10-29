@@ -61,6 +61,8 @@ namespace abot_fit_test {
         GGML_ASSERT(result.report && std::strstr(result.report, "100 walk steps"));
         GGML_ASSERT(std::strstr(result.report, "diffusion: params") && std::strstr(result.report, "vae: params"));
         GGML_ASSERT(!result.changed);
+        GGML_ASSERT(result.device_count == 1 && result.devices[0].host);
+        GGML_ASSERT(result.devices[0].used_bytes > host_buffers(result));
         sd_fit_result_free(&result);
         params.kv_cache = true;
         GGML_ASSERT(sd_abot_fit_params(&params, &workload, &result) == SD_FIT_SUCCESS);
@@ -72,6 +74,8 @@ namespace abot_fit_test {
         sd_fit_result_free(&result);
         set_host_memory("0.6");
         GGML_ASSERT(sd_abot_fit_params(&params, &workload, &result) == SD_FIT_FAILURE);
+        GGML_ASSERT(result.device_count == 1 && result.devices[0].host &&
+                    result.devices[0].used_bytes > result.devices[0].free_bytes);
         sd_fit_result_free(&result);
         workload.walk_steps = 0;
         GGML_ASSERT(sd_abot_fit_params(&params, &workload, &result) == SD_FIT_ERROR);

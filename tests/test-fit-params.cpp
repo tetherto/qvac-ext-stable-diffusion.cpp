@@ -535,6 +535,101 @@ bool test_shared_memory_tiling() {
     return true;
 }
 
+bool expect_device(const sd::fit_params::FitPlan& plan,
+                   size_t index,
+                   const char* name,
+                   int64_t used_bytes,
+                   const char* message) {
+    return expect(index < plan.devices.size() && plan.devices[index].name == name &&
+                      plan.devices[index].used_bytes == used_bytes,
+                  message);
+}
+
+bool test_device_use_of_default_placement() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:8", 8.f,
+                                {module(SDBackendModule::DIFFUSION, 1, 1, true),
+                                 module(SDBackendModule::TE, 1, 1, true),
+                                 module(SDBackendModule::VAE, 1, 1)},
+                                &plan);
+    return expect(ok && plan.valid && plan.measured, "default placement should be measured") &&
+           expect(plan.devices.size() == 1, "default placement uses one device") &&
+           expect_device(plan, 0, "GPU0", 4 * GiB, "default placement charges params plus the compute peak") &&
+           expect(plan.devices[0].free_bytes == (int64_t)(8 * GiB), "device entry carries the free memory read while planning") &&
+           expect(plan.host_bytes == 0, "a resident GPU placement uses no host memory");
+}
+
+bool test_device_use_of_resident_spread() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:9,GPU1:9", 9.f,
+                                {module(SDBackendModule::DIFFUSION, 5, 2, true),
+                                 module(SDBackendModule::TE, 3, 1, true),
+                                 module(SDBackendModule::VAE, 2, 3)},
+                                &plan);
+    return expect(ok && plan.valid && plan.measured, "resident spread should be measured") &&
+           expect(plan.devices.size() == 2, "resident spread uses both devices") &&
+           expect_device(plan, 0, "GPU0", 7 * GiB, "GPU0 holds diffusion params and graph") &&
+           expect_device(plan, 1, "GPU1", 8 * GiB, "GPU1 holds both params with the larger serial graph") &&
+           expect(plan.host_bytes == 0, "a resident GPU placement uses no host memory");
+}
+
+bool test_device_use_of_time_share() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:6", 0.f,
+                                {module(SDBackendModule::DIFFUSION, 5, 2, true),
+                                 module(SDBackendModule::TE, 1, 1, true),
+                                 module(SDBackendModule::VAE, 1, 2)},
+                                &plan);
+    return expect(ok && plan.valid && plan.time_share, "time-share plan should be valid") &&
+           expect(plan.devices.size() == 1, "time-share plan uses one device") &&
+           expect_device(plan, 0, "GPU0", 3 * GiB, "time-shared modules hold the device one phase at a time") &&
+           expect(plan.host_bytes == (int64_t)(7 * GiB), "the CPU module's params and graph are host memory");
+}
+
+bool test_device_use_of_failed_placement() {
+    sd::fit_params::FitPlan plan;
+    bool ok = plan_with_devices("GPU0:4", 4.f,
+                                {module(SDBackendModule::DIFFUSION, 8, 2, true)},
+                                &plan,
+                                8.f);
+    return expect(ok && !plan.valid && plan.measured, "a failed placement still carries its figures") &&
+           expect(plan.stream_layers, "the checked placement streams diffusion layers") &&
+           expect_device(plan, 0, "GPU0", 2 * GiB, "streaming holds the largest segment and its graph") &&
+           expect(plan.host_bytes == (int64_t)(8 * GiB), "streamed params stay in host memory");
+}
+
+bool test_public_device_entries() {
+    if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "6")) {
+        return false;
+    }
+    sd::fit_params::FitPlan plan;
+    plan.measured   = true;
+    plan.devices    = {{"GPU0", 3 * (int64_t)GiB, 8 * (int64_t)GiB, 16 * (int64_t)GiB}};
+    plan.host_bytes = 2 * GiB;
+    sd_fit_result_t result{};
+    const bool ok    = sd::fit_params::write_device_use(plan, &result);
+    const bool shape = ok && result.device_count == 2 && result.devices != nullptr;
+    const bool passed =
+        expect(shape, "a measured plan writes its devices and a host entry") &&
+        expect(std::string(result.devices[0].name) == "GPU0" && !result.devices[0].host &&
+                   result.devices[0].used_bytes == 3 * GiB && result.devices[0].free_bytes == 8 * GiB &&
+                   result.devices[0].total_bytes == 16 * GiB,
+               "device entry copies the plan's figures") &&
+        expect(result.devices[1].host && result.devices[1].used_bytes == 2 * GiB &&
+                   result.devices[1].free_bytes == 6 * GiB && result.devices[1].name[0] != '\0',
+               "host entry is last with the host figure and available host memory");
+    sd_fit_result_free(&result);
+    if (!passed) {
+        return false;
+    }
+
+    sd::fit_params::FitPlan unmeasured;
+    sd_fit_result_t empty{};
+    return expect(sd::fit_params::write_device_use(unmeasured, &empty) && empty.devices == nullptr &&
+                      empty.device_count == 0,
+                  "an unmeasured plan writes no device entries");
+}
+
 bool test_measure_mode_preserves_outputs_and_projects_cache() {
     ggml_backend_t backend = sd_backend_cpu_init();
     if (!expect(backend != nullptr, "CPU backend should initialize for measurement test")) {
@@ -569,6 +664,40 @@ bool test_measure_mode_preserves_outputs_and_projects_cache() {
     return passed;
 }
 
+bool test_host_memory_keeps_an_exhausted_os_allowance() {
+    using sd::fit_params::host_memory_or_fallback;
+    const int64_t cpu_free = 8 * (int64_t)GiB;
+    const int64_t os_free  = 3 * (int64_t)GiB;
+    return expect(host_memory_or_fallback(0, cpu_free) == 0, "an exhausted OS allowance stays 0") &&
+           expect(host_memory_or_fallback(os_free, cpu_free) == os_free, "an OS figure is used as given") &&
+           expect(host_memory_or_fallback(std::nullopt, cpu_free) == cpu_free,
+                  "a failed OS query falls back to the CPU device") &&
+           expect(host_memory_or_fallback(std::nullopt, 0) == -1, "no figure at all is -1");
+}
+
+bool test_placement_prefers_discrete_then_integrated_gpus() {
+    auto device_of_type = [](ggml_backend_device& device, enum ggml_backend_dev_type& type) {
+        device.context        = &type;
+        device.iface.get_type = [](ggml_backend_dev_t dev) {
+            return *static_cast<enum ggml_backend_dev_type*>(dev->context);
+        };
+    };
+    enum ggml_backend_dev_type cpu_type = GGML_BACKEND_DEVICE_TYPE_CPU;
+    enum ggml_backend_dev_type gpu_type = GGML_BACKEND_DEVICE_TYPE_GPU;
+    enum ggml_backend_dev_type igpu_type = GGML_BACKEND_DEVICE_TYPE_IGPU;
+    ggml_backend_device cpu{}, gpu{}, igpu{};
+    device_of_type(cpu, cpu_type);
+    device_of_type(gpu, gpu_type);
+    device_of_type(igpu, igpu_type);
+
+    const auto with_gpu = sd::fit_params::placement_devices({&cpu, &igpu, &gpu});
+    const auto igpu_only = sd::fit_params::placement_devices({&cpu, &igpu});
+    const auto cpu_only = sd::fit_params::placement_devices({&cpu});
+    return expect(with_gpu.size() == 1 && with_gpu[0] == &gpu, "a discrete GPU is placed on before an integrated one") &&
+           expect(igpu_only.size() == 1 && igpu_only[0] == &igpu, "an integrated GPU is placed on when it is the only GPU") &&
+           expect(cpu_only.empty(), "a CPU-only machine has no placement devices");
+}
+
 bool test_unified_memory_checks_combined_host_use() {
     if (!set_test_env("SD_FIT_DEBUG_HOST_MEMORY_GIB", "2")) {
         return false;
@@ -598,6 +727,16 @@ bool test_unified_memory_checks_combined_host_use() {
         const bool ok = sd::fit_params::check_placement({{&backend, GiB}}, GiB, budgets, &plan);
         if (!expect(ok && plan.valid == !unified,
                     "unified device and host allocations must fit the same host pool")) {
+            return false;
+        }
+        if (!expect(plan.measured && plan.devices.size() == 1 && plan.devices[0].name == "GPU0" &&
+                        plan.devices[0].used_bytes == (int64_t)GiB && plan.host_bytes == (int64_t)GiB,
+                    "configured placement reports the device use and host use apart")) {
+            return false;
+        }
+        if (!expect(plan.devices[0].shares_host_memory == unified &&
+                        plan.devices[0].free_bytes == (unified ? 2 * GiB : 16 * GiB),
+                    "configured placement marks a unified device and caps its free memory at the host's")) {
             return false;
         }
     }
@@ -647,9 +786,10 @@ bool test_public_rejects_explicit_placement() {
     sd_fit_result_t result;
 
     const enum sd_fit_status_t status = sd_fit_params(&params, &workload, &result);
-    const bool passed = expect(status == SD_FIT_FAILURE, "explicit placement should be rejected") &&
-                        expect(!result.changed && result.backend == nullptr && result.params_backend == nullptr && result.report == nullptr,
-                               "placement rejection should leave an initialized result");
+    const bool passed                 = expect(status == SD_FIT_FAILURE, "explicit placement should be rejected") &&
+                                        expect(!result.changed && result.backend == nullptr && result.params_backend == nullptr && result.report == nullptr &&
+                                                   result.devices == nullptr && result.device_count == 0,
+                                               "placement rejection should leave an initialized result");
     sd_fit_result_free(&result);
     return passed;
 }
@@ -672,6 +812,8 @@ int main() {
         !test_mixed_cpu_upscaler_placement() ||
         !test_offloaded_upscaler_staging() ||
         !test_combined_offload_keeps_upscaler_resident() ||
+        !test_host_memory_keeps_an_exhausted_os_allowance() ||
+        !test_placement_prefers_discrete_then_integrated_gpus() ||
         !test_unified_memory_checks_combined_host_use() ||
         !test_retained_upscaler_time_share() ||
         !test_hires_and_separate_upscalers() ||
@@ -680,6 +822,11 @@ int main() {
         !test_shared_memory_time_share_and_offload() ||
         !test_shared_memory_streaming_and_split() ||
         !test_shared_memory_tiling() ||
+        !test_device_use_of_default_placement() ||
+        !test_device_use_of_resident_spread() ||
+        !test_device_use_of_time_share() ||
+        !test_device_use_of_failed_placement() ||
+        !test_public_device_entries() ||
         !test_measure_mode_preserves_outputs_and_projects_cache() ||
         !test_measure_mode_is_thread_local() ||
         !test_public_rejects_explicit_placement() ||
