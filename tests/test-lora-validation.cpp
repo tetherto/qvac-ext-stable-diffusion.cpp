@@ -124,8 +124,9 @@ int main() {
             MultiLoraAdapter adapter({model});
             WeightAdapter::ForwardParams forward_params;
             forward_params.op_type = WeightAdapter::ForwardParams::op_type_t::OP_LINEAR;
-            ggml_tensor* delta = adapter.lora_output_delta(graph_ctx, cpu, input, weight,
-                                                           "model.diffusion_model.test.", forward_params);
+            ggml_tensor* delta     = adapter.add_lora_to_output(graph_ctx, cpu, input, weight,
+                                                                ggml_new_tensor_2d(graph_ctx, GGML_TYPE_F32, 6, 2),
+                                                                "model.diffusion_model.test.", forward_params);
             GGML_ASSERT(delta != nullptr && delta->ne[0] == 6 && delta->ne[1] == 2);
             GGML_ASSERT(!model->applied_lora_tensors.empty());
         }

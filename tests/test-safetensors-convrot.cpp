@@ -182,7 +182,7 @@ int main() {
 
     ModelLoader loader;
     GGML_ASSERT(loader.init_from_file(path.string()));
-    const TensorStorage& weight = find_tensor(loader, "layer.weight");
+    TensorStorage weight = find_tensor(loader, "layer.weight");
     GGML_ASSERT(weight.type == GGML_TYPE_I8);
     GGML_ASSERT(weight.expected_type == GGML_TYPE_F16);
     GGML_ASSERT(weight.is_comfy_int8_tensorwise);
@@ -262,6 +262,10 @@ int main() {
         ggml_free(range_ctx);
     }
     write_fixture(path, marker);
+    // The catalog pins file identity; refresh after rewriting the fixture.
+    loader = ModelLoader();
+    GGML_ASSERT(loader.init_from_file(path.string()));
+    weight = find_tensor(loader, "layer.weight");
 
     ggml_backend_t cpu_backend = init_cpu_backend();
     GGML_ASSERT(cpu_backend != nullptr);

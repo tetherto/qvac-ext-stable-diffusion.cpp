@@ -19,9 +19,16 @@ namespace sd {
         return tensors;
     }
 
-    CachedTensor::~CachedTensor() {
+    CachedTensorPool::~CachedTensorPool() {
         ggml_backend_buffer_free(buffer);
         ggml_free(context);
+    }
+
+    CachedTensor::~CachedTensor() {
+        if (!pool) {
+            ggml_backend_buffer_free(buffer);
+            ggml_free(context);
+        }
     }
 
     std::unique_ptr<CachedTensor> CachedTensor::allocate(ggml_backend_t backend, const std::string& name, ggml_tensor* source) {
@@ -72,9 +79,10 @@ namespace sd {
 
     static size_t resident_bytes(const CachedTensors& tensors, ggml_backend_dev_t device) {
         size_t bytes = 0;
+        std::unordered_set<ggml_backend_buffer_t> counted;
         for (const auto& entry : tensors) {
             auto buffer = entry.second->buffer;
-            if (!ggml_backend_buffer_is_host(buffer) &&
+            if (counted.insert(buffer).second && !ggml_backend_buffer_is_host(buffer) &&
                 ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buffer)) == device) {
                 const size_t size = ggml_backend_buffer_get_size(buffer);
                 bytes             = size > SIZE_MAX - bytes ? SIZE_MAX : bytes + size;
@@ -98,11 +106,10 @@ namespace sd {
         if (outputs_.empty()) {
             return 0;
         }
-        auto tensors = cache_graph_tensors(graph);
         auto buft    = ggml_backend_get_default_buffer_type(backend_);
         size_t bytes = 0;
         for (const auto& output : outputs_) {
-            if (pending_.count(output.first) || !tensors.count(output.second)) {
+            if (pending_.count(output.first) || allocated_.count(output.first)) {
                 continue;
             }
             const size_t size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, output.second),
@@ -113,27 +120,70 @@ namespace sd {
     }
 
     size_t RunnerCache::resident_bytes(ggml_backend_dev_t device) const {
-        const size_t committed = sd::resident_bytes(committed_, device);
-        const size_t pending   = sd::resident_bytes(pending_, device);
-        return pending > SIZE_MAX - committed ? SIZE_MAX : committed + pending;
+        std::unordered_set<ggml_backend_buffer_t> counted;
+        size_t bytes = 0;
+        for (const auto* group : {&committed_, &pending_, &allocated_}) {
+            for (const auto& entry : *group) {
+                auto buffer = entry.second->buffer;
+                if (buffer && counted.insert(buffer).second && !ggml_backend_buffer_is_host(buffer) &&
+                    ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buffer)) == device) {
+                    const size_t size = ggml_backend_buffer_get_size(buffer);
+                    bytes             = size > SIZE_MAX - bytes ? SIZE_MAX : bytes + size;
+                }
+            }
+        }
+        return bytes;
+    }
+
+    size_t RunnerCache::pool_count() const {
+        std::unordered_set<const CachedTensorPool*> pools;
+        for (const auto& entry : committed_)
+            if (entry.second->pool)
+                pools.insert(entry.second->pool.get());
+        return pools.size();
     }
 
     ggml_status RunnerCache::capture(ggml_cgraph* graph) {
-        if (outputs_.empty()) {
+        if (outputs_.empty())
             return GGML_STATUS_SUCCESS;
-        }
         const auto tensors = cache_graph_tensors(graph);
-        for (const auto& output : outputs_) {
-            if (pending_.count(output.first) || !tensors.count(output.second)) {
-                continue;
+        if (allocated_.empty() && pending_.empty()) {
+            auto pool     = std::make_shared<CachedTensorPool>();
+            pool->context = ggml_init({outputs_.size() * ggml_tensor_overhead(), nullptr, true});
+            if (!pool->context)
+                return GGML_STATUS_ALLOC_FAILED;
+            for (const auto& output : outputs_) {
+                auto entry    = std::make_unique<CachedTensor>();
+                entry->pool   = pool;
+                entry->tensor = ggml_dup_tensor(pool->context, output.second);
+                std::copy(std::begin(output.second->nb), std::end(output.second->nb), std::begin(entry->tensor->nb));
+                ggml_set_name(entry->tensor, output.first.c_str());
+                allocated_.emplace(output.first, std::move(entry));
             }
-            GGML_ASSERT(ggml_is_contiguous(output.second));
-            ggml_status status;
-            auto entry = CachedTensor::copy(backend_, output.first, output.second, status);
-            if (entry == nullptr) {
-                return status;
+            pool->buffer = ggml_backend_alloc_ctx_tensors(pool->context, backend_);
+            if (!pool->buffer) {
+                allocated_.clear();
+                return GGML_STATUS_ALLOC_FAILED;
+            }
+            for (auto& entry : allocated_)
+                entry.second->buffer = pool->buffer;
+        }
+        for (const auto& output : outputs_) {
+            if (pending_.count(output.first) || !tensors.count(output.second))
+                continue;
+            auto found = allocated_.find(output.first);
+            if (found == allocated_.end() || ggml_graph_cut::tensor_buffer(output.second) == nullptr)
+                return GGML_STATUS_FAILED;
+            auto& entry = found->second;
+            if (output.second->view_src || !ggml_is_contiguous(output.second) || output.second->buffer == nullptr) {
+                std::vector<uint8_t> data(ggml_nbytes(output.second));
+                ggml_backend_tensor_get(output.second, data.data(), 0, data.size());
+                ggml_backend_tensor_set(entry->tensor, data.data(), 0, data.size());
+            } else {
+                ggml_backend_tensor_copy(output.second, entry->tensor);
             }
             pending_[output.first] = std::move(entry);
+            allocated_.erase(found);
         }
         ggml_backend_synchronize(backend_);
         return GGML_STATUS_SUCCESS;
@@ -147,6 +197,7 @@ namespace sd {
             }
         }
         pending_.clear();
+        allocated_.clear();
         outputs_.clear();
     }
 

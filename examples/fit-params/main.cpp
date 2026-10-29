@@ -273,7 +273,7 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
 
-    sd_ctx_params_t sd_ctx_params = ctx_params.to_sd_ctx_params_t(false);
+    sd_ctx_params_t sd_ctx_params = ctx_params.to_sd_ctx_params_t();
 
     sd_fit_workload_t workload;
     sd_fit_workload_init(&workload);
@@ -329,12 +329,7 @@ int main(int argc, const char* argv[]) {
             }
             args += std::string("--max-vram \"") + sd_ctx_params.max_vram + "\"";
         }
-        if (result.stream_layers && !sd_ctx_params.stream_layers) {
-            if (!args.empty()) {
-                args += " ";
-            }
-            args += "--stream-layers";
-        }
+
         fprintf(stderr, "printing fitted CLI arguments to stdout...\n");
         printf("%s\n", args.c_str());
     } else {

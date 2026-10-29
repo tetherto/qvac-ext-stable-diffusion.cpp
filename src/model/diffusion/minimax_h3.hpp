@@ -187,7 +187,7 @@ namespace MiniMaxH3 {
         auto ctx        = runner_ctx->ggml_ctx;
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_ROPE_APPLY
         if (runner_ctx->backend != nullptr && x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32) {
             auto out = ggml_rope_apply(ctx, x, pe, false);
             if (ggml_backend_supports_op(runner_ctx->backend, out)) {

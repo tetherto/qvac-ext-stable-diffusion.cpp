@@ -358,7 +358,7 @@ static void sd_log_to_stderr(enum sd_log_level_t level, const char* text, void* 
 }
 
 int main(int argc, char** argv) {
-    ggml_log_set(ggml_log_callback_default, nullptr);
+    ggml_log_set(nullptr, nullptr);
     sd_set_log_callback(sd_log_to_stderr, nullptr);
     std::string mode = "walk", dit, taehv, scene, latents, outdir = ".";
     std::string actions = "idle:1,W:3", backend = "cpu";

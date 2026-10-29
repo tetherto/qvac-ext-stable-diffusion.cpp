@@ -453,7 +453,7 @@ std::vector<std::string> split_string(const std::string& str, char delimiter) {
 
 ggml_type sd_type_to_ggml_type(sd_type_t sdtype) {
     if (sdtype == SD_TYPE_F8_E4M3 || sdtype == SD_TYPE_F8_E5M2) {
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_FP8
         return sdtype == SD_TYPE_F8_E4M3 ? GGML_TYPE_F8_E4M3 : GGML_TYPE_F8_E5M2;
 #else
         return GGML_TYPE_COUNT;
@@ -472,7 +472,7 @@ bool validate_tensor_types(sd_type_t type, const char* tensor_type_rules) {
         LOG_ERROR("weight type %s is not supported by this ggml build", sd_type_name(type));
         return false;
     }
-#ifdef SD_USE_UPSTREAM_GGML
+#ifndef SD_GGML_HAS_FP8
     for (const auto& rule : split_string(SAFE_STR(tensor_type_rules), ',')) {
         const auto pos = rule.find('=');
         if (pos != std::string::npos) {

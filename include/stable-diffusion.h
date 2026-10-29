@@ -245,6 +245,7 @@ typedef struct {
     bool force_sdxl_vae_conv_scale;
     enum sd_vae_format_t vae_format;
     const char* max_vram;  // Optional per-device GiB budget for managed weights and runner buffers; 0 uses live free VRAM without an explicit budget
+    bool stream_layers;    // Legacy request to enable segmentation and prefetch; automatic management is enabled by default.
     bool disable_prefetch;  // Disable asynchronous next-segment weight prefetch
     bool eager_load;  // Load all params into the params backend at model-load time instead of lazily on first use
     const char* backend;
@@ -638,9 +639,13 @@ SD_API enum scheduler_t sd_get_default_scheduler(const sd_ctx_t* sd_ctx, enum sa
 
 SD_API void sd_img_gen_params_init(sd_img_gen_params_t* sd_img_gen_params);
 SD_API char* sd_img_gen_params_to_str(const sd_img_gen_params_t* sd_img_gen_params);
-SD_API bool generate_image(sd_ctx_t* sd_ctx,
-                           const sd_img_gen_params_t* sd_img_gen_params,
-                           sd_image_generation_result_t** result_out);
+SD_API bool generate_image_with_result(sd_ctx_t* sd_ctx,
+                                       const sd_img_gen_params_t* sd_img_gen_params,
+                                       sd_image_generation_result_t** result_out);
+
+// Legacy QVAC ownership API: release returned arrays with free_sd_images.
+SD_API bool generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* params, sd_image_t** images_out, int* num_images_out);
+SD_API bool generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* params, sd_image_t** frames_out, int* num_frames_out, sd_audio_t** audio_out);
 
 // Results own their pixels, audio and generation_info, independently of the context.
 // Generation calls require result_out and set it to NULL on failure.
@@ -659,9 +664,9 @@ enum sd_cancel_mode_t {
 SD_API void sd_cancel_generation(sd_ctx_t* sd_ctx, enum sd_cancel_mode_t mode);
 
 SD_API void sd_vid_gen_params_init(sd_vid_gen_params_t* sd_vid_gen_params);
-SD_API bool generate_video(sd_ctx_t* sd_ctx,
-                           const sd_vid_gen_params_t* sd_vid_gen_params,
-                           sd_video_generation_result_t** result_out);
+SD_API bool generate_video_with_result(sd_ctx_t* sd_ctx,
+                                       const sd_vid_gen_params_t* sd_vid_gen_params,
+                                       sd_video_generation_result_t** result_out);
 
 // Returns the frame rate actually used by the selected video model. MiniMax-H3
 // always renders at 24 FPS, regardless of the requested input value.
@@ -873,6 +878,13 @@ SD_API bool sd_add_rpc_servers(const char* servers);
 SD_API void free_sd_images(sd_image_t* result_images, int num_images);
 
 #ifdef __cplusplus
+}
+
+inline bool generate_image(sd_ctx_t* ctx, const sd_img_gen_params_t* params, sd_image_generation_result_t** result) {
+    return generate_image_with_result(ctx, params, result);
+}
+inline bool generate_video(sd_ctx_t* ctx, const sd_vid_gen_params_t* params, sd_video_generation_result_t** result) {
+    return generate_video_with_result(ctx, params, result);
 }
 #endif
 

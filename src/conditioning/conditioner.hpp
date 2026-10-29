@@ -1797,6 +1797,8 @@ struct SenseNovaU1Conditioner : public Conditioner {
     static constexpr size_t kMaxPromptTokens = 12288;
     SenseNovaU1Tokenizer tokenizer;
 
+    void set_fit_module(SDBackendModule module) override { SD_UNUSED(module); }
+
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
         SD_UNUSED(tensors);
     }
@@ -3385,6 +3387,8 @@ struct MingImageEmbedder : public Conditioner {
         tokenizer  = tokenizers.create(TokenizerConfig::MAIN, text_model->config.backbone.vocab_size, 156895);
     }
 
+    void set_fit_module(SDBackendModule module) override { text_model->set_fit_module(module); }
+
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
         text_model->get_param_tensors(tensors, prefix);
     }
@@ -3559,6 +3563,14 @@ struct LLaDAImageEmbedder : public Conditioner {
                 break;
             }
         }
+    }
+
+    void set_fit_module(SDBackendModule module) override {
+        llm->set_fit_module(module);
+        query_former->set_fit_module(module);
+        text_projection->set_fit_module(module);
+        if (sigvq)
+            sigvq->set_fit_module(module);
     }
 
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {

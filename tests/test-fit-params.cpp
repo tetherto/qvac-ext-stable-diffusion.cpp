@@ -40,6 +40,7 @@ void unset_test_env(const char* name) {
 struct MeasureRunner : public GGMLRunner {
     bool warm_cache_seen = false;
     ggml_tensor* output  = nullptr;
+    int output_rank      = 0;
 
     explicit MeasureRunner(ggml_backend_t backend)
         : GGMLRunner(backend) {
@@ -67,7 +68,7 @@ struct MeasureRunner : public GGMLRunner {
             cache("state", ggml_scale(compute_ctx, cache_input, 2.f));
             return graph;
         };
-        return compute<float>(get_graph, 1, false, true, true, no_return);
+        return compute(get_graph, 1, false, no_return, [&]() { output_rank = ggml_n_dims(output); return true; });
     }
 };
 
@@ -655,8 +656,8 @@ bool test_measure_mode_preserves_outputs_and_projects_cache() {
         auto second = runner.run(true);
         passed &= expect(second.has_value() && runner.warm_cache_seen,
                          "the next measured graph should observe projected warm cache state");
-        passed &= expect(runner.output != nullptr && ggml_n_dims(runner.output) == 2,
-                         "no-return graph tensors should remain alive for the caller");
+        passed &= expect(runner.output_rank == 2,
+                         "no-return graph tensors should remain available to the output callback");
 
         GGMLRunner::set_measure_mode(false);
     }

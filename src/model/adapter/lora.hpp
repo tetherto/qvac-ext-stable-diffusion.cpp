@@ -50,6 +50,7 @@ struct LoraModel : public GGMLRunner {
     bool params_follow_compute                 = false;
     std::vector<ggml_tensor*> registered_params;
     std::map<ggml_tensor*, float> scalar_values;
+    std::shared_ptr<ModelManager> owned_manager_;
 
     typedef std::function<bool(const std::string&)> filter_t;
 
@@ -59,6 +60,25 @@ struct LoraModel : public GGMLRunner {
         if (!load_failed) {
             file_path = manager->loader().file_path(source_file);
         }
+    }
+
+    LoraModel(const std::string& id, ggml_backend_t backend, ggml_backend_t params, const std::string& path)
+        : GGMLRunner(backend), lora_id(id), file_path(path), params_backend(params) {}
+
+    bool load_from_file(int n_threads, filter_t filter = nullptr) {
+        owned_manager_    = std::make_shared<ModelManager>();
+        residency_manager = owned_manager_;
+        if (!owned_manager_->add_file(file_path, "lora.", &source_file))
+            return false;
+        return init_params(n_threads, filter) && !lora_tensors.empty();
+    }
+
+    static float read_scale(ggml_tensor* tensor) {
+        if (measure_mode_enabled())
+            return 1.f;
+        if (tensor->buffer == nullptr && tensor->data != nullptr && tensor->type == GGML_TYPE_F32)
+            return *static_cast<const float*>(tensor->data);
+        return ggml_ext_backend_tensor_get_f32(tensor);
     }
 
     ~LoraModel() override {
@@ -116,7 +136,7 @@ struct LoraModel : public GGMLRunner {
             auto* tensor       = ggml_new_tensor(params_ctx, scalar ? GGML_TYPE_F32 : source.type, source.n_dims, source.ne);
             lora_tensors[name] = tensor;
             if (scalar) {
-                tensor->data  = &scalar_values[tensor];
+                tensor->data  = measure_mode_enabled() ? nullptr : &scalar_values[tensor];
                 scalars[name] = tensor;
                 scalar_names.insert(name);
             } else {
@@ -124,7 +144,7 @@ struct LoraModel : public GGMLRunner {
             }
         }
         // These values are consumed while constructing the graph, before weight preparation.
-        if (!scalars.empty()) {
+        if (!scalars.empty() && !GGMLRunner::measure_mode_enabled()) {
             auto callback = [&](const TensorStorage& source, ggml_tensor** dst) {
                 auto found = scalars.find(source.name);
                 *dst       = found == scalars.end() ? nullptr : found->second;
@@ -139,9 +159,13 @@ struct LoraModel : public GGMLRunner {
             return false;
         for (const auto& entry : tensors)
             registered_params.push_back(entry.second);
-        return GGMLRunner::measure_mode_enabled() ||
-               (model_manager->validate_registered_tensors() &&
-                model_manager->prepare_params(registered_params));
+        if (GGMLRunner::measure_mode_enabled())
+            return true;
+        if (!model_manager->validate_registered_tensors() ||
+            !model_manager->prepare_params(registered_params))
+            return false;
+        model_manager->release_compute_backend_params(registered_params);
+        return true;
     }
 
     float scalar_value(ggml_tensor* tensor) const {

@@ -106,7 +106,7 @@ static std::vector<uint8_t> parse_actions(const std::string& spec) {
 }
 
 int main(int argc, char** argv) {
-    ggml_log_set(ggml_log_callback_default, nullptr);
+    ggml_log_set(nullptr, nullptr);
     std::string dit, scene_path, golden, out_path = "walk_latents.bin", actions_spec = "idle:1,W:3";
     int n_threads = 8, blocks_n = -1;
     uint64_t seed            = 42;
@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
     }
     auto model_manager = std::make_shared<ModelManager>();
     model_manager->set_n_threads(n_threads);
-    ModelLoader& ml = model_manager->loader();
+    ModelLoader ml;
     if (!ml.init_from_file(dit, "model.diffusion_model.")) {
         return 1;
     }
@@ -149,12 +149,14 @@ int main(int argc, char** argv) {
         runner.set_flash_attention_enabled(true);
         printf("flash attention enabled\n");
     }
-    if (!model_manager->register_runner_params("ABot-World DiT",
-                                                    runner,
-                                                    "model.diffusion_model",
-                                                    ModelManager::ResidencyMode::ParamBackend,
-                                                    backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
-                                                    backend_manager.params_backend(SDBackendModule::DIFFUSION)) ||
+    if (!model_manager->set_loader(std::move(ml)))
+        return 1;
+    if (!model_manager->register_runner_params(ModelComponent::Diffusion,
+                                               runner,
+                                               "model.diffusion_model",
+                                               ModelManager::ResidencyMode::ParamBackend,
+                                               backend_manager.runtime_backend(SDBackendModule::DIFFUSION),
+                                               backend_manager.params_backend(SDBackendModule::DIFFUSION)) ||
         !model_manager->validate_registered_tensors() ||
         !model_manager->load_all_params_eagerly()) {
         fprintf(stderr, "load DiT tensors failed\n");

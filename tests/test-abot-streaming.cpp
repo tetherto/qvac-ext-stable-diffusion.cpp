@@ -14,7 +14,7 @@ struct AbotHistoryTestRunner : GGMLRunner {
 
     std::string get_desc() override { return "ABot history streaming test"; }
 
-    size_t persistent_pool_count() const { return persistent_cache_pools_.size(); }
+    size_t persistent_pool_count() const { return cache_.pool_count(); }
 
     std::optional<sd::Tensor<float>> run(bool segmented, bool merge, bool append, int step) {
         auto input     = sd::Tensor<float>::from_vector(std::vector<float>(8, 0.25f + step));
@@ -44,17 +44,29 @@ struct AbotHistoryTestRunner : GGMLRunner {
             return gf;
         };
         if (!segmented)
-            return compute<float>(get_graph, 1, false);
+            return compute(get_graph, 1, false);
 
-        reset_compute_ctx();
-        auto* gf  = get_compute_graph(get_graph);
-        auto plan = sd::ggml_graph_cut::build_plan(runtime_backend, gf, {}, get_desc().c_str());
-        if (merge) {
-            plan = sd::ggml_graph_cut::apply_max_vram_budget(gf, plan, 1024 * 1024, runtime_backend, {}, nullptr);
-        }
-        if (!plan.valid || plan.segments.size() != (merge ? 1 : 4))
-            return std::nullopt;
-        return compute_graph_cut_segments<float>(gf, plan, 1, true);
+        auto planner = [&](ggml_cgraph* gf) {
+            auto plan = sd::ggml_graph_cut::build_plan(runtime_backend, gf, {}, get_desc().c_str());
+            if (merge && plan.valid) {
+                sd::ggml_graph_cut::Segment combined;
+                for (int i = 0; i < ggml_graph_n_nodes(gf); ++i)
+                    combined.internal_node_indices.push_back(i);
+                for (int i = 0; i < ggml_graph_n_leafs(gf); ++i) {
+                    sd::ggml_graph_cut::Segment::InputRef input;
+                    input.leaf_index = i;
+                    combined.input_refs.push_back(input);
+                }
+                for (const auto& segment : plan.segments)
+                    combined.output_node_indices.insert(combined.output_node_indices.end(),
+                                                        segment.output_node_indices.begin(), segment.output_node_indices.end());
+                plan.segments = {combined};
+            }
+            if (plan.segments.size() != (merge ? 1 : 4))
+                plan.valid = false;
+            return plan;
+        };
+        return compute(get_graph, 1, false, false, {}, planner);
     }
 };
 
@@ -101,7 +113,7 @@ struct AbotDiskTestRunner : GGMLRunner {
     std::string get_desc() override { return "ABot disk residency test"; }
 
     std::optional<sd::Tensor<float>> run(std::shared_ptr<ModelManager> manager, bool segmented) {
-        weight_manager = manager;
+        residency_manager = manager;
         auto input     = sd::Tensor<float>::from_vector(std::vector<float>(8, 1.f));
         auto get_graph = [&]() {
             auto* gf = new_graph_custom(32);
@@ -114,12 +126,12 @@ struct AbotDiskTestRunner : GGMLRunner {
             return gf;
         };
         if (!segmented)
-            return compute<float>(get_graph, 1, false);
-        reset_compute_ctx();
-        auto* gf = get_compute_graph(get_graph);
-        rebuild_params_tensor_set();
-        auto plan = sd::ggml_graph_cut::build_plan(runtime_backend, gf, params_tensor_set_, nullptr);
-        return compute_graph_cut_segments<float>(gf, plan, 1, true);
+            return compute(get_graph, 1, false);
+        auto planner = [&](ggml_cgraph* gf) {
+            rebuild_params_tensor_set();
+            return sd::ggml_graph_cut::build_plan(runtime_backend, gf, params_tensor_set_, nullptr);
+        };
+        return compute(get_graph, 1, false, false, {}, planner);
     }
 };
 
@@ -143,10 +155,12 @@ static bool test_disk_residency(ggml_backend_t backend, ggml_backend_t params_ba
     gguf_free(gguf);
     for (const auto& weight : runner.weights)
         weight.second->data = nullptr;
+    runner.set_release_params_after_graph(disk);
     const auto mode = disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend;
-    bool passed     = written && manager->loader().init_from_file(path.string()) &&
-                      manager->register_param_tensors("test", runner.weights, mode, backend, params_backend) &&
-                      manager->validate_registered_tensors();
+    ModelLoader loader;
+    bool passed = written && loader.init_from_file(path.string()) && manager->set_loader(std::move(loader)) &&
+                  manager->register_param_tensors(ModelComponent::Diffusion, runner.weights, mode, backend, params_backend) &&
+                  manager->validate_registered_tensors();
     for (int step = 0; passed && step < 3; ++step) {
         auto result = runner.run(manager, segmented);
         passed      = result && result->numel() == 8;
@@ -232,8 +246,8 @@ struct AbotPlanCacheTestRunner : GGMLRunner {
         auto* graph = get_compute_graph(get_graph);
         rebuild_params_tensor_set();
         set_graph_cut_plan_cache_key(phase);
-        GraphCutPlan plan;
-        return resolve_graph_cut_plan(graph, &plan) && plan.valid &&
+        const auto& plan = resolve_graph_cut_plan(graph);
+        return plan.valid &&
                sd::ggml_graph_cut::plan_matches_graph(graph, plan);
     }
 
@@ -254,8 +268,8 @@ struct AbotPlanCacheTestRunner : GGMLRunner {
         rebuild_params_tensor_set();
         set_graph_cut_plan_cache_key(ABOT::AbotWorldRunner::kv_plan_cache_key(
             ABOT::AbotWorldRunner::KvMode::APPEND, write_slots));
-        GraphCutPlan plan;
-        return resolve_graph_cut_plan(graph, &plan) && plan.valid &&
+        const auto& plan = resolve_graph_cut_plan(graph);
+        return plan.valid &&
                sd::ggml_graph_cut::plan_matches_graph(graph, plan);
     }
 
@@ -342,16 +356,15 @@ static bool test_plan_cache(ggml_backend_t backend) {
         // identical graphs at new addresses to verify valid cache reuse.
         if (previous_variant >= 0) {
             const bool expected_match = variant == previous_variant;
-            if (sd::ggml_graph_cut::plan_matches_graph(graph, cache.graph_cut_plan) != expected_match ||
-                sd::ggml_graph_cut::plan_matches_graph(graph, cache.budgeted_graph_cut_plan) != expected_match) {
+            if (sd::ggml_graph_cut::plan_matches_graph(graph, cache.graph_cut_plans.front()) != expected_match) {
                 std::cerr << "Incorrect graph-cut cache match for variant " << variant << '\n';
                 ggml_free(ctx);
                 return false;
             }
         }
-        auto plan = sd::ggml_graph_cut::resolve_plan(backend, graph, &cache, 1024 * 1024, {}, nullptr);
+        auto plan = sd::ggml_graph_cut::resolve_plan(backend, graph, &cache, {}, nullptr);
         if (!plan.valid || !sd::ggml_graph_cut::plan_matches_graph(graph, plan) ||
-            sd::ggml_graph_cut::output_tensor(graph, cache.graph_cut_plan.segments.front(), 0) != a) {
+            sd::ggml_graph_cut::output_tensor(graph, cache.graph_cut_plans.front().segments.front(), 0) != a) {
             std::cerr << "Graph-cut cache failed to rebuild or reuse a matching plan\n";
             ggml_free(ctx);
             return false;

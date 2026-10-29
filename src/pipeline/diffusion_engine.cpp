@@ -860,7 +860,7 @@ bool StableDiffusionGGML::set_sage_attention_enabled(bool enabled) {
         return false;
     }
     if (enabled) {
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_SAGE_ATTN
         auto* ctx = ggml_init({4 * ggml_tensor_overhead(), nullptr, true});
         if (ctx == nullptr) {
             return false;
@@ -984,8 +984,8 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     model_manager = std::make_shared<ModelManager>();
     model_manager->set_n_threads(n_threads);
     model_manager->set_enable_mmap(enable_mmap);
-    model_manager->set_segmented_compute_disabled(disable_segmented_compute);
-    model_manager->set_prefetch_disabled(disable_prefetch);
+    model_manager->set_segmented_compute_disabled(disable_segmented_compute && !sd_ctx_params->stream_layers);
+    model_manager->set_prefetch_disabled(disable_prefetch && !sd_ctx_params->stream_layers);
     ModelLoader model_loader;
 
     if (!init_model_loader(model_loader, *configuration)) {

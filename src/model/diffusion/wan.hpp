@@ -208,8 +208,8 @@ namespace WAN {
                 }
             }
             if (q_r == nullptr) {
-                q_r = Rope::apply_rope(gctx, q, pe, true);  // {d_head, n_token, n_head*N}
-                k_r = Rope::apply_rope(gctx, k, pe, true);
+                q_r = Rope::apply_rope(ctx, q, pe, true);  // {d_head, n_token, n_head*N}
+                k_r = Rope::apply_rope(ctx, k, pe, true);
             }
 
             // v to per-token rows {n_token, d_head, n_head*N} (the layout the

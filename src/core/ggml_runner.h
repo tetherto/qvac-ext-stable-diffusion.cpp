@@ -165,7 +165,7 @@ private:
     bool fits(const std::vector<DeviceMemoryRequest>& requests,
               const std::vector<ggml_tensor*>& params) const;
     bool execute_segment(ggml_cgraph* graph, int n_threads, const std::function<void()>& on_before_compute);
-    std::optional<sd::Tensor<float>> execute_graph(ggml_cgraph* graph, int n_threads, bool no_return, const std::function<bool()>& read_outputs);
+    std::optional<sd::Tensor<float>> execute_graph(ggml_cgraph* graph, int n_threads, bool no_return, const std::function<bool()>& read_outputs, const sd::ggml_graph_cut::Plan* execution_plan);
 
 protected:
     typedef std::function<ggml_cgraph*()> get_graph_cb_t;
@@ -192,6 +192,7 @@ protected:
 
     size_t max_graph_vram_bytes        = 0;
     bool graph_cut_layer_split_enabled = false;
+    bool release_params_after_graph_   = false;
     std::vector<size_t> graph_cut_layer_split_backend_vram_limits_;
 
     std::vector<ggml_backend_t> extra_runtime_backends;  // borrowed (SDBackendManager-owned)
@@ -401,12 +402,12 @@ public:
         return tensor;
     }
 
-
     std::optional<sd::Tensor<float>> compute(get_graph_cb_t get_graph,
                                              int n_threads,
-                                             bool auto_runner_end                      = true,
-                                             bool no_return                            = false,
-                                             const std::function<bool()>& read_outputs = {});
+                                             bool auto_runner_end                                          = true,
+                                             bool no_return                                                = false,
+                                             const std::function<bool()>& read_outputs                     = {},
+                                             const std::function<GraphCutPlan(ggml_cgraph*)>& plan_builder = {});
 
     ggml_status last_compute_status() const { return last_compute_status_; }
 
@@ -474,6 +475,7 @@ public:
     }
 
     void set_graph_cut_layer_split_enabled(bool enabled);
+    void set_release_params_after_graph(bool enabled) { release_params_after_graph_ = enabled; }
 
     void set_graph_cut_layer_split_backend_vram_limits(const std::vector<size_t>& limits);
 

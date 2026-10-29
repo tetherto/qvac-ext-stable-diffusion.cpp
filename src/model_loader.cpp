@@ -39,7 +39,7 @@
 
 /*================================================= Preprocess ==================================================*/
 
-#ifdef SD_USE_UPSTREAM_GGML
+#ifndef SD_GGML_HAS_FP8
 uint16_t f8_e4m3_to_f16(uint8_t f8) {
     const uint32_t exponent_bias = 7;
     if (f8 == 0xff) {
@@ -999,7 +999,7 @@ void ModelLoader::set_wtype_override(ggml_type wtype, std::string tensor_type_ru
     tensor_type_rules_ = tensor_type_rules;
     auto map_rules     = parse_tensor_type_rules(tensor_type_rules);
     for (auto& [name, tensor_storage] : tensor_storage_map) {
-        tensor_storage.expected_type = GGML_TYPE_COUNT;
+        tensor_storage.expected_type = tensor_storage.is_comfy_int8_tensorwise ? GGML_TYPE_F16 : GGML_TYPE_COUNT;
         ggml_type dst_type           = wtype;
         for (const auto& tensor_type_rule : map_rules) {
             std::regex pattern(tensor_type_rule.first);
@@ -1170,7 +1170,7 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
 
             if (tensor_storage.is_f64 ||
                 tensor_storage.is_i64 ||
-#ifdef SD_USE_UPSTREAM_GGML
+#ifndef SD_GGML_HAS_FP8
                 tensor_storage.is_f8_e4m3 ||
                 tensor_storage.is_f8_e5m2 ||
 #endif
@@ -1535,7 +1535,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                         f64_to_f32_vec((double*)read_buf, (float*)target_buf, tensor_storage.nelements());
                     } else if (tensor_storage.is_i64) {
                         i64_to_i32_vec((int64_t*)read_buf, (int32_t*)target_buf, tensor_storage.nelements());
-#ifdef SD_USE_UPSTREAM_GGML
+#ifndef SD_GGML_HAS_FP8
                     } else if (tensor_storage.is_f8_e4m3) {
                         f8_e4m3_to_f16_vec((uint8_t*)read_buf, (uint16_t*)target_buf, tensor_storage.nelements());
                     } else if (tensor_storage.is_f8_e5m2) {

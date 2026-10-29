@@ -756,7 +756,7 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
     }
     const bool replaces_cache_buffer = !cache_.outputs().empty();
     for (const auto& entry : cache_.outputs()) {
-        ggml_tensor* tensor = sd::ggml_graph_cut::cache_source_tensor(entry.second);
+        ggml_tensor* tensor = entry.second;
         if (tensor == nullptr) {
             continue;
         }
@@ -818,7 +818,7 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
                 last_measurement_.valid = false;
             } else if (configured_plan.has_cuts && configured_plan.segments.size() > 1 &&
                        !fits(memory_requests({{runtime_backend, last_measurement_.compute_bytes}}, 0), used_params)) {
-                size_t scratch = 0, cut_cache = 0, resident = 0, streamed = 0;
+                size_t scratch = 0, cut_cache = 0, resident = 0;
                 std::map<std::string, size_t> cached;
                 for (size_t index = 0; index < configured_plan.segments.size(); ++index) {
                     const auto& segment = configured_plan.segments[index];
@@ -843,17 +843,15 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
                     for (const auto& item : cached)
                         next += item.second;
                     cut_cache             = std::max(cut_cache, previous + next);
-                    size_t segment_params = 0;
                     for (auto* raw : sd::ggml_graph_cut::param_tensors(gf, segment)) {
                         auto* param = canonical_param_tensor(raw);
                         if (param == nullptr) {
                             continue;
                         }
-                        segment_params += ggml_nbytes(param);
                         measured_resident_params_.insert(param);
                     }
-                    streamed = std::max(streamed, segment_params);
                 }
+                // Dynamic residency may retain weights across segments; count their union.
                 for (auto* param : measured_resident_params_) {
                     resident += ggml_nbytes(param);
                 }
@@ -867,12 +865,12 @@ void GGMLRunner::measure_graph_memory(ggml_cgraph* gf) {
     }
 }
 
-
 std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
                                                      int n_threads,
                                                      bool auto_runner_end,
                                                      bool no_return,
-                                                     const std::function<bool()>& read_outputs) {
+                                                     const std::function<bool()>& read_outputs,
+                                                     const std::function<GraphCutPlan(ggml_cgraph*)>& plan_builder) {
     last_compute_status_ = GGML_STATUS_FAILED;
     if (measure_mode_ && measure_generation_seen_ != measure_generation_) {
         cache_.clear();
@@ -961,6 +959,15 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
             if (!success) {
                 runner.workspace_.release();
             }
+            if (runner.release_params_after_graph_) {
+                if (auto manager = runner.residency_manager.lock()) {
+                    manager->clear_prefetched_params(reinterpret_cast<uintptr_t>(&runner));
+                    std::vector<ggml_tensor*> params;
+                    for (auto* tensor : runner.params_tensor_set_)
+                        params.push_back(const_cast<ggml_tensor*>(tensor));
+                    manager->evict_compute_backend_params(params);
+                }
+            }
             runner.sync_runtime_residency();
         }
         ~GraphEndGuard() { finish(); }
@@ -1018,7 +1025,12 @@ std::optional<sd::Tensor<float>> GGMLRunner::compute(get_graph_cb_t get_graph,
     std::optional<sd::Tensor<float>> output;
     for (int attempt = 0; attempt < 2; ++attempt) {
         try {
-            output = execute_graph(graph, n_threads, no_return, read_outputs);
+            std::optional<GraphCutPlan> execution_plan;
+            if (plan_builder)
+                execution_plan = plan_builder(graph);
+            if (execution_plan && !execution_plan->valid)
+                return std::nullopt;
+            output = execute_graph(graph, n_threads, no_return, read_outputs, execution_plan ? &*execution_plan : nullptr);
         } catch (const std::bad_alloc&) {
             last_compute_status_ = GGML_STATUS_ALLOC_FAILED;
             LOG_ERROR("%s graph allocation failed", get_desc().c_str());
@@ -1155,7 +1167,7 @@ bool GGMLRunner::execute_segment(ggml_cgraph* graph, int n_threads, const std::f
     auto scheduler = workspace_.scheduler();
     GGML_ASSERT(scheduler != nullptr);
     ggml_backend_sched_set_eval_callback(scheduler, sd_get_backend_eval_callback(), sd_get_backend_eval_callback_data());
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_SCHED_COMPUTE_CALLBACK
     struct BeforeComputeCallback {
         ggml_backend_t backend;
         const std::function<void()>& callback;
@@ -1223,18 +1235,18 @@ bool GGMLRunner::execute_segment(ggml_cgraph* graph, int n_threads, const std::f
     return true;
 }
 
-std::optional<Tensor<float>> GGMLRunner::execute_graph(ggml_cgraph* graph, int n_threads, bool no_return, const std::function<bool()>& read_outputs) {
+std::optional<Tensor<float>> GGMLRunner::execute_graph(ggml_cgraph* graph, int n_threads, bool no_return, const std::function<bool()>& read_outputs, const GraphCutPlan* execution_plan) {
     if (!assign_graph_cut_layer_split_backends(graph)) {
         return std::nullopt;
     }
     const auto params       = collect_used_param_tensors(graph);
-    const auto& cached_plan = resolve_graph_cut_plan(graph);
+    const auto& cached_plan = execution_plan != nullptr ? *execution_plan : resolve_graph_cut_plan(graph);
     auto manager            = residency_manager.lock();
     const bool can_segment  = !is_multi_device() && !sd_backend_is_cpu(runtime_backend) &&
                               manager != nullptr && manager->segmented_compute_enabled() &&
                               cached_plan.valid && cached_plan.has_cuts && cached_plan.segments.size() > 1;
     // An empty workspace request is a lower bound on the full graph's memory demand.
-    bool segmented = can_segment && !fits(memory_requests({{runtime_backend, 0}}, 0), params);
+    bool segmented = execution_plan != nullptr || (can_segment && !fits(memory_requests({{runtime_backend, 0}}, 0), params));
     ComputeWorkspace::Measurement full_measurement;
     if (!segmented) {
         full_measurement = measure(graph);

@@ -1,11 +1,12 @@
-#pragma once
-#include <cstring>
+#ifndef __SD_CORE_CONVROT_H__
+#define __SD_CORE_CONVROT_H__
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
-#include "ggml-backend.h"
-#include "model_io/tensor_storage.h"
 #include "core/util.h"
+#include "ggml-backend.h"
+#include "model.h"
 
 // Construct only the operation metadata needed for the normal backend
 // supports_op query.  This stays private to the loader policy: backend
@@ -154,3 +155,4 @@ inline String2TensorStorage select_convrot_tensor_storage(ggml_backend_t backend
     return selected;
 }
 
+#endif

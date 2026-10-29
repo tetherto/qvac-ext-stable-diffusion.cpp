@@ -280,7 +280,7 @@ struct ESRGAN : public GGMLRunner {
             ggml_build_forward_expand(graph, rrdb_net->forward(&context, input));
             return graph;
         };
-        return GGMLRunner::compute<float>(get_graph, n_threads, false, true, false, true).has_value();
+        return GGMLRunner::compute(get_graph, n_threads, false, true).has_value();
     }
 };
 

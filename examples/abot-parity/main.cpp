@@ -98,7 +98,7 @@ static bool load_npy(const std::string& path, std::vector<float>& out, std::vect
 }
 
 int main(int argc, char** argv) {
-    ggml_log_set(ggml_log_callback_default, nullptr);
+    ggml_log_set(nullptr, nullptr);
     std::string dit, scene_path, golden, out_path = "abot_parity_x0.bin";
     int block = 0, step = 0, n_threads = 8;
     std::string backend_spec = "cpu";
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
 
     auto model_manager = std::make_shared<ModelManager>();
     model_manager->set_n_threads(n_threads);
-    ModelLoader& ml = model_manager->loader();
+    ModelLoader ml;
     if (!ml.init_from_file(dit, "model.diffusion_model.")) {
         fprintf(stderr, "cannot open DiT: %s\n", dit.c_str());
         return 1;
@@ -143,12 +143,14 @@ int main(int argc, char** argv) {
         runner.set_flash_attention_enabled(true);
         printf("flash attention enabled\n");
     }
-    if (!model_manager->register_runner_params("ABot-World DiT",
-                                                    runner,
-                                                    "model.diffusion_model",
-                                                    ModelManager::ResidencyMode::ParamBackend,
-                                                    be,
-                                                    pbe) ||
+    if (!model_manager->set_loader(std::move(ml)))
+        return 1;
+    if (!model_manager->register_runner_params(ModelComponent::Diffusion,
+                                               runner,
+                                               "model.diffusion_model",
+                                               ModelManager::ResidencyMode::ParamBackend,
+                                               be,
+                                               pbe) ||
         !model_manager->validate_registered_tensors() ||
         !model_manager->load_all_params_eagerly()) {
         fprintf(stderr, "load DiT tensors failed\n");

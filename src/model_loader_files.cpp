@@ -145,7 +145,7 @@ bool ModelLoader::add_file_impl(const std::string& path, const std::string& pref
             LOG_ERROR("invalid tensor storage size for '%s'", tensor.name.c_str());
             return false;
         }
-        if (tensor.index_in_zip < 0) {
+        if (tensor.index_in_zip < 0 && !sd_get_metadata_only_read()) {
             const auto& stamp = physical_files[tensor.file_index];
             if (tensor.offset > stamp.size || static_cast<uint64_t>(tensor.nbytes_to_read()) > stamp.size - tensor.offset) {  // kcpp int8 fp8
                 LOG_ERROR("tensor '%s' extends beyond its model file", tensor.name.c_str());

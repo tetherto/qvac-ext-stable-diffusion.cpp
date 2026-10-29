@@ -1,2 +1,4 @@
-#pragma once
+#ifndef __SD_MODEL_DIFFUSION_QWEN_IMAGE_2_1_COMPAT_H__
+#define __SD_MODEL_DIFFUSION_QWEN_IMAGE_2_1_COMPAT_H__
 #include "model/diffusion/qwen_image_2_1.hpp"
+#endif

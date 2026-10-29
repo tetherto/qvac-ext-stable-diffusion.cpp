@@ -1073,7 +1073,7 @@ namespace Rope {
                                               ggml_tensor* pe,
                                               bool rope_interleaved = true) {
         auto ctx = runner_ctx->ggml_ctx;
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_ROPE_APPLY
         auto backend = runner_ctx->backend;
         if (backend != nullptr && x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 &&
             x->ne[0] % 2 == 0 && pe->ne[0] == 2 && pe->ne[1] == 2 &&

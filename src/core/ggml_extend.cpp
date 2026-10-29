@@ -213,13 +213,13 @@ ggml_tensor* ggml_ext_linear(ggml_context* ctx,
         x           = ggml_reshape_2d(ctx, x, x->ne[0], x->ne[1] * x->ne[2] * x->ne[3]);
         x           = ggml_mul_mat(ctx, w, x);
         if (force_prec_f32) {
-            ggml_prec_set_acc(x, GGML_PREC_F32);
+            ggml_ext_set_acc_precision(x, GGML_PREC_F32);
         }
         x = ggml_reshape_4d(ctx, x, x->ne[0], x->ne[1] / ne2 / ne3, ne2, ne3);
     } else {
         x = ggml_mul_mat(ctx, w, x);
         if (force_prec_f32) {
-            ggml_prec_set_acc(x, GGML_PREC_F32);
+            ggml_ext_set_acc_precision(x, GGML_PREC_F32);
         }
     }
     if (scale != 1.f) {
@@ -238,7 +238,7 @@ ggml_tensor* ggml_ext_linear_i8_tensorwise(ggml_context* ctx,
                                            ggml_tensor* b,
                                            int convrot_group_size,
                                            float scale) {
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_I8_TENSORWISE
     GGML_ASSERT(x->type == GGML_TYPE_F32 || (x->type == GGML_TYPE_I8 && scale == 1.f));
     if (scale != 1.f) {
         x = ggml_ext_scale(ctx, x, scale);
@@ -471,7 +471,7 @@ ggml_tensor* ggml_ext_conv_3d(ggml_context* ctx,
         x          = ggml_mul_mat(ctx,
                                   ggml_reshape_2d(ctx, im2col, im2col->ne[0], im2col->ne[3] * im2col->ne[2] * im2col->ne[1]),
                                   ggml_reshape_2d(ctx, w, w->ne[0] * w->ne[1] * w->ne[2] * IC, OC));
-        ggml_prec_set_acc(x, GGML_PREC_F32);
+        ggml_ext_set_acc_precision(x, GGML_PREC_F32);
 
         int64_t OD = im2col->ne[3] / N;
         x          = ggml_reshape_4d(ctx, x, im2col->ne[1] * im2col->ne[2], OD, N, OC);
@@ -717,7 +717,7 @@ ggml_tensor* ggml_ext_attention_ext(ggml_context* ctx,
         if (!ggml_backend_supports_op(backend, out)) {
             return nullptr;
         }
-        ggml_prec_set_acc(out, GGML_PREC_F32);
+        ggml_ext_set_acc_precision(out, GGML_PREC_F32);
         if (kv_scale != 1.0f) {
             out = ggml_ext_scale(ctx, out, 1.0f / kv_scale);
         }
@@ -727,7 +727,7 @@ ggml_tensor* ggml_ext_attention_ext(ggml_context* ctx,
         return out;
     };
 
-#ifndef SD_USE_UPSTREAM_GGML
+#ifdef SD_GGML_HAS_SAGE_ATTN
     if (sage_attn && mask == nullptr && d_head > 0 && d_head <= 128) {
         auto q_in                 = ggml_reshape_4d(ctx, ggml_ext_cont(ctx, q->type == GGML_TYPE_F32 ? q : ggml_cast(ctx, q, GGML_TYPE_F32)), d_head, L_q, n_head, N);
         auto k_in                 = ggml_reshape_4d(ctx, ggml_ext_cont(ctx, k->type == GGML_TYPE_F32 ? k : ggml_cast(ctx, k, GGML_TYPE_F32)), d_head, L_k, n_kv_head, N);
@@ -793,7 +793,7 @@ ggml_tensor* ggml_ext_attention_ext(ggml_context* ctx,
         v = ggml_reshape_3d(ctx, v, L_k, d_head, n_kv_head * N);   // [N * n_kv_head, d_head, L_k]
 
         auto kq = ggml_mul_mat(ctx, k, q);  // [N * n_head, L_q, L_k]
-        ggml_prec_set_acc(kq, GGML_PREC_F32);
+        ggml_ext_set_acc_precision(kq, GGML_PREC_F32);
         kq = ggml_scale_inplace(ctx, kq, scale);
         if (mask) {
             kq = ggml_add_inplace(ctx, kq, mask);

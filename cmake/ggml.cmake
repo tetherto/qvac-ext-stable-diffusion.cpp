@@ -36,3 +36,17 @@ file(STRINGS "${sd_ggml_private_include}/../include/ggml.h" sd_ggml_rope_flux_de
 if(sd_ggml_rope_flux_decl)
     target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_ROPE_FLUX=1)
 endif()
+
+# Probe the selected source headers; QVAC and Leejet carry different extensions.
+function(sd_check_ggml_feature feature header symbol)
+    file(STRINGS "${sd_ggml_private_include}/../include/${header}" declaration REGEX "${symbol}")
+    if(declaration)
+        target_compile_definitions(${SD_LIB} PUBLIC ${feature}=1)
+    endif()
+endfunction()
+sd_check_ggml_feature(SD_GGML_HAS_FP8 ggml.h GGML_TYPE_F8_E4M3)
+sd_check_ggml_feature(SD_GGML_HAS_I8_TENSORWISE ggml.h ggml_mul_mat_i8_tensorwise)
+sd_check_ggml_feature(SD_GGML_HAS_SAGE_ATTN ggml.h ggml_sage_attn)
+sd_check_ggml_feature(SD_GGML_HAS_ROPE_APPLY ggml.h ggml_rope_apply)
+sd_check_ggml_feature(SD_GGML_HAS_PREC_API ggml.h ggml_prec_set_acc)
+sd_check_ggml_feature(SD_GGML_HAS_SCHED_COMPUTE_CALLBACK ggml-backend.h ggml_backend_sched_set_compute_callback)

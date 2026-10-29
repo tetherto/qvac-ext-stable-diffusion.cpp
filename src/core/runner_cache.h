@@ -13,7 +13,14 @@ namespace sd::ggml_graph_cut {
 }
 
 namespace sd {
+    struct CachedTensorPool {
+        ggml_context* context        = nullptr;
+        ggml_backend_buffer_t buffer = nullptr;
+        ~CachedTensorPool();
+    };
+
     struct CachedTensor {
+        std::shared_ptr<CachedTensorPool> pool;
         ggml_context* context        = nullptr;
         ggml_backend_buffer_t buffer = nullptr;
         ggml_tensor* tensor          = nullptr;
@@ -30,6 +37,7 @@ namespace sd {
         ggml_backend_t backend_;
         CachedTensors committed_;
         CachedTensors pending_;
+        CachedTensors allocated_;
         std::map<std::string, ggml_tensor*> outputs_;
 
     public:
@@ -42,6 +50,7 @@ namespace sd {
         void stage(const std::string& name, ggml_tensor* tensor);
         const std::map<std::string, ggml_tensor*>& outputs() const { return outputs_; }
         size_t pending_bytes(ggml_cgraph* graph) const;
+        size_t pool_count() const;
         size_t resident_bytes(ggml_backend_dev_t device) const;
         bool empty() const { return committed_.empty(); }
         bool all_outputs_captured() const {
@@ -49,7 +58,7 @@ namespace sd {
             return true;
         }
         void set_backend(ggml_backend_t backend) {
-            GGML_ASSERT(committed_.empty() && pending_.empty() && outputs_.empty());
+            GGML_ASSERT(committed_.empty() && pending_.empty() && allocated_.empty() && outputs_.empty());
             backend_ = backend;
         }
         ggml_status capture(ggml_cgraph* graph);

@@ -806,7 +806,7 @@ struct AbotWorldRunner : public GGMLRunner {
         };
 
         // Keep runner/workspace and parameter residency alive across session steps.
-        auto result = GGMLRunner::compute(get_graph, n_threads, false);
+        auto result = GGMLRunner::compute(get_graph, n_threads, false, measure_mode_enabled());
         if (!result.has_value()) {
             return {};
         }
@@ -1069,7 +1069,7 @@ struct AbotWorldRunner : public GGMLRunner {
         };
 
         // Keep runner/workspace and parameter residency alive across session steps.
-        auto result = GGMLRunner::compute(get_graph, n_threads, false);
+        auto result = GGMLRunner::compute(get_graph, n_threads, false, measure_mode_enabled());
         if (prof) {
             const int64_t prof_t2 = ggml_time_ms();
             const char* mode_s    = mode == KvMode::INIT_CAPTURE ? "init" : mode == KvMode::APPEND ? "append" : "denoise";
@@ -1151,7 +1151,7 @@ struct AbotTinyVideoAutoEncoder : public TinyVideoAutoEncoder {
             ggml_build_forward_expand(gf, taehv.decode(&ctx, z));
             return gf;
         };
-        return GGMLRunner::compute<float>(graph, n_threads, false, false, false, true).has_value();
+        return GGMLRunner::compute(graph, n_threads, false).has_value();
     }
 };
 
@@ -1277,7 +1277,7 @@ public:
 
         model_manager = std::make_shared<ModelManager>();
         model_manager->set_n_threads(n_threads);
-        ModelLoader& model_loader = model_manager->loader();
+        ModelLoader model_loader;
         if (!model_loader.init_from_file(dit_path, "model.diffusion_model.")) {
             LOG_ERROR("abot session: cannot open DiT '%s'", dit_path.c_str());
             return false;
@@ -1289,7 +1289,8 @@ public:
                                                     cfg,
                                                     model_manager);  // no trailing dot: GGMLBlock::init appends its own
         runner->set_max_graph_vram_bytes(cfg.max_graph_vram_bytes);
-        runner->set_stream_layers_enabled(cfg.stream_layers);
+        runner->set_release_params_after_graph(cfg.dit_params_on_disk);
+        model_manager->set_segmented_compute_disabled(!(cfg.stream_layers || cfg.dit_params_on_disk));
         runner->set_fit_module(SDBackendModule::DIFFUSION);
 
 #ifdef SD_ABOT_FLASH_ATTN_DEBUG
@@ -1349,13 +1350,16 @@ public:
         // Measured 148 -> 68 ms per block decode, bit-identical output.
         tae->set_conv2d_direct_enabled(true);
         tae->set_fit_module(SDBackendModule::VAE);
-        if (!model_manager->register_runner_params("ABot-World DiT",
+        tae->set_release_params_after_graph(cfg.tae_params_on_disk);
+        if (!model_manager->set_loader(std::move(model_loader)))
+            return false;
+        if (!model_manager->register_runner_params(ModelComponent::Diffusion,
                                                    *runner,
                                                    "model.diffusion_model",
                                                    cfg.dit_params_on_disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend,
                                                    runtime_backend,
                                                    params_backend) ||
-            !model_manager->register_runner_params("ABot-World TAE",
+            !model_manager->register_runner_params(ModelComponent::VAE,
                                                    *tae,
                                                    cfg.tae_params_on_disk ? ModelManager::ResidencyMode::Disk : ModelManager::ResidencyMode::ParamBackend,
                                                    vae_backend,

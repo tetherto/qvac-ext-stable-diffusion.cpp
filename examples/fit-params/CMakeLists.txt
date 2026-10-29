@@ -4,6 +4,8 @@ add_executable(${TARGET}
     ../common/common.cpp
     ../common/log.cpp
     ../common/media_io.cpp
+    ../common/media_metadata.cpp
+    ../common/generation_metadata.cpp
     main.cpp
 )
 if(APPLE)

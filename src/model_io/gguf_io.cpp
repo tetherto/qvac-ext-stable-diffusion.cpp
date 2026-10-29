@@ -264,7 +264,7 @@ bool read_gguf_file(const std::string& file_path,
         size_t data_offset          = gguf_reader.data_offset();
         size_t remapped_tensors     = 0;
         for (const auto& gguf_tensor_info : gguf_reader.tensors()) {
-#ifdef SD_USE_UPSTREAM_GGML
+#ifndef SD_GGML_HAS_FP8
             if (static_cast<int>(gguf_tensor_info.type) == SD_TYPE_F8_E4M3 ||
                 static_cast<int>(gguf_tensor_info.type) == SD_TYPE_F8_E5M2) {
                 set_error(error, "FP8 is not supported by this ggml build (tensor '" + gguf_tensor_info.name + "')");

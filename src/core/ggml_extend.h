@@ -11,6 +11,17 @@
 
 static_assert(GGML_MAX_NAME >= 160, "GGML_MAX_NAME must be at least 160");
 
+inline void ggml_ext_set_acc_precision(ggml_tensor* tensor, ggml_prec precision) {
+#ifdef SD_GGML_HAS_PREC_API
+    ggml_prec_set_acc(tensor, precision);
+#else
+    if (tensor->op == GGML_OP_FLASH_ATTN_EXT)
+        ggml_flash_attn_ext_set_prec(tensor, precision);
+    else
+        ggml_mul_mat_set_prec(tensor, precision);
+#endif
+}
+
 // n-mode tensor-matrix product
 // example: 2-mode product
 // A: [ne03, k, ne01, ne00]

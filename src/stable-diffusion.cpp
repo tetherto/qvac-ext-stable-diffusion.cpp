@@ -1,9 +1,10 @@
-#include "core/fit_params.h"
+#include "stable-diffusion.h"
 #include "abot_world.hpp"
 #include "conditioning/conditioner.hpp"
-#include "model/vae/wan_vae.hpp"
-#include "stable-diffusion.h"
+#include "core/fit_params.h"
 #include "generation_info.h"
+#include "model/vae/wan_vae.hpp"
+#include "upscaler.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -783,9 +784,9 @@ enum scheduler_t sd_get_default_scheduler(const sd_ctx_t* sd_ctx, enum sample_me
     return sd::pipeline::default_scheduler(sd_ctx != nullptr ? sd_ctx->sd : nullptr, sample_method);
 }
 
-SD_API bool generate_image(sd_ctx_t* sd_ctx,
-                           const sd_img_gen_params_t* params,
-                           sd_image_generation_result_t** result_out) {
+SD_API bool generate_image_with_result(sd_ctx_t* sd_ctx,
+                                       const sd_img_gen_params_t* params,
+                                       sd_image_generation_result_t** result_out) {
     if (result_out)
         *result_out = nullptr;
     if (!result_out || !sd_ctx || !sd_ctx->sd || !params)
@@ -818,9 +819,9 @@ SD_API int sd_get_effective_video_fps(const sd_ctx_t* sd_ctx,
     return sd::pipeline::effective_video_fps(sd_ctx->sd, sd_vid_gen_params->fps);
 }
 
-SD_API bool generate_video(sd_ctx_t* sd_ctx,
-                           const sd_vid_gen_params_t* params,
-                           sd_video_generation_result_t** result_out) {
+SD_API bool generate_video_with_result(sd_ctx_t* sd_ctx,
+                                       const sd_vid_gen_params_t* params,
+                                       sd_video_generation_result_t** result_out) {
     if (result_out)
         *result_out = nullptr;
     if (!result_out || !sd_ctx || !sd_ctx->sd || !params)
@@ -1104,7 +1105,7 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
         std::shared_ptr<AbotWanVAE> vae;
         auto model_manager = std::make_shared<ModelManager>();
         model_manager->set_n_threads(threads);
-        ModelLoader& model_loader = model_manager->loader();
+        ModelLoader model_loader;
         if (!model_loader.init_from_file(p->t5_path, "text_encoders.t5xxl.transformer.")) return false;
         t5 = std::make_shared<AbotT5Runner>(backends.runtime_backend(SDBackendModule::TE),
                                               model_loader.get_tensor_storage_map(),
@@ -1120,6 +1121,8 @@ bool sd_abot_scene_create(const sd_abot_scene_params_t* p) {
                                                 VERSION_ABOT_WORLD,
                                                 model_manager);
         }
+        if (!model_manager->set_loader(std::move(model_loader)))
+            return false;
         if (!model_manager->register_runner_params(ModelComponent::Conditioner,
                                                     *t5,
                                                     "text_encoders.t5xxl.transformer",
@@ -1569,4 +1572,53 @@ void sd_fit_result_free(sd_fit_result_t* result) {
     free(result->report);
     free(result->devices);
     *result = {};
+}
+
+SD_API bool generate_image(sd_ctx_t* ctx, const sd_img_gen_params_t* params, sd_image_t** images_out, int* num_images_out) {
+    if (images_out)
+        *images_out = nullptr;
+    if (num_images_out)
+        *num_images_out = 0;
+    if (!images_out || !num_images_out)
+        return false;
+    sd_image_generation_result_t* result = nullptr;
+    if (!generate_image_with_result(ctx, params, &result))
+        return false;
+    auto* images = static_cast<sd_image_t*>(calloc(result->count, sizeof(sd_image_t)));
+    if (!images && result->count > 0) {
+        free_sd_image_generation_result(result);
+        return false;
+    }
+    for (int i = 0; i < result->count; ++i) {
+        images[i]                   = result->items[i].image;
+        result->items[i].image.data = nullptr;
+    }
+    *images_out     = images;
+    *num_images_out = result->count;
+    free_sd_image_generation_result(result);
+    return true;
+}
+
+SD_API bool generate_video(sd_ctx_t* ctx, const sd_vid_gen_params_t* params, sd_image_t** frames_out, int* num_frames_out, sd_audio_t** audio_out) {
+    if (frames_out)
+        *frames_out = nullptr;
+    if (num_frames_out)
+        *num_frames_out = 0;
+    if (audio_out)
+        *audio_out = nullptr;
+    if (!frames_out || !num_frames_out)
+        return false;
+    sd_video_generation_result_t* result = nullptr;
+    if (!generate_video_with_result(ctx, params, &result))
+        return false;
+    *frames_out         = result->frames;
+    *num_frames_out     = result->frame_count;
+    result->frames      = nullptr;
+    result->frame_count = 0;
+    if (audio_out) {
+        *audio_out    = result->audio;
+        result->audio = nullptr;
+    }
+    free_sd_video_generation_result(result);
+    return true;
 }

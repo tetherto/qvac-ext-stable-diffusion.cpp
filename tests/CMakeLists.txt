@@ -1,3 +1,4 @@
+include_directories("${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/thirdparty")
 add_executable(test-ltx-rope test-ltx-rope.cpp)
 target_link_libraries(test-ltx-rope PRIVATE stable-diffusion)
 add_test(NAME test-ltx-rope COMMAND test-ltx-rope)
@@ -47,7 +48,9 @@ add_executable(test-common-json
     test-common-json.cpp
     ../examples/common/common.cpp
     ../examples/common/log.cpp
-    ../examples/common/media_io.cpp)
+    ../examples/common/media_io.cpp
+    ../examples/common/media_metadata.cpp
+    ../examples/common/generation_metadata.cpp)
 target_include_directories(test-common-json PRIVATE
     "${PROJECT_SOURCE_DIR}/examples"
     "${PROJECT_SOURCE_DIR}/src")
