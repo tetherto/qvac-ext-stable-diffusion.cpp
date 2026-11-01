@@ -1012,7 +1012,7 @@ enum sd_fit_status_t sd_abot_fit_params(const sd_abot_session_params_v2_t* param
                     }
                     compute_bytes   = std::max(compute_bytes, record.configured_compute_bytes);
                     measured_params = std::max(measured_params, record.configured_params_bytes);
-                    buffer_fits     = buffer_fits && record.configured_buffer_bytes <= ggml_backend_get_max_buffer_capacity(runtime);
+                    buffer_fits     = buffer_fits && record.configured_fits && record.configured_buffer_bytes <= ggml_backend_get_max_buffer_capacity(runtime);
                 }
             }
             const bool on_disk = module == SDBackendModule::DIFFUSION && walk.cfg.dit_params_on_disk;

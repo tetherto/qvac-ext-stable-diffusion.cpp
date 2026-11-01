@@ -183,12 +183,24 @@ typedef struct {
     bool enabled;
     bool temporal_tiling;
     // Spatial tile dimensions in image pixels for both encode and decode; 0 uses 256.
-    int tile_size_w;
-    int tile_size_h;
+    union {
+        int tile_size_w;
+        int tile_size_x;
+    };
+    union {
+        int tile_size_h;
+        int tile_size_y;
+    };
     float target_overlap;
     // Positive values override tile_size: <= 1 is a dimension fraction, > 1 a target tile count.
-    float rel_size_w;
-    float rel_size_h;
+    union {
+        float rel_size_w;
+        float rel_size_x;
+    };
+    union {
+        float rel_size_h;
+        float rel_size_y;
+    };
     const char* extra_tiling_args;
 } sd_tiling_params_t;
 
@@ -700,10 +712,13 @@ SD_API upscaler_ctx_t* new_upscaler_ctx_with_device(const char* esrgan_path,
 SD_API int get_upscaler_backend_device(const upscaler_ctx_t* upscaler_ctx);
 SD_API void free_upscaler_ctx(upscaler_ctx_t* upscaler_ctx);
 
-SD_API bool upscale(upscaler_ctx_t* upscaler_ctx,
-                    sd_image_t input_image,
-                    uint32_t upscale_factor,
-                    sd_image_generation_result_t** result_out);
+SD_API bool upscale_with_result(upscaler_ctx_t* upscaler_ctx,
+                                sd_image_t input_image,
+                                uint32_t upscale_factor,
+                                sd_image_generation_result_t** result_out);
+
+// Legacy QVAC ownership API: release returned arrays with free_sd_images.
+SD_API bool upscale(upscaler_ctx_t* upscaler_ctx, sd_image_t input_image, uint32_t upscale_factor, sd_image_t** images_out, int* num_images_out);
 
 SD_API int get_upscale_factor(upscaler_ctx_t* upscaler_ctx);
 // Reads model metadata only; returns 0 if the file is not a recognized RGB ESRGAN model.
@@ -880,6 +895,9 @@ SD_API void free_sd_images(sd_image_t* result_images, int num_images);
 #ifdef __cplusplus
 }
 
+inline bool upscale(upscaler_ctx_t* ctx, sd_image_t input, uint32_t factor, sd_image_generation_result_t** result) {
+    return upscale_with_result(ctx, input, factor, result);
+}
 inline bool generate_image(sd_ctx_t* ctx, const sd_img_gen_params_t* params, sd_image_generation_result_t** result) {
     return generate_image_with_result(ctx, params, result);
 }

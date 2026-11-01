@@ -7,8 +7,8 @@
 #include <unordered_set>
 
 #include "core/ggml_extend_backend.h"
+#include "core/ggml_graph_cut.h"
 #include "core/util.h"
-#include "ggml-impl.h"
 
 namespace sd {
     ComputeWorkspace::~ComputeWorkspace() {
@@ -69,7 +69,7 @@ namespace sd {
 
     bool ComputeWorkspace::allocate(ggml_cgraph* graph, const AssignNodes& assign_nodes) {
         GGML_ASSERT(!active_);
-        const size_t capacity = static_cast<size_t>(graph->n_nodes + graph->n_leafs) + 8;
+        const size_t capacity = static_cast<size_t>(ggml_graph_n_nodes(graph) + ggml_graph_n_leafs(graph)) + 8;
         if (scheduler_ == nullptr || capacity > scheduler_capacity_) {
             release();
             scheduler_          = make_scheduler(capacity);
@@ -100,11 +100,11 @@ namespace sd {
                 tensors.push_back(tensor);
             }
         };
-        for (int i = 0; i < graph->n_nodes; ++i) {
-            visit(graph->nodes[i]);
+        for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+            visit(ggml_graph_node(graph, i));
         }
-        for (int i = 0; i < graph->n_leafs; ++i) {
-            visit(graph->leafs[i]);
+        for (int i = 0; i < ggml_graph_n_leafs(graph); ++i) {
+            visit(ggml_graph_leaf(graph, i));
         }
         for (size_t i = 0; i < tensors.size(); ++i) {
             visit(tensors[i]->view_src);
@@ -144,24 +144,13 @@ namespace sd {
                 copy->extra  = nullptr;
             }
         }
-        auto copy_graph     = ggml_new_graph_custom(context, graph_size, false);
-        copy_graph->n_nodes = graph->n_nodes;
-        copy_graph->n_leafs = graph->n_leafs;
-        for (int i = 0; i < graph->n_nodes; ++i) {
-            copy_graph->nodes[i] = copies.at(graph->nodes[i]);
-        }
-        for (int i = 0; i < graph->n_leafs; ++i) {
-            copy_graph->leafs[i] = copies.at(graph->leafs[i]);
-        }
-        copy_graph->order = graph->order;
-        // Preserve fusion metadata, including uses outside a graph view, without rebuilding its node order.
-        for (const auto& entry : copies) {
-            const size_t source_index = ggml_hash_find(&graph->visited_hash_set, entry.first);
-            if (source_index != GGML_HASHSET_FULL && ggml_bitset_get(graph->visited_hash_set.used, source_index)) {
-                const size_t copy_index            = ggml_hash_insert(&copy_graph->visited_hash_set, entry.second);
-                copy_graph->use_counts[copy_index] = graph->use_counts[source_index];
-            }
-        }
+        auto copy_graph = ggml_new_graph_custom(context, graph_size, false);
+        std::vector<ggml_tensor*> nodes, leaves;
+        for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
+            nodes.push_back(copies.at(ggml_graph_node(graph, i)));
+        for (int i = 0; i < ggml_graph_n_leafs(graph); ++i)
+            leaves.push_back(copies.at(ggml_graph_leaf(graph, i)));
+        ggml_graph_cut::populate_graph(copy_graph, nodes, leaves);
         Measurement result;
         auto scheduler = make_scheduler(graph_size);
         if (scheduler != nullptr) {

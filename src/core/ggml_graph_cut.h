@@ -81,6 +81,7 @@ namespace sd::ggml_graph_cut {
     ggml_tensor* output_tensor(ggml_cgraph* gf, const Segment& segment, size_t output_index);
     ggml_tensor* input_tensor(ggml_cgraph* gf, const Segment::InputRef& input_ref);
     std::vector<ggml_tensor*> param_tensors(ggml_cgraph* gf, const Segment& segment);
+    void populate_graph(ggml_cgraph* graph, const std::vector<ggml_tensor*>& nodes, const std::vector<ggml_tensor*>& leaves);
     ggml_cgraph* build_segment_graph(ggml_cgraph* gf,
                                      const Segment& segment,
                                      ggml_context** graph_ctx_out);

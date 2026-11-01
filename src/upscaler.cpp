@@ -472,10 +472,10 @@ int get_upscaler_backend_device(const upscaler_ctx_t* upscaler_ctx) {
     return upscaler_ctx->upscaler->actual_backend_device;
 }
 
-bool upscale(upscaler_ctx_t* upscaler_ctx,
-             sd_image_t input_image,
-             uint32_t upscale_factor,
-             sd_image_generation_result_t** result_out) try {
+bool upscale_with_result(upscaler_ctx_t* upscaler_ctx,
+                         sd_image_t input_image,
+                         uint32_t upscale_factor,
+                         sd_image_generation_result_t** result_out) try {
     if (result_out)
         *result_out = nullptr;
     if (!result_out)
@@ -500,6 +500,31 @@ bool upscale(upscaler_ctx_t* upscaler_ctx,
 } catch (const std::exception& e) {
     LOG_ERROR("upscale failed: %s", e.what());
     return false;
+}
+
+bool upscale(upscaler_ctx_t* ctx, sd_image_t input, uint32_t factor, sd_image_t** images_out, int* num_images_out) {
+    if (images_out)
+        *images_out = nullptr;
+    if (num_images_out)
+        *num_images_out = 0;
+    if (!images_out || !num_images_out)
+        return false;
+    sd_image_generation_result_t* result = nullptr;
+    if (!upscale_with_result(ctx, input, factor, &result))
+        return false;
+    auto* images = static_cast<sd_image_t*>(calloc(result->count, sizeof(sd_image_t)));
+    if (!images && result->count > 0) {
+        free_sd_image_generation_result(result);
+        return false;
+    }
+    for (int i = 0; i < result->count; ++i) {
+        images[i]                   = result->items[i].image;
+        result->items[i].image.data = nullptr;
+    }
+    *images_out     = images;
+    *num_images_out = result->count;
+    free_sd_image_generation_result(result);
+    return true;
 }
 
 int get_upscale_factor(upscaler_ctx_t* upscaler_ctx) {

@@ -161,8 +161,7 @@ struct LoraModel : public GGMLRunner {
             registered_params.push_back(entry.second);
         if (GGMLRunner::measure_mode_enabled())
             return true;
-        if (!model_manager->validate_registered_tensors() ||
-            !model_manager->prepare_params(registered_params))
+        if (!model_manager->prepare_params(registered_params))
             return false;
         model_manager->release_compute_backend_params(registered_params);
         return true;

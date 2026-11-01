@@ -1775,6 +1775,26 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
         return true;
     }
 
+    struct ActiveAdapterPins {
+        std::shared_ptr<ModelManager> manager;
+        std::vector<ggml_tensor*> params;
+        bool pinned = false;
+        void release() {
+            if (pinned) {
+                manager->release_compute_backend_params(params);
+                pinned = false;
+            }
+        }
+        ~ActiveAdapterPins() { release(); }
+    } active{model_manager};
+    for (const auto& entry : runtime_lora_models)
+        active.params.insert(active.params.end(), entry.model->registered_params.begin(), entry.model->registered_params.end());
+    if (active.manager && !active.params.empty()) {
+        if (!active.manager->prepare_params(active.params))
+            return false;
+        active.pinned = true;
+    }
+
     bool success = true;
     std::vector<std::shared_ptr<LoraModel>> cond_stage_lora_models;
     std::vector<std::shared_ptr<LoraModel>> diffusion_lora_models;
@@ -1844,6 +1864,7 @@ bool StableDiffusionGGML::apply_loras_at_runtime(const std::vector<ModelManager:
         LOG_ERROR("one or more requested LoRAs failed validation; preserving existing adapters");
         return false;
     }
+    active.release();
     if (model_manager && !model_manager->set_loras({}, version)) return false;
     clear_lora_adapters();
     for (auto& entry : next_models) entry.model->multiplier = entry.spec.multiplier;

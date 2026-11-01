@@ -15,7 +15,6 @@
 #include "core/util.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
-#include "ggml-impl.h"
 
 namespace sd::ggml_graph_cut {
 
@@ -680,6 +679,40 @@ namespace sd::ggml_graph_cut {
         return tensors;
     }
 
+    void populate_graph(ggml_cgraph* graph, const std::vector<ggml_tensor*>& nodes, const std::vector<ggml_tensor*>& leaves) {
+        struct ExternalLeafScope {
+            struct Saved {
+                ggml_tensor* tensor;
+                enum ggml_op op;
+                std::array<ggml_tensor*, GGML_MAX_SRC> sources;
+                int32_t flags;
+            };
+            std::vector<Saved> saved;
+            explicit ExternalLeafScope(const std::vector<ggml_tensor*>& leaves) {
+                for (auto* leaf : leaves) {
+                    Saved entry{leaf, leaf->op, {}, leaf->flags};
+                    std::copy(std::begin(leaf->src), std::end(leaf->src), entry.sources.begin());
+                    saved.push_back(entry);
+                    leaf->op = GGML_OP_NONE;
+                    std::fill(std::begin(leaf->src), std::end(leaf->src), nullptr);
+                    leaf->flags &= ~GGML_TENSOR_FLAG_PARAM;
+                }
+            }
+            ~ExternalLeafScope() {
+                for (const auto& entry : saved) {
+                    entry.tensor->op    = entry.op;
+                    entry.tensor->flags = entry.flags;
+                    std::copy(entry.sources.begin(), entry.sources.end(), std::begin(entry.tensor->src));
+                }
+            }
+        } external_leaves(leaves);
+        for (ggml_tensor* leaf : leaves)
+            ggml_build_forward_expand(graph, leaf);
+
+        for (auto* node : nodes)
+            ggml_build_forward_expand(graph, node);
+    }
+
     ggml_cgraph* build_segment_graph(ggml_cgraph* gf,
                                      const Segment& segment,
                                      ggml_context** graph_ctx_out) {
@@ -733,9 +766,6 @@ namespace sd::ggml_graph_cut {
         ggml_cgraph* segment_graph = ggml_new_graph_custom(graph_ctx, graph_size, false);
         GGML_ASSERT(segment_graph != nullptr);
 
-        for (ggml_tensor* leaf : leaves) {
-            ggml_graph_add_leaf(segment_graph, leaf);
-        }
 
         for (int output_node_index : segment.output_node_indices) {
             ggml_tensor* output = ggml_graph_node(gf, output_node_index);
@@ -749,17 +779,12 @@ namespace sd::ggml_graph_cut {
                 ggml_set_output(tensor);
             }
         }
-        for (int node_idx : segment.internal_node_indices) {
-            ggml_graph_add_node(segment_graph, ggml_graph_node(gf, node_idx));
-        }
-        // Fusion checks need the original use counts, including consumers outside this segment.
-        for (ggml_tensor* tensor : represented) {
-            const size_t source_index = ggml_hash_find(&gf->visited_hash_set, tensor);
-            if (source_index != GGML_HASHSET_FULL && ggml_bitset_get(gf->visited_hash_set.used, source_index)) {
-                const size_t index               = ggml_hash_insert(&segment_graph->visited_hash_set, tensor);
-                segment_graph->use_counts[index] = gf->use_counts[source_index];
-            }
-        }
+        // Public traversal builds valid use counts. Boundary outputs above
+        // prevent fusion from hiding values consumed by later segments.
+        std::vector<ggml_tensor*> nodes;
+        for (int node_idx : segment.internal_node_indices)
+            nodes.push_back(ggml_graph_node(gf, node_idx));
+        populate_graph(segment_graph, nodes, leaves);
         *graph_ctx_out = graph_ctx;
         return segment_graph;
     }

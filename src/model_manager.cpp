@@ -168,6 +168,12 @@ bool ModelManager::prepare_lora_sources(std::vector<LoraSpec>& loras) {
         sources.insert(spec.file_id);
         resolved.push_back(std::move(spec));
     }
+    // Runtime adapters remain registered until their replacements validate.
+    // Keep their source versions alive through both commit and rollback.
+    for (const auto& state : tensor_states_) {
+        if (state->component == ModelComponent::LoRA && state->source_file != 0)
+            sources.insert(state->source_file);
+    }
     for (auto id : lora_sources_) {
         if (sources.count(id) == 0)
             candidate.del_file(id);

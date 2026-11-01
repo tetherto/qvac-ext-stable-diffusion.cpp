@@ -88,9 +88,10 @@ bool ModelLoader::add_file_impl(const std::string& path, const std::string& pref
     if (!read_file_stamp(path, root)) {
         return false;
     }
-    auto existing = std::find_if(files_.begin(), files_.end(), [&](const FileRecord& file) {
+    auto latest   = std::find_if(files_.rbegin(), files_.rend(), [&](const FileRecord& file) {
         return file.path == root.path && file.prefix == prefix && file.scope == scope;
     });
+    auto existing = latest == files_.rend() ? files_.end() : std::prev(latest.base());
     if (existing != files_.end() && !force &&
         std::all_of(existing->dependencies.begin(), existing->dependencies.end(), file_unchanged)) {
         if (id != nullptr) {
@@ -98,6 +99,11 @@ bool ModelLoader::add_file_impl(const std::string& path, const std::string& pref
         }
         return true;
     }
+
+    // Isolated adapters may still be in use while a replacement is validated.
+    // A changed file gets a new source identity instead of invalidating them.
+    if (scope == FileScope::Isolated)
+        existing = files_.end();
 
     ModelLoader parsed;
     try {

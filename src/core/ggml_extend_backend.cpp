@@ -17,9 +17,8 @@
 #include <hip/hip_runtime_api.h>
 #endif
 
+#include "core/ggml_graph_cut.h"
 #include "core/util.h"
-#include "ggml-backend-impl.h"
-#include "ggml-impl.h"
 #include "stable-diffusion.h"
 
 static std::string trim_copy(const std::string& value) {
@@ -454,18 +453,7 @@ ggml_backend_buffer_t sd_backend_dev_buffer_from_host_ptr(ggml_backend_dev_t dev
                                                           void* ptr,
                                                           size_t size,
                                                           size_t max_tensor_size) {
-    ggml_backend_buffer_t buffer = ggml_backend_dev_buffer_from_host_ptr(device, ptr, size, max_tensor_size);
-    if (buffer != nullptr && buffer->context == nullptr) {
-        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
-        if (reg != nullptr && std::strcmp(ggml_backend_reg_name(reg), "Metal") == 0) {
-            // Metal can wrap a failed mapping in a non-null buffer. Its free callback also
-            // dereferences the missing context, so only release the outer buffer.
-            buffer->iface.free_buffer = nullptr;
-            ggml_backend_buffer_free(buffer);
-            return nullptr;
-        }
-    }
-    return buffer;
+    return ggml_backend_dev_buffer_from_host_ptr(device, ptr, size, max_tensor_size);
 }
 
 static int cuda_compiled_arch(ggml_backend_t backend) {
@@ -641,23 +629,6 @@ void sd_backend_clear_buffer_cache(ggml_backend_t backend) {
     }
 }
 
-static ggml_cgraph sd_ggml_graph_view(ggml_cgraph* cgraph0, int i0, int i1) {
-    ggml_cgraph cgraph = {
-        /*.size             =*/0,
-        /*.n_nodes          =*/i1 - i0,
-        /*.n_leafs          =*/0,
-        /*.nodes            =*/cgraph0->nodes + i0,
-        /*.grads            =*/nullptr,
-        /*.grad_accs        =*/nullptr,
-        /*.leafs            =*/nullptr,
-        /*.use_counts       =*/cgraph0->use_counts,
-        /*.visited_hash_set =*/cgraph0->visited_hash_set,
-        /*.order            =*/cgraph0->order,
-        /*.uid              =*/0,
-    };
-    return cgraph;
-}
-
 ggml_status sd_backend_graph_compute_with_eval_callback(ggml_backend_t backend,
                                                         ggml_cgraph* gf,
                                                         sd_graph_eval_callback_t callback_eval,
@@ -680,13 +651,23 @@ ggml_status sd_backend_graph_compute_with_eval_callback(ggml_backend_t backend,
             need = callback_eval(t, true, callback_eval_user_data);
         }
 
-        ggml_cgraph gv = sd_ggml_graph_view(gf, j0, j1 + 1);
-        status         = ggml_backend_graph_compute_async(backend, &gv);
-        if (status != GGML_STATUS_SUCCESS) {
-            break;
+        sd::ggml_graph_cut::Segment segment;
+        std::vector<std::pair<ggml_tensor*, int32_t>> flags;
+        for (int i = j0; i <= j1; ++i) {
+            segment.internal_node_indices.push_back(i);
+            segment.output_node_indices.push_back(i);
+            for (auto* tensor = ggml_graph_node(gf, i); tensor; tensor = tensor->view_src)
+                flags.emplace_back(tensor, tensor->flags);
         }
-
+        ggml_context* context = nullptr;
+        auto* view            = sd::ggml_graph_cut::build_segment_graph(gf, segment, &context);
+        status                = ggml_backend_graph_compute_async(backend, view);
         ggml_backend_synchronize(backend);
+        for (const auto& entry : flags)
+            entry.first->flags = entry.second;
+        ggml_free(context);
+        if (status != GGML_STATUS_SUCCESS)
+            break;
 
         if (need && !callback_eval(t, false, callback_eval_user_data)) {
             stopped = true;
