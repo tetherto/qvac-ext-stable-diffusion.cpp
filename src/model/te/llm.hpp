@@ -2059,7 +2059,9 @@ namespace LLM {
             std::vector<ggml_tensor*> intermediate_outputs;
 
             if (config.normalize_input) {
-                x = ggml_ext_scale(ctx->ggml_ctx, x, std::sqrt(static_cast<float>(config.hidden_size)), true);
+                // Quantized embedding lookup may run on CPU while scaling runs on GPU.
+                // Keep the scaled output independent of the embedding buffer.
+                x = ggml_ext_scale(ctx->ggml_ctx, x, std::sqrt(static_cast<float>(config.hidden_size)), false);
             }
             if (return_all_hidden_states) {
                 intermediate_outputs.push_back(x);

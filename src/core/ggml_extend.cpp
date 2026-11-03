@@ -500,7 +500,9 @@ ggml_tensor* ggml_ext_conv_3d(ggml_context* ctx,
     }
     if (b != nullptr) {
         b = ggml_reshape_4d(ctx, b, 1, 1, 1, b->ne[0]);  // [OC, 1, 1, 1]
-        x = ggml_add_inplace(ctx, x, b);
+        // The convolution may fall back to CPU while the bias add runs on GPU.
+        // Do not alias its output across backend buffers.
+        x = ggml_add(ctx, x, b);
     }
     return x;
 }
