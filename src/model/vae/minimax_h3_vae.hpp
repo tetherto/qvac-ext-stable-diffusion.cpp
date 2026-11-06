@@ -262,44 +262,32 @@ namespace MiniMaxH3VAE {
             auto qkv_projection = to_qkv->forward(ctx, x);
             int64_t sequence    = x->ne[1];
             int64_t batch_size  = x->ne[2] * x->ne[3];
-            qkv_projection      = ggml_reshape_4d(ctx->ggml_ctx,
-                                                  qkv_projection,
-                                                  3 * head_dim,
-                                                  num_head,
-                                                  sequence,
-                                                  batch_size);
-            auto qkv            = ggml_ext_chunk(ctx->ggml_ctx, qkv_projection, 3, 0);
-            auto q              = ggml_reshape_4d(ctx->ggml_ctx,
-                                                  qkv[0],
-                                                  head_dim,
-                                                  num_head,
-                                                  sequence,
-                                                  batch_size);
-            auto k              = ggml_reshape_4d(ctx->ggml_ctx,
-                                                  qkv[1],
-                                                  head_dim,
-                                                  num_head,
-                                                  sequence,
-                                                  batch_size);
-            auto v              = ggml_reshape_4d(ctx->ggml_ctx,
-                                                  qkv[2],
-                                                  head_dim,
-                                                  num_head,
-                                                  sequence,
-                                                  batch_size);
-            q                   = ggml_rms_norm(ctx->ggml_ctx, q, 1e-5f);
-            k                   = ggml_rms_norm(ctx->ggml_ctx, k, 1e-5f);
-            q                   = apply_partial_rope(ctx->ggml_ctx, q, pe);
-            k                   = apply_partial_rope(ctx->ggml_ctx, k, pe);
-            auto out            = ggml_ext_attention_ext(ctx->ggml_ctx,
-                                                         ctx->backend,
-                                                         q,
-                                                         k,
-                                                         v,
-                                                         num_head,
-                                                         nullptr,
-                                                         true,
-                                                         ctx->flash_attn_enabled);
+            qkv_projection       = ggml_reshape_4d(ctx->ggml_ctx,
+                                                   qkv_projection,
+                                                   3 * head_dim,
+                                                   num_head,
+                                                   sequence,
+                                                   batch_size);
+            const bool use_views = sd_backend_is(ctx->backend, "CUDA");
+            auto qkv             = ggml_ext_chunk(ctx->ggml_ctx, qkv_projection, 3, 0, !use_views);
+            // Views already have the target shape and retain the interleaved
+            // per-head QKV strides; reshaping them would assume contiguity.
+            auto q   = use_views ? qkv[0] : ggml_reshape_4d(ctx->ggml_ctx, qkv[0], head_dim, num_head, sequence, batch_size);
+            auto k   = use_views ? qkv[1] : ggml_reshape_4d(ctx->ggml_ctx, qkv[1], head_dim, num_head, sequence, batch_size);
+            auto v   = use_views ? qkv[2] : ggml_reshape_4d(ctx->ggml_ctx, qkv[2], head_dim, num_head, sequence, batch_size);
+            q        = ggml_rms_norm(ctx->ggml_ctx, q, 1e-5f);
+            k        = ggml_rms_norm(ctx->ggml_ctx, k, 1e-5f);
+            q        = apply_partial_rope(ctx->ggml_ctx, q, pe);
+            k        = apply_partial_rope(ctx->ggml_ctx, k, pe);
+            auto out = ggml_ext_attention_ext(ctx->ggml_ctx,
+                                              ctx->backend,
+                                              q,
+                                              k,
+                                              v,
+                                              num_head,
+                                              nullptr,
+                                              true,
+                                              ctx->flash_attn_enabled);
             return to_out->forward(ctx, out);
         }
     };
@@ -314,9 +302,13 @@ namespace MiniMaxH3VAE {
         }
 
         ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
-            auto w1   = std::dynamic_pointer_cast<Linear>(blocks["w1"]);
-            auto w2   = std::dynamic_pointer_cast<Linear>(blocks["w2"]);
-            auto gate = ggml_ext_chunk(ctx->ggml_ctx, w1->forward(ctx, x), 2, 0);
+            auto w1         = std::dynamic_pointer_cast<Linear>(blocks["w1"]);
+            auto w2         = std::dynamic_pointer_cast<Linear>(blocks["w2"]);
+            auto projection = w1->forward(ctx, x);
+            if (sd_backend_is(ctx->backend, "CUDA")) {
+                return w2->forward(ctx, ggml_swiglu(ctx->ggml_ctx, projection));
+            }
+            auto gate = ggml_ext_chunk(ctx->ggml_ctx, projection, 2, 0);
             return w2->forward(ctx,
                                ggml_mul(ctx->ggml_ctx,
                                         ggml_silu(ctx->ggml_ctx, gate[0]),
