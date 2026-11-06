@@ -509,6 +509,8 @@ namespace sd::backend_fit {
             tiling_params.rel_size_h  = 0.0f;
             tiling_params.tile_size_w = tile_size_w * scale_factor;
             tiling_params.tile_size_h = tile_size_h * scale_factor;
+            // Retry sizes above are image pixels, regardless of the original caller units.
+            tiling_params.tile_size_in_latent_units = false;
             retry_mode                = tiling_params.temporal_tiling ? "spatial+temporal" : "spatial";
             LOG_WARN("Reducing VAE decode tiles from %dx%d to %dx%d image pixels",
                      latent_tile_size_w * scale_factor, latent_tile_size_h * scale_factor,

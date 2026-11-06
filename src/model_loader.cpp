@@ -231,6 +231,12 @@ void convert_tensor(void* src,
     } else if (dst_type == GGML_TYPE_F32) {
         if (src_type == GGML_TYPE_F16) {
             ggml_fp16_to_fp32_row((ggml_fp16_t*)src, (float*)dst, n);
+        } else if (src_type == GGML_TYPE_I32) {
+            const auto* values = static_cast<const int32_t*>(src);
+            auto* output       = static_cast<float*>(dst);
+            for (int64_t i = 0; i < n; ++i) {
+                output[i] = static_cast<float>(values[i]);
+            }
         } else {
             auto qtype = ggml_get_type_traits(src_type);
             if (qtype->to_float == nullptr) {

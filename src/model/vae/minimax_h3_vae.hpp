@@ -559,10 +559,10 @@ namespace MiniMaxH3VAE {
                 params.target_overlap = 0.25f;
             }
             if (params.tile_size_w == 0 && params.rel_size_w == 0.f) {
-                params.tile_size_w = 256;
+                params.tile_size_w = params.tile_size_in_latent_units ? 16 : 256;
             }
             if (params.tile_size_h == 0 && params.rel_size_h == 0.f) {
-                params.tile_size_h = 256;
+                params.tile_size_h = params.tile_size_in_latent_units ? 16 : 256;
             }
             params.enabled         = true;
             params.temporal_tiling = false;
