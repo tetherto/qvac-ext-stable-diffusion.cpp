@@ -94,3 +94,74 @@ frame rate and optional soundtrack; non-24-fps inputs are resampled internally.
 - MiniMax-H3 runs at 24 fps; another requested value is overridden.
 - The default video flow shift is 12. The audio stream is mapped internally to
   its shift of 3, so the regular samplers can operate on the packed AV latent.
+
+## Reproducible CUDA benchmarks
+
+`script/bench_minimax_h3.py` runs the native CLI repeatedly with a fixed prompt,
+seed and workload. It requires Python 3, `ffprobe`, `ffmpeg`, a CUDA build of
+`sd-cli` and all four H3 model components. For example, from the repository root:
+
+```sh
+python3 script/bench_minimax_h3.py \
+  --binary build-cuda/bin/sd-cli \
+  --output-dir bench-results/h3-q4-cuda0 \
+  --warmup 1 --runs 3 --timeout-seconds 1800 -- \
+  --diffusion-model models/diffusion_models/minimax_h3_fl2va-Q4_K_M.gguf \
+  --llm models/text_encoders/qwen3vl_32b_minimax_h3-Q4_K_M.gguf \
+  --vae models/vae/minimax_h3_video_vae_fp16.safetensors \
+  --audio-vae models/vae/minimax_h3_audio_vae_fp32.safetensors \
+  -p 'A small orange paper boat floating on calm water at dusk, with a cliff in the background and gentle solo piano music.' \
+  --seed 424242 --rng cpu -W 864 -H 480 --video-frames 124 \
+  --steps 20 --cfg-scale 1 --diffusion-fa --params-backend disk
+```
+
+Replace the relative model paths with the files being tested. Use a new, empty
+output directory for every configuration; the runner preserves existing
+evidence. It sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, `CUDA_VISIBLE_DEVICES=0`,
+`GGML_VK_VISIBLE_DEVICES=0` and `--backend cuda0`. Backend, mode, output and
+batch-count overrides are rejected. GPU queries and sampling explicitly target
+physical GPU 0; GPU 1 is not used. A detected compute process on GPU 0 stops the
+run unless `--allow-busy-gpu` explicitly accepts and records that condition.
+
+Each warmup and measured run starts a fresh process. `wall_s` includes startup,
+model loading and output writing; the engine's `generation_s` and conditioning,
+sampling, audio-decode and video-decode timings are recorded separately.
+Warmup processes are excluded from medians. Keep model files, prompt, seed,
+settings, toolchain and measurement conditions matched when comparing builds.
+
+`report.json` records commands, selected environment settings, source revisions,
+runner and binary SHA256, and model paths, sizes and modification times. Model
+contents are not hashed by default: add `--hash-models` to record SHA256 before
+timing. Record any additional experimental environment settings alongside the
+report. Per-run folders retain the CLI log, native audio/video AVI and validation
+results, including failed attempts.
+
+When `nvidia-smi` is available, `gpu-before.json` records identity and idle-check
+results, and `gpu.csv` samples memory use, utilization, SM clock and temperature
+every 250 ms. These are whole-device samples, can include other processes and
+can miss the true memory peak. Missing, incomplete or mismatched telemetry is
+labelled explicitly. Sampler startup and shutdown are outside `wall_s`; its
+background overhead is present during generation, so use the same sampling
+setup for both builds.
+
+The runner checks aligned dimensions, the H3 frame grid, 24 fps, stereo 32 kHz
+audio, duration agreement and successful CPU decoding. These structural checks
+do not establish scene fidelity, coherent motion or acceptable sound. Review
+generated video and audio against the requested prompt before accepting a
+performance change.
+
+Model-free tooling checks and the native modulation regression can be run with:
+
+```sh
+python3 -m unittest discover -s script -p test_bench_minimax_h3.py
+build-cuda/bin/test-h3-modulation CPU
+CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  build-cuda/bin/test-h3-modulation CUDA0
+NVIDIA_TF32_OVERRIDE=0 CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  build-cuda/bin/test-h3-modulation CUDA0 --full-scalar-oracle
+```
+
+The native regression requires a CUDA build configured with `SD_BUILD_TESTS=ON`.
+The first CUDA command compares both production paths at default precision; the
+second disables TF32 for the FinalLayer FP32 scalar oracle, with elementwise
+scalar and repeat checks enabled in both.
