@@ -85,3 +85,8 @@ add_executable(test-h3-modulation test_h3_modulation.cpp)
 target_include_directories(test-h3-modulation PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-h3-modulation PRIVATE stable-diffusion)
 add_test(NAME test-h3-modulation COMMAND test-h3-modulation)
+
+add_executable(test-h3-vae-decoder test_h3_vae_decoder.cpp)
+target_include_directories(test-h3-vae-decoder PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-vae-decoder PRIVATE stable-diffusion)
+add_test(NAME test-h3-vae-decoder COMMAND test-h3-vae-decoder)

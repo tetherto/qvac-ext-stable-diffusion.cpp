@@ -150,7 +150,11 @@ do not establish scene fidelity, coherent motion or acceptable sound. Review
 generated video and audio against the requested prompt before accepting a
 performance change.
 
-Model-free tooling checks and the native modulation regression can be run with:
+The CUDA video VAE decoder uses head-interleaved QKV views and fused SwiGLU.
+Its regression checks the actual attention and feed-forward blocks, including
+head mapping, gate order, flash attention modes, and repeated inputs.
+
+Model-free tooling checks and the native H3 regressions can be run with:
 
 ```sh
 python3 -m unittest discover -s script -p test_bench_minimax_h3.py
@@ -159,9 +163,14 @@ CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
   build-cuda/bin/test-h3-modulation CUDA0
 NVIDIA_TF32_OVERRIDE=0 CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
   build-cuda/bin/test-h3-modulation CUDA0 --full-scalar-oracle
+build-cuda/bin/test-h3-vae-decoder CPU
+CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  build-cuda/bin/test-h3-vae-decoder CUDA0
 ```
 
-The native regression requires a CUDA build configured with `SD_BUILD_TESTS=ON`.
-The first CUDA command compares both production paths at default precision; the
-second disables TF32 for the FinalLayer FP32 scalar oracle, with elementwise
-scalar and repeat checks enabled in both.
+The CUDA regressions require a CUDA build configured with `SD_BUILD_TESTS=ON`.
+The default modulation command compares both production paths at default
+precision; its full scalar-oracle command disables TF32 for the FinalLayer FP32
+reference, with elementwise scalar and repeat checks enabled in both.
+The VAE decoder command retains default CUDA precision and checks the actual
+packed flash-attention inputs separately from its host arithmetic oracle.
