@@ -202,6 +202,8 @@ typedef struct {
         float rel_size_y;
     };
     const char* extra_tiling_args;
+    // Compatibility for callers supplying explicit spatial sizes in latent pixels.
+    bool tile_size_in_latent_units;
 } sd_tiling_params_t;
 
 typedef struct {

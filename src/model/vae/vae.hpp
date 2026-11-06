@@ -213,7 +213,21 @@ public:
                         const sd_tiling_params_t& params,
                         int64_t latent_w,
                         int64_t latent_h) {
-        const auto tiling = resolve_tiling_params(params);
+        auto image_params = params;
+        if (params.tile_size_in_latent_units) {
+            const int scale = get_scale_factor();
+            if (params.tile_size_w > std::numeric_limits<int>::max() / scale ||
+                params.tile_size_h > std::numeric_limits<int>::max() / scale) {
+                LOG_ERROR("VAE latent tile size overflows image dimensions");
+                return false;
+            }
+            if (image_params.tile_size_w > 0)
+                image_params.tile_size_w *= scale;
+            if (image_params.tile_size_h > 0)
+                image_params.tile_size_h *= scale;
+            image_params.tile_size_in_latent_units = false;
+        }
+        const auto tiling = resolve_tiling_params(image_params);
         if (latent_w <= 0 || latent_h <= 0 ||
             latent_w > std::numeric_limits<int>::max() || latent_h > std::numeric_limits<int>::max() ||
             !std::isfinite(tiling.target_overlap)) {
