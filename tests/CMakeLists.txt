@@ -82,5 +82,6 @@ target_link_libraries(test-qwen-image-21 PRIVATE stable-diffusion)
 add_test(NAME test-qwen-image-21 COMMAND test-qwen-image-21)
 
 add_executable(test-h3-localops test-h3-localops.cpp)
+target_include_directories(test-h3-localops PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-h3-localops PRIVATE stable-diffusion)
 add_test(NAME test-h3-localops COMMAND test-h3-localops)

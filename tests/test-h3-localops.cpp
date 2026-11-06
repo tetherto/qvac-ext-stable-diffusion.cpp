@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "model/diffusion/minimax_h3.hpp"
+
 static void require(bool ok, const char* message) {
     if (!ok)
         throw std::runtime_error(message);
@@ -73,6 +75,103 @@ static void run(ggml_backend_t backend, int width, int heads, int tokens, int ba
         }
     }
 }
+static void run_blocks(ggml_backend_t backend, int heads, int tokens, int batch, bool flash) {
+    Storage storage;
+    GGMLRunnerContext runner;
+    runner.ggml_ctx           = storage.ctx;
+    runner.backend            = backend;
+    runner.flash_attn_enabled = flash;
+    MiniMaxH3::MLP mlp(128, 256);
+    MiniMaxH3::Attention attention(128, heads, 128, 1e-5f);
+    mlp.init(storage.ctx);
+    attention.init(storage.ctx);
+    std::map<std::string, ggml_tensor*> params;
+    mlp.get_param_tensors(params, "mlp");
+    attention.get_param_tensors(params, "attention");
+    auto* input = ggml_new_tensor_3d(storage.ctx, GGML_TYPE_F32, 128, tokens, batch);
+    auto* graph = ggml_new_graph_custom(storage.ctx, 512, false);
+    std::vector<std::pair<ggml_tensor*, ggml_tensor*>> pairs;
+    auto* reference_mlp       = mlp.forward(&runner, input);
+    auto* reference_attention = attention.forward(&runner, input);
+    mlp.local_ops_enabled = attention.local_ops_enabled = true;
+    pairs.emplace_back(reference_mlp, mlp.forward(&runner, input));
+    pairs.emplace_back(reference_attention, attention.forward(&runner, input));
+    mlp.local_ops_enabled = attention.local_ops_enabled = false;
+    pairs.emplace_back(reference_mlp, mlp.forward(&runner, input));
+    pairs.emplace_back(reference_attention, attention.forward(&runner, input));
+    for (const auto& pair : pairs) {
+        ggml_build_forward_expand(graph, pair.first);
+        ggml_build_forward_expand(graph, pair.second);
+    }
+    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i)
+        require(ggml_backend_supports_op(backend, ggml_graph_node(graph, i)), "H3 block operation unsupported");
+    storage.buffer = ggml_backend_alloc_ctx_tensors(storage.ctx, backend);
+    require(storage.buffer, "H3 block allocation failed");
+    params["input"] = input;
+    for (int pattern = 0; pattern < 3; ++pattern) {
+        for (const auto& param : params) {
+            auto* tensor = param.second;
+            require(tensor->type == GGML_TYPE_F32, "Expected F32 test parameters");
+            std::vector<float> values(ggml_nelements(tensor));
+            for (size_t i = 0; i < values.size(); ++i) {
+                values[i] = std::sin(float(i * 17 + pattern * 11 + param.first.size())) * 0.25f;
+                if (param.first.find("_norm") != std::string::npos)
+                    values[i] += 1.f;
+            }
+            ggml_backend_tensor_set(tensor, values.data(), 0, ggml_nbytes(tensor));
+        }
+        require(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS, "H3 block graph failed");
+        for (const auto& pair : pairs) {
+            std::vector<float> a(ggml_nelements(pair.first)), b(a.size());
+            ggml_backend_tensor_get(pair.first, a.data(), 0, ggml_nbytes(pair.first));
+            ggml_backend_tensor_get(pair.second, b.data(), 0, ggml_nbytes(pair.second));
+            for (size_t i = 0; i < a.size(); ++i)
+                require(std::isfinite(a[i]) && std::isfinite(b[i]) &&
+                            std::abs(a[i] - b[i]) <= 2e-5f + 2e-6f * std::abs(a[i]),
+                        "Production H3 block output differs with local operations");
+        }
+    }
+}
+
+static void test_runner_toggle(ggml_backend_t backend) {
+    String2TensorStorage weights;
+    const std::string prefix = "model.diffusion_model";
+    const auto shape         = [&](const char* name, int64_t in, int64_t out) {
+        auto& weight  = weights[prefix + "." + name];
+        weight.n_dims = 2;
+        weight.ne[0]  = in;
+        weight.ne[1]  = out;
+        weight.type   = GGML_TYPE_F32;
+    };
+    shape("video_patch_proj.weight", 32, 128);
+    shape("audio_patch_proj.weight", 8, 128);
+    shape("condition_proj.weight", 128, 128);
+    shape("blocks.0.attn.q_norm.weight", 128, 1);
+    shape("blocks.0.attn.qkv_proj.weight", 128, 768);
+    shape("blocks.0.mlp.fc1.weight", 128, 512);
+    shape("token_refiner.blocks.0.attn.q_norm.weight", 128, 1);
+    shape("time_embedder.proj_in.weight", 64, 64);
+    shape("time_embedder.proj_out.weight", 64, 64);
+    MiniMaxH3::MiniMaxH3Runner runner(backend, weights, prefix);
+    std::vector<GGMLBlock*> blocks;
+    runner.model.get_all_blocks(blocks);
+    for (bool enabled : {false, true, false}) {
+        runner.set_local_ops_enabled(enabled);
+        int mlps = 0, attentions = 0;
+        for (auto* block : blocks) {
+            if (auto* mlp = dynamic_cast<MiniMaxH3::MLP*>(block)) {
+                require(mlp->local_ops_enabled == enabled, "Runner must toggle every H3 MLP");
+                ++mlps;
+            }
+            if (auto* attention = dynamic_cast<MiniMaxH3::Attention*>(block)) {
+                require(attention->local_ops_enabled == enabled, "Runner must toggle every H3 attention");
+                ++attentions;
+            }
+        }
+        require(mlps == 2 && attentions == 2, "Check transformer and token-refiner blocks");
+    }
+}
+
 int main(int argc, char** argv) {
     require(!sd_set_h3_local_ops(nullptr, true), "Null context must be rejected");
     require(!sd_set_vae_conv_direct(nullptr, false), "Null VAE context must be rejected");
@@ -90,7 +189,12 @@ int main(int argc, char** argv) {
         run(backend, 128, 1, 1, 1);
         run(backend, 14336, 5, 17, 2);
         run(backend, 14336, 48, 127, 1);
-        std::cout << "PASS H3 existing-operation equivalence: fused SwiGLU, exact QKV views, strided normalization, changing inputs, batches\n";
+        test_runner_toggle(backend);
+        for (bool flash : {false, true}) {
+            run_blocks(backend, 1, 1, 1, flash);
+            run_blocks(backend, 3, 17, 2, flash);
+        }
+        std::cout << "PASS H3 primitive and production-block equivalence, flash attention on/off, changing inputs, batches and runner toggles\n";
         ggml_backend_free(backend);
         return 0;
     } catch (const std::exception& error) {
