@@ -90,3 +90,8 @@ add_executable(test-h3-vae-decoder test_h3_vae_decoder.cpp)
 target_include_directories(test-h3-vae-decoder PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-h3-vae-decoder PRIVATE stable-diffusion)
 add_test(NAME test-h3-vae-decoder COMMAND test-h3-vae-decoder)
+
+add_executable(test-h3-attention test_h3_attention.cpp)
+target_include_directories(test-h3-attention PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-attention PRIVATE stable-diffusion)
+add_test(NAME test-h3-attention COMMAND test-h3-attention)

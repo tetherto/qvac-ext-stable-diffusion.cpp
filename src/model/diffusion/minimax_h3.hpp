@@ -176,9 +176,44 @@ namespace MiniMaxH3 {
 
     static ggml_tensor* apply_partial_rope(ggml_context* ctx,
                                            ggml_tensor* x,
-                                           ggml_tensor* pe) {
+                                           ggml_tensor* pe,
+                                           bool optimized = false) {
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
+        if (optimized && x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 &&
+            pe->ne[0] == 2 && pe->ne[1] == 2 && pe->ne[2] > 0 && pe->ne[3] == x->ne[2]) {
+            const int64_t half = pe->ne[2];
+            // ggml_view_4d preserves higher strides but fixes the channel stride.
+            if (x->nb[0] != sizeof(float)) {
+                x = ggml_cont(ctx, x);
+            }
+            auto half_view = [&](int64_t start) {
+                return ggml_view_4d(ctx, x, half, x->ne[1], x->ne[2], x->ne[3],
+                                    x->nb[1], x->nb[2], x->nb[3], start * x->nb[0]);
+            };
+            auto coefficient = [&](int i0, int i1) {
+                auto value = ggml_view_4d(ctx, pe, 1, 1, half, pe->ne[3],
+                                          pe->nb[1], pe->nb[2], pe->nb[3],
+                                          i0 * pe->nb[0] + i1 * pe->nb[1]);
+                value      = ggml_ext_torch_permute(ctx, value, 2, 0, 3, 1);
+                return ggml_cont(ctx, value);
+            };
+            auto a      = half_view(0);
+            auto b      = half_view(half);
+            auto c00    = coefficient(0, 0);
+            auto c10    = coefficient(1, 0);
+            auto c01    = coefficient(0, 1);
+            auto c11    = coefficient(1, 1);
+            auto first  = ggml_add_inplace(ctx, ggml_mul(ctx, a, c00), ggml_mul(ctx, b, c10));
+            auto second = ggml_add_inplace(ctx, ggml_mul(ctx, a, c01), ggml_mul(ctx, b, c11));
+            auto result = ggml_concat(ctx, first, second, 0);
+            if (rot_dim < x->ne[0]) {
+                auto tail = ggml_view_4d(ctx, x, x->ne[0] - rot_dim, x->ne[1], x->ne[2], x->ne[3],
+                                         x->nb[1], x->nb[2], x->nb[3], rot_dim * x->nb[0]);
+                result    = ggml_concat(ctx, result, tail, 0);
+            }
+            return attention_layout(ctx, result);
+        }
         auto rotated = Rope::apply_rope(ctx,
                                         ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                         pe,
@@ -223,8 +258,9 @@ namespace MiniMaxH3 {
             q                = q_norm->forward(ctx, q);
             k                = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx->ggml_ctx, q, pe);
-                k = apply_partial_rope(ctx->ggml_ctx, k, pe);
+                const bool optimized = sd_backend_is(ctx->backend, "CUDA");
+                q                    = apply_partial_rope(ctx->ggml_ctx, q, pe, optimized);
+                k                    = apply_partial_rope(ctx->ggml_ctx, k, pe, optimized);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);

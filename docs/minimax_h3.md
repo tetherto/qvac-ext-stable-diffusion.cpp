@@ -150,6 +150,12 @@ do not establish scene fidelity, coherent motion or acceptable sound. Review
 generated video and audio against the requested prompt before accepting a
 performance change.
 
+The CUDA DiT computes noninterleaved partial RoPE from strided half-head views
+and broadcast positional coefficients, then packs the attention layout once.
+Its regression compares the actual Attention outputs and packed flash-attention
+inputs against the original graph, with real and arbitrary positional matrices,
+partial/full rotation, padded strides, batch 2, and repeated inputs.
+
 The CUDA video VAE decoder uses head-interleaved QKV views and fused SwiGLU.
 Its regression checks the actual attention and feed-forward blocks, including
 head mapping, gate order, flash attention modes, and repeated inputs.
@@ -163,6 +169,9 @@ CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
   build-cuda/bin/test-h3-modulation CUDA0
 NVIDIA_TF32_OVERRIDE=0 CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
   build-cuda/bin/test-h3-modulation CUDA0 --full-scalar-oracle
+build-cuda/bin/test-h3-attention CPU
+CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
+  build-cuda/bin/test-h3-attention CUDA0
 build-cuda/bin/test-h3-vae-decoder CPU
 CUDA_VISIBLE_DEVICES=0 CUDA_DEVICE_ORDER=PCI_BUS_ID \
   build-cuda/bin/test-h3-vae-decoder CUDA0
