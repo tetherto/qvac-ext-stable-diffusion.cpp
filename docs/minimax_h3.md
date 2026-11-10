@@ -183,3 +183,25 @@ precision; its full scalar-oracle command disables TF32 for the FinalLayer FP32
 reference, with elementwise scalar and repeat checks enabled in both.
 The VAE decoder command retains default CUDA precision and checks the actual
 packed flash-attention inputs separately from its host arithmetic oracle.
+
+### Opt-in native SwiGLU quantization fusion
+
+With a matching CUDA backend, `GGML_CUDA_H3_SWIGLU_QUANT_FUSION=1` fuses packed
+F32 SwiGLU and input scaling into the existing DS4 Q8 activation quantizer for
+the SM120 Q4_K `14336 -> 5376` projection with at least 512 rows. Eligible graphs
+can also fold the preceding 128x output scale into this kernel. Each original
+SCALE and SwiGLU operation retains its rounding order.
+
+The serialized Q4 weights, Q8 payload, quantization scales and sums, MMQ kernel
+and final output scale stay the same. Observed or shared intermediates, swapped
+SwiGLU, unsafe aliases and unsupported layouts keep the existing path. The
+locally evaluated integration enables PR #61's packed DiT SwiGLU; it is a
+dependency of this experiment and is not reimplemented here. The split
+SiLU/multiply graph keeps its existing path.
+
+The control defaults to OFF and requires the corresponding backend version; the
+engine does not update its ggml dependency pin. For diagnostic attribution,
+`GGML_CUDA_H3_SWIGLU_QUANT_TRACE=1` logs host fusion dispatches, while
+`GGML_CUDA_GRAPH_TRACE=1` distinguishes direct execution, capture and replay.
+A replay executes captured kernels without repeating their host dispatch
+messages. Disable tracing for performance measurements.
