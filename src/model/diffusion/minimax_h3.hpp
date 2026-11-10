@@ -176,9 +176,44 @@ namespace MiniMaxH3 {
 
     static ggml_tensor* apply_partial_rope(ggml_context* ctx,
                                            ggml_tensor* x,
-                                           ggml_tensor* pe) {
+                                           ggml_tensor* pe,
+                                           bool optimized = false) {
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
+        if (optimized && x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 &&
+            pe->ne[0] == 2 && pe->ne[1] == 2 && pe->ne[2] > 0 && pe->ne[3] == x->ne[2]) {
+            const int64_t half = pe->ne[2];
+            // ggml_view_4d preserves higher strides but fixes the channel stride.
+            if (x->nb[0] != sizeof(float)) {
+                x = ggml_cont(ctx, x);
+            }
+            auto half_view = [&](int64_t start) {
+                return ggml_view_4d(ctx, x, half, x->ne[1], x->ne[2], x->ne[3],
+                                    x->nb[1], x->nb[2], x->nb[3], start * x->nb[0]);
+            };
+            auto coefficient = [&](int i0, int i1) {
+                auto value = ggml_view_4d(ctx, pe, 1, 1, half, pe->ne[3],
+                                          pe->nb[1], pe->nb[2], pe->nb[3],
+                                          i0 * pe->nb[0] + i1 * pe->nb[1]);
+                value      = ggml_ext_torch_permute(ctx, value, 2, 0, 3, 1);
+                return ggml_cont(ctx, value);
+            };
+            auto a      = half_view(0);
+            auto b      = half_view(half);
+            auto c00    = coefficient(0, 0);
+            auto c10    = coefficient(1, 0);
+            auto c01    = coefficient(0, 1);
+            auto c11    = coefficient(1, 1);
+            auto first  = ggml_add_inplace(ctx, ggml_mul(ctx, a, c00), ggml_mul(ctx, b, c10));
+            auto second = ggml_add_inplace(ctx, ggml_mul(ctx, a, c01), ggml_mul(ctx, b, c11));
+            auto result = ggml_concat(ctx, first, second, 0);
+            if (rot_dim < x->ne[0]) {
+                auto tail = ggml_view_4d(ctx, x, x->ne[0] - rot_dim, x->ne[1], x->ne[2], x->ne[3],
+                                         x->nb[1], x->nb[2], x->nb[3], rot_dim * x->nb[0]);
+                result    = ggml_concat(ctx, result, tail, 0);
+            }
+            return attention_layout(ctx, result);
+        }
         auto rotated = Rope::apply_rope(ctx,
                                         ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                         pe,
@@ -223,8 +258,9 @@ namespace MiniMaxH3 {
             q                = q_norm->forward(ctx, q);
             k                = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx->ggml_ctx, q, pe);
-                k = apply_partial_rope(ctx->ggml_ctx, k, pe);
+                const bool optimized = sd_backend_is(ctx->backend, "CUDA");
+                q                    = apply_partial_rope(ctx->ggml_ctx, q, pe, optimized);
+                k                    = apply_partial_rope(ctx->ggml_ctx, k, pe, optimized);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);
@@ -342,14 +378,15 @@ namespace MiniMaxH3 {
                                                     int64_t hidden_size,
                                                     int expand,
                                                     int modalities,
-                                                    int64_t row) {
+                                                    int64_t row,
+                                                    bool use_views = false) {
         int64_t timestep_rows = projection->ne[1];
         auto reshaped         = ggml_reshape_2d(ctx,
                                                 projection,
                                                 hidden_size * expand,
                                                 timestep_rows * modalities);
-        auto selected         = ggml_ext_slice(ctx, reshaped, 1, row, row + 1);
-        return ggml_ext_chunk(ctx, selected, expand, 0);
+        auto selected         = ggml_ext_slice(ctx, reshaped, 1, row, row + 1, !use_views);
+        return ggml_ext_chunk(ctx, selected, expand, 0, !use_views);
     }
 
     static ggml_tensor* modulate_segments(ggml_context* ctx,
@@ -360,7 +397,8 @@ namespace MiniMaxH3 {
                                           int expand,
                                           int modalities,
                                           int shift_index,
-                                          int scale_index) {
+                                          int scale_index,
+                                          bool use_views = false) {
         ggml_tensor* out = nullptr;
         for (const auto& segment : segments) {
             auto mods = modulation_row(ctx,
@@ -368,8 +406,9 @@ namespace MiniMaxH3 {
                                        hidden_size,
                                        expand,
                                        modalities,
-                                       segment.modulation_row);
-            auto part = ggml_ext_slice(ctx, x, 1, segment.start, segment.end);
+                                       segment.modulation_row,
+                                       use_views);
+            auto part = ggml_ext_slice(ctx, x, 1, segment.start, segment.end, !use_views);
             part      = ggml_add(ctx,
                                  ggml_add(ctx, part, ggml_mul(ctx, part, mods[scale_index])),
                                  mods[shift_index]);
@@ -384,12 +423,13 @@ namespace MiniMaxH3 {
                                                 ggml_tensor* projection,
                                                 const std::vector<TokenModulationSpan>& segments,
                                                 int64_t hidden_size,
-                                                int gate_index) {
+                                                int gate_index,
+                                                bool use_views = false) {
         ggml_tensor* out = nullptr;
         for (const auto& segment : segments) {
-            auto mods = modulation_row(ctx, projection, hidden_size, 6, 3, segment.modulation_row);
-            auto base = ggml_ext_slice(ctx, x, 1, segment.start, segment.end);
-            auto add  = ggml_ext_slice(ctx, update, 1, segment.start, segment.end);
+            auto mods = modulation_row(ctx, projection, hidden_size, 6, 3, segment.modulation_row, use_views);
+            auto base = ggml_ext_slice(ctx, x, 1, segment.start, segment.end, !use_views);
+            auto add  = ggml_ext_slice(ctx, update, 1, segment.start, segment.end, !use_views);
             auto part = ggml_add(ctx, base, ggml_mul(ctx, add, mods[gate_index]));
             out       = out == nullptr ? part : ggml_concat(ctx, out, part, 1);
         }
@@ -425,12 +465,13 @@ namespace MiniMaxH3 {
                              ggml_tensor* t_emb,
                              const std::vector<TokenModulationSpan>& segments,
                              ggml_tensor* pe) {
-            auto norm1 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
-            auto norm2 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm2"]);
-            auto attn  = std::dynamic_pointer_cast<Attention>(blocks["attn"]);
-            auto mlp   = std::dynamic_pointer_cast<MLP>(blocks["mlp"]);
-            auto adaln = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
-            auto mods  = adaln->forward(ctx, t_emb);
+            auto norm1           = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
+            auto norm2           = std::dynamic_pointer_cast<RMSNorm>(blocks["norm2"]);
+            auto attn            = std::dynamic_pointer_cast<Attention>(blocks["attn"]);
+            auto mlp             = std::dynamic_pointer_cast<MLP>(blocks["mlp"]);
+            auto adaln           = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
+            auto mods            = adaln->forward(ctx, t_emb);
+            const bool use_views = sd_backend_is(ctx->backend, "CUDA");
 
             auto h = modulate_segments(ctx->ggml_ctx,
                                        norm1->forward(ctx, x),
@@ -440,14 +481,16 @@ namespace MiniMaxH3 {
                                        6,
                                        3,
                                        0,
-                                       1);
+                                       1,
+                                       use_views);
             x      = gated_residual_segments(ctx->ggml_ctx,
                                              x,
                                              attn->forward(ctx, h, pe),
                                              mods,
                                              segments,
                                              config.hidden_size,
-                                             2);
+                                             2,
+                                             use_views);
             h      = modulate_segments(ctx->ggml_ctx,
                                        norm2->forward(ctx, x),
                                        mods,
@@ -456,14 +499,16 @@ namespace MiniMaxH3 {
                                        6,
                                        3,
                                        3,
-                                       4);
+                                       4,
+                                       use_views);
             return gated_residual_segments(ctx->ggml_ctx,
                                            x,
                                            mlp->forward(ctx, h),
                                            mods,
                                            segments,
                                            config.hidden_size,
-                                           5);
+                                           5,
+                                           use_views);
         }
     };
 
@@ -492,17 +537,18 @@ namespace MiniMaxH3 {
                                                       ggml_tensor* t_emb,
                                                       const TokenModulationSpan& video,
                                                       const TokenModulationSpan& audio) {
-            auto norm      = std::dynamic_pointer_cast<RMSNorm>(blocks["norm"]);
-            auto adaln     = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
-            auto video_out = std::dynamic_pointer_cast<Linear>(blocks["video_out"]);
-            auto audio_out = std::dynamic_pointer_cast<Linear>(blocks["audio_out"]);
-            auto mods      = adaln->forward(ctx, t_emb);
-            auto apply     = [&](const TokenModulationSpan& segment) {
-                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row);
-                auto value = norm->forward(ctx, ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end));
+            auto norm            = std::dynamic_pointer_cast<RMSNorm>(blocks["norm"]);
+            auto adaln           = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
+            auto video_out       = std::dynamic_pointer_cast<Linear>(blocks["video_out"]);
+            auto audio_out       = std::dynamic_pointer_cast<Linear>(blocks["audio_out"]);
+            auto mods            = adaln->forward(ctx, t_emb);
+            const bool use_views = sd_backend_is(ctx->backend, "CUDA");
+            auto apply           = [&](const TokenModulationSpan& segment) {
+                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row, use_views);
+                auto value = norm->forward(ctx, ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end, !use_views));
                 return ggml_add(ctx->ggml_ctx,
-                                    ggml_add(ctx->ggml_ctx, value, ggml_mul(ctx->ggml_ctx, value, row[1])),
-                                    row[0]);
+                                          ggml_add(ctx->ggml_ctx, value, ggml_mul(ctx->ggml_ctx, value, row[1])),
+                                          row[0]);
             };
             return {video_out->forward(ctx, apply(video)),
                     audio_out->forward(ctx, apply(audio))};
