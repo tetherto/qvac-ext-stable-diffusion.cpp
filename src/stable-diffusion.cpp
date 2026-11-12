@@ -690,6 +690,20 @@ sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
     return sd_ctx;
 }
 
+bool sd_set_vae_conv_direct(sd_ctx_t* sd_ctx, bool enabled) {
+    if (sd_ctx == nullptr || sd_ctx->sd == nullptr) {
+        return false;
+    }
+    return sd_ctx->sd->set_vae_conv_direct(enabled);
+}
+
+bool sd_set_h3_local_ops(sd_ctx_t* sd_ctx, bool enabled) {
+    if (sd_ctx == nullptr || sd_ctx->sd == nullptr) {
+        return false;
+    }
+    return sd_ctx->sd->set_h3_local_ops(enabled);
+}
+
 void free_sd_ctx(sd_ctx_t* sd_ctx) {
     if (sd_ctx->sd != nullptr) {
         delete sd_ctx->sd;
