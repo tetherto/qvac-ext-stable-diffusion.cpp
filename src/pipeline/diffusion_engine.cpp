@@ -43,6 +43,7 @@
 #include "model/diffusion/animatediff.hpp"
 #include "model/diffusion/control.hpp"
 #include "model/diffusion/model.hpp"
+#include "model/diffusion/minimax_h3.hpp"
 #include "model/diffusion/z_image.hpp"
 #include "model/vae/audio_vae.hpp"
 #include "model/vae/ltx_vae.hpp"
@@ -550,6 +551,36 @@ bool StableDiffusionGGML::register_layer_split_runner_params(ModelComponent comp
                                                  false,
                                                  params_follow_runtime,
                                                  &tensor_ops);
+}
+
+bool StableDiffusionGGML::set_h3_local_ops(bool enabled) {
+    ContextOperation operation(*this);
+    if (!operation.acquired) {
+        return false;
+    }
+    auto runner = std::dynamic_pointer_cast<MiniMaxH3::MiniMaxH3Runner>(diffusion_model);
+    if (!runner) {
+        return false;
+    }
+    h3_local_ops_enabled_ = enabled;
+    runner->set_local_ops_enabled(enabled);
+    return true;
+}
+
+bool StableDiffusionGGML::set_vae_conv_direct(bool enabled) {
+    ContextOperation operation(*this);
+    if (!operation.acquired || (!first_stage_model && !preview_vae && !audio_vae_model)) {
+        return false;
+    }
+    vae_conv_direct_override_ = enabled;
+    for (GGMLRunner* runner : {static_cast<GGMLRunner*>(first_stage_model.get()),
+                               static_cast<GGMLRunner*>(preview_vae.get()),
+                               static_cast<GGMLRunner*>(audio_vae_model.get())}) {
+        if (runner) {
+            runner->set_conv2d_direct_enabled(enabled);
+        }
+    }
+    return true;
 }
 
 bool StableDiffusionGGML::unload_control_net() {
@@ -1268,6 +1299,9 @@ bool StableDiffusionGGML::flash_attention_for(SDBackendModule module) {
 }
 
 bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d) {
+    if (module == SDBackendModule::VAE && !conv3d && vae_conv_direct_override_.has_value()) {
+        return *vae_conv_direct_override_;
+    }
     const auto& params     = config_->params;
     const std::string mode = conv_direct_assignment.get(module);
     if (mode == "on" || mode == "off") {
@@ -1296,6 +1330,9 @@ bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d) {
 }
 
 bool StableDiffusionGGML::validate_and_load_runners() {
+    if (auto runner = std::dynamic_pointer_cast<MiniMaxH3::MiniMaxH3Runner>(diffusion_model)) {
+        runner->set_local_ops_enabled(h3_local_ops_enabled_);
+    }
     const auto* sd_ctx_params   = &config_->params;
     const bool use_tae          = uses_tae();
     const bool tae_preview_only = this->tae_preview_only();

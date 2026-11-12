@@ -4,7 +4,6 @@
 #include "core/fit_params.h"
 #include "generation_info.h"
 #include "model/vae/wan_vae.hpp"
-#include "model/diffusion/minimax_h3.hpp"
 #include "upscaler.h"
 
 #include <algorithm>
@@ -692,26 +691,17 @@ sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params) {
 }
 
 bool sd_set_vae_conv_direct(sd_ctx_t* sd_ctx, bool enabled) {
-    if (sd_ctx == nullptr || sd_ctx->sd == nullptr || !sd_ctx->sd->first_stage_model) {
+    if (sd_ctx == nullptr || sd_ctx->sd == nullptr) {
         return false;
     }
-    sd_ctx->sd->first_stage_model->set_conv2d_direct_enabled(enabled);
-    if (sd_ctx->sd->preview_vae) {
-        sd_ctx->sd->preview_vae->set_conv2d_direct_enabled(enabled);
-    }
-    return true;
+    return sd_ctx->sd->set_vae_conv_direct(enabled);
 }
 
 bool sd_set_h3_local_ops(sd_ctx_t* sd_ctx, bool enabled) {
     if (sd_ctx == nullptr || sd_ctx->sd == nullptr) {
         return false;
     }
-    auto runner = std::dynamic_pointer_cast<MiniMaxH3::MiniMaxH3Runner>(sd_ctx->sd->diffusion_model);
-    if (!runner) {
-        return false;
-    }
-    runner->set_local_ops_enabled(enabled);
-    return true;
+    return sd_ctx->sd->set_h3_local_ops(enabled);
 }
 
 void free_sd_ctx(sd_ctx_t* sd_ctx) {

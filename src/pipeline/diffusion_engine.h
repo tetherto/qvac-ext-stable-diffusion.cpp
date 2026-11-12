@@ -202,6 +202,8 @@ public:
     std::unique_ptr<ConditioningCache> conditioning_cache_;
     std::vector<ModelManager::LoraSpec> conditioning_loras_;
     bool executing_ = false;
+    bool h3_local_ops_enabled_ = true;
+    std::optional<bool> vae_conv_direct_override_;
 
     std::shared_ptr<Denoiser> denoiser;
     std::vector<float> file_alphas_cumprod;
@@ -315,6 +317,10 @@ public:
                                             size_t* params_mem_size);
 
     bool unload_control_net();
+
+    bool set_h3_local_ops(bool enabled);
+
+    bool set_vae_conv_direct(bool enabled);
 
     bool load_control_net_from_file(const std::string& path);
 

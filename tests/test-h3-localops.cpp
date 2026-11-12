@@ -5,10 +5,15 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "model/diffusion/minimax_h3.hpp"
+#include "model/vae/audio_vae.hpp"
+#include "model/vae/vae.hpp"
+#include "conditioning/conditioner.hpp"
+#include "pipeline/diffusion_engine.h"
 
 static void require(bool ok, const char* message) {
     if (!ok)
@@ -135,7 +140,7 @@ static void run_blocks(ggml_backend_t backend, int heads, int tokens, int batch,
     }
 }
 
-static void test_runner_toggle(ggml_backend_t backend) {
+static String2TensorStorage small_h3_weights() {
     String2TensorStorage weights;
     const std::string prefix = "model.diffusion_model";
     const auto shape         = [&](const char* name, int64_t in, int64_t out) {
@@ -154,7 +159,11 @@ static void test_runner_toggle(ggml_backend_t backend) {
     shape("token_refiner.blocks.0.attn.q_norm.weight", 128, 1);
     shape("time_embedder.proj_in.weight", 64, 64);
     shape("time_embedder.proj_out.weight", 64, 64);
-    MiniMaxH3::MiniMaxH3Runner runner(backend, weights, prefix);
+    return weights;
+}
+
+static void test_runner_toggle(ggml_backend_t backend) {
+    MiniMaxH3::MiniMaxH3Runner runner(backend, small_h3_weights(), "model.diffusion_model");
     std::vector<GGMLBlock*> blocks;
     runner.model.get_all_blocks(blocks);
     for (bool enabled : {false, true, false}) {
@@ -172,6 +181,109 @@ static void test_runner_toggle(ggml_backend_t backend) {
         }
         require(mlps == 2 && attentions == 2, "Check transformer and token-refiner blocks");
     }
+}
+
+
+struct EmptyConditioner : public Conditioner {
+    SDCondition get_learned_condition(int, const ConditionerParams&) override { return {}; }
+    void get_param_tensors(std::map<std::string, ggml_tensor*>&) override {}
+    void set_fit_module(SDBackendModule) override {}
+    void set_flash_attention_enabled(bool) override {}
+};
+
+struct EmptyAudioVAE : public AudioVAERunner {
+    explicit EmptyAudioVAE(ggml_backend_t backend) : AudioVAERunner(backend) {}
+    void get_param_tensors(std::map<std::string, ggml_tensor*>&) override {}
+    size_t get_params_mem_size() override { return 0; }
+    std::string get_desc() override { return "empty_audio_vae"; }
+    sd::Tensor<float> decode(int, const sd::Tensor<float>& input) override { return input; }
+    int output_sample_rate() const override { return 48000; }
+};
+
+static void check_h3_controls(StableDiffusionGGML& sd, bool enabled) {
+    auto h3 = std::dynamic_pointer_cast<MiniMaxH3::MiniMaxH3Runner>(sd.diffusion_model);
+    require(h3 != nullptr, "Expected H3 runner");
+    std::vector<GGMLBlock*> blocks;
+    h3->model.get_all_blocks(blocks);
+    for (auto* block : blocks) {
+        if (auto* mlp = dynamic_cast<MiniMaxH3::MLP*>(block))
+            require(mlp->local_ops_enabled == enabled, "H3 MLP context setting lost");
+        if (auto* attention = dynamic_cast<MiniMaxH3::Attention*>(block))
+            require(attention->local_ops_enabled == enabled, "H3 attention context setting lost");
+    }
+}
+
+static void check_vae_controls(StableDiffusionGGML& sd, bool enabled) {
+    for (GGMLRunner* runner : {static_cast<GGMLRunner*>(sd.first_stage_model.get()),
+                               static_cast<GGMLRunner*>(sd.preview_vae.get()),
+                               static_cast<GGMLRunner*>(sd.audio_vae_model.get())}) {
+        require(runner->get_context().conv2d_direct_enabled == enabled, "VAE 2D context setting lost");
+        require(runner->get_context().conv3d_direct_enabled, "VAE 3D configuration changed");
+    }
+}
+
+static void test_context_controls(ggml_backend_t backend) {
+    StableDiffusionGGML sd;
+    require(!sd.set_h3_local_ops(false), "Missing H3 runner must be rejected");
+    require(!sd.set_vae_conv_direct(true), "Missing VAEs must be rejected");
+    sd_ctx_params_t params;
+    sd_ctx_params_init(&params);
+    sd.config_ = std::make_unique<StableDiffusionGGML::ModelConfig>(params);
+    sd.version = VERSION_MINIMAX_H3;
+    sd.model_manager = std::make_shared<ModelManager>();
+    sd.cond_stage_model = std::make_shared<EmptyConditioner>();
+    sd.conv_direct_assignment.set_default("on");
+    sd.flash_attn_assignment.set_default("off");
+    sd.fit_dry_run = true;
+    const auto replace_runners = [&] {
+        sd.diffusion_model = std::make_shared<MiniMaxH3::MiniMaxH3Runner>(backend, small_h3_weights());
+        sd.first_stage_model = std::make_shared<FakeVAE>(VERSION_FLUX2, backend);
+        sd.preview_vae = std::make_shared<FakeVAE>(VERSION_FLUX2, backend);
+        sd.audio_vae_model = std::make_shared<EmptyAudioVAE>(backend);
+    };
+    replace_runners();
+    require(sd.validate_and_load_runners(), "Initial runner validation failed");
+    check_h3_controls(sd, true);
+    check_vae_controls(sd, true);
+
+    StableDiffusionGGML other;
+    other.diffusion_model = std::make_shared<MiniMaxH3::MiniMaxH3Runner>(backend, small_h3_weights());
+    other.first_stage_model = std::make_shared<FakeVAE>(VERSION_FLUX2, backend);
+    require(other.set_vae_conv_direct(true), "Other context VAE setup failed");
+
+    for (bool enabled : {false, true, false}) {
+        require(sd.set_h3_local_ops(enabled), "H3 context setter failed");
+        require(sd.set_vae_conv_direct(enabled), "VAE context setter failed");
+        check_h3_controls(sd, enabled);
+        check_vae_controls(sd, enabled);
+        require(sd.conv_direct_for(SDBackendModule::DIFFUSION, false), "VAE override affected diffusion");
+        {
+            StableDiffusionGGML::ContextOperation operation(sd);
+            require(operation.acquired, "Could not acquire context guard");
+            require(!sd.set_h3_local_ops(!enabled), "Reentrant H3 setter accepted busy context");
+            require(!sd.set_vae_conv_direct(!enabled), "Reentrant VAE setter accepted busy context");
+            bool h3_accepted = true, vae_accepted = true;
+            std::thread concurrent([&] {
+                h3_accepted = sd.set_h3_local_ops(!enabled);
+                vae_accepted = sd.set_vae_conv_direct(!enabled);
+            });
+            concurrent.join();
+            require(!h3_accepted && !vae_accepted, "Concurrent setters accepted busy context");
+        }
+        check_h3_controls(sd, enabled);
+        check_vae_controls(sd, enabled);
+        require(sd.build_runners({StableDiffusionGGML::RunnerGroup::ControlNet}), "ControlNet runner update failed");
+        check_h3_controls(sd, enabled);
+        check_vae_controls(sd, enabled);
+        replace_runners();
+        require(sd.validate_and_load_runners(), "Replacement runner validation failed");
+        check_h3_controls(sd, enabled);
+        check_vae_controls(sd, enabled);
+        check_h3_controls(other, true);
+        require(other.first_stage_model->get_context().conv2d_direct_enabled, "VAE setting leaked to other context");
+    }
+    sd.diffusion_model.reset();
+    require(!sd.set_h3_local_ops(true), "Non-H3 context accepted H3 controls");
 }
 
 int main(int argc, char** argv) {
@@ -192,11 +304,12 @@ int main(int argc, char** argv) {
         run(backend, 14336, 5, 17, 2);
         run(backend, 14336, 48, 127, 1);
         test_runner_toggle(backend);
+        test_context_controls(backend);
         for (bool flash : {false, true}) {
             run_blocks(backend, 1, 1, 1, flash);
             run_blocks(backend, 3, 17, 2, flash);
         }
-        std::cout << "PASS H3 primitive and production-block equivalence, flash attention on/off, changing inputs, batches and runner toggles\n";
+        std::cout << "PASS H3 primitive and production-block equivalence, flash attention on/off, changing inputs, batches, runner rebuilds and guarded context controls\n";
         ggml_backend_free(backend);
         return 0;
     } catch (const std::exception& error) {
