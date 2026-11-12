@@ -640,6 +640,14 @@ SD_API void sd_fit_result_free(sd_fit_result_t* result);
 
 SD_API sd_ctx_t* new_sd_ctx(const sd_ctx_params_t* sd_ctx_params);
 SD_API void free_sd_ctx(sd_ctx_t* sd_ctx);
+
+// Change H3 graph operations while the context is idle; initially enabled.
+// Returns false for a null context or a model other than MiniMax-H3.
+SD_API bool sd_set_h3_local_ops(sd_ctx_t* sd_ctx, bool enabled);
+
+// Change VAE 2D convolution between generation calls. Call only while idle.
+// Returns false for a null context or a context without a VAE.
+SD_API bool sd_set_vae_conv_direct(sd_ctx_t* sd_ctx, bool enabled);
 SD_API void free_sd_audio(sd_audio_t* audio);
 
 SD_API void sd_sample_params_init(sd_sample_params_t* sample_params);
