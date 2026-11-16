@@ -6,6 +6,8 @@
 #include <string>
 
 // Runs a UNet exported to CoreML (see script/coreml/convert_unet.py) in place of the ggml UNet.
+// A multifunction model (iOS 18+) holds one fixed-shape function per resolution; each call uses
+// the function whose input shapes match, loading it on first use.
 // Expected model I/O (float32, fixed shapes):
 //   sample                [N, C, H, W]
 //   timestep              [N]

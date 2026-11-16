@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 
 #include "util.h"
@@ -71,12 +72,64 @@ MLMultiArray* wrap(const float* data, const std::vector<int64_t>& shape, NSError
                                                error:error];
 }
 
-class CoreMLUNetImpl : public CoreMLUNet {
-public:
-    MLModel* model = nil;
+// One fixed-shape UNet. A multifunction model has one per resolution, all sharing the same weights.
+struct UNetFunction {
+    std::string name;  // empty for a single-function model
     std::vector<int64_t> sample_shape;
     std::vector<int64_t> context_shape;
+    MLModel* model = nil;  // loaded on first use
+};
+
+std::string shape_str(const int64_t* shape, size_t n) {
+    std::string s = "[";
+    for (size_t i = 0; i < n; i++) {
+        s += (i ? ", " : "") + std::to_string(shape[i]);
+    }
+    return s + "]";
+}
+
+class CoreMLUNetImpl : public CoreMLUNet {
+public:
+    NSURL* url = nil;
+    MLComputeUnits compute_units;
+    std::vector<UNetFunction> functions;
     std::string desc;
+
+    UNetFunction* find_function(const int64_t x_shape[4], const int64_t ctx_shape[3]) {
+        for (auto& f : functions) {
+            if (std::equal(f.sample_shape.begin(), f.sample_shape.end(), x_shape) &&
+                std::equal(f.context_shape.begin(), f.context_shape.end(), ctx_shape)) {
+                return &f;
+            }
+        }
+        return nullptr;
+    }
+
+    bool load_function(UNetFunction& f) {
+        MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
+        config.computeUnits          = compute_units;
+        if (!f.name.empty()) {
+            if (@available(macOS 15.0, iOS 18.0, *)) {
+                config.functionName = [NSString stringWithUTF8String:f.name.c_str()];
+            } else {
+                LOG_ERROR("coreml unet: multifunction models need iOS 18 / macOS 15");
+                return false;
+            }
+        }
+        NSError* error = nil;
+        auto t0        = std::chrono::steady_clock::now();
+        f.model        = [MLModel modelWithContentsOfURL:url configuration:config error:&error];
+        if (f.model == nil) {
+            LOG_ERROR("coreml unet: failed to load %s: %s",
+                      f.name.empty() ? "model" : f.name.c_str(), error.localizedDescription.UTF8String);
+            return false;
+        }
+        LOG_INFO("coreml unet: loaded %s in %.2f s, sample %s",
+                 f.name.empty() ? "model" : f.name.c_str(),
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                 shape_str(f.sample_shape.data(), f.sample_shape.size()).c_str());
+        return true;
+    }
 
     bool predict(const float* x,
                  const int64_t x_shape[4],
@@ -85,22 +138,22 @@ public:
                  const int64_t ctx_shape[3],
                  float* out) override {
         @autoreleasepool {
-            for (int i = 0; i < 4; i++) {
-                if (x_shape[i] != sample_shape[i]) {
-                    LOG_ERROR("coreml unet: sample shape [%lld, %lld, %lld, %lld] does not match the model's [%lld, %lld, %lld, %lld]",
-                              x_shape[0], x_shape[1], x_shape[2], x_shape[3],
-                              sample_shape[0], sample_shape[1], sample_shape[2], sample_shape[3]);
-                    return false;
+            UNetFunction* f = find_function(x_shape, ctx_shape);
+            if (f == nullptr) {
+                std::string available;
+                for (auto& fn : functions) {
+                    available += " " + shape_str(fn.sample_shape.data(), 4) + "/" + shape_str(fn.context_shape.data(), 3);
                 }
+                LOG_ERROR("coreml unet: no function for sample %s, context %s; the model has:%s",
+                          shape_str(x_shape, 4).c_str(), shape_str(ctx_shape, 3).c_str(), available.c_str());
+                return false;
             }
-            for (int i = 0; i < 3; i++) {
-                if (ctx_shape[i] != context_shape[i]) {
-                    LOG_ERROR("coreml unet: context shape [%lld, %lld, %lld] does not match the model's [%lld, %lld, %lld]",
-                              ctx_shape[0], ctx_shape[1], ctx_shape[2],
-                              context_shape[0], context_shape[1], context_shape[2]);
-                    return false;
-                }
+            if (f->model == nil && !load_function(*f)) {
+                return false;
             }
+            MLModel* model                            = f->model;
+            const std::vector<int64_t>& sample_shape  = f->sample_shape;
+            const std::vector<int64_t>& context_shape = f->context_shape;
 
             NSError* error         = nil;
             MLMultiArray* sample   = wrap(x, sample_shape, &error);
@@ -210,33 +263,74 @@ std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
             }
         }
 
-        MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits          = compute_units_from_env();
-
-        MLModel* model = [MLModel modelWithContentsOfURL:url configuration:config error:&error];
-        if (model == nil) {
-            LOG_ERROR("coreml unet: failed to load %s: %s", path.c_str(), error.localizedDescription.UTF8String);
-            return nullptr;
-        }
-        auto t1 = std::chrono::steady_clock::now();
-
         auto impl           = std::make_unique<CoreMLUNetImpl>();
-        impl->model         = model;
-        impl->sample_shape  = declared_shape(model.modelDescription.inputDescriptionsByName[@"sample"]);
-        impl->context_shape = declared_shape(model.modelDescription.inputDescriptionsByName[@"encoder_hidden_states"]);
-        if (impl->sample_shape.size() != 4 || impl->context_shape.size() != 3 ||
-            model.modelDescription.inputDescriptionsByName[@"timestep"] == nil) {
-            LOG_ERROR("coreml unet: %s does not have the expected sample/timestep/encoder_hidden_states inputs", path.c_str());
+        impl->url           = url;
+        impl->compute_units = compute_units_from_env();
+
+        // A multifunction model (one fixed shape per resolution) lists its functions and their
+        // descriptions up front, so only the functions actually used get loaded and compiled.
+        if (@available(macOS 15.0, iOS 18.0, *)) {
+            MLModelAsset* asset = [MLModelAsset modelAssetWithURL:url error:&error];
+            if (asset != nil) {
+                __block NSArray<NSString*>* names = nil;
+                dispatch_semaphore_t done         = dispatch_semaphore_create(0);
+                [asset functionNamesWithCompletionHandler:^(NSArray<NSString*>* result, NSError* err) {
+                    names = result;
+                    dispatch_semaphore_signal(done);
+                }];
+                dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+                for (NSString* name in names) {
+                    __block MLModelDescription* description = nil;
+                    [asset modelDescriptionOfFunctionNamed:name
+                                         completionHandler:^(MLModelDescription* result, NSError* err) {
+                                             description = result;
+                                             dispatch_semaphore_signal(done);
+                                         }];
+                    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+                    UNetFunction f;
+                    f.name          = name.UTF8String;
+                    f.sample_shape  = declared_shape(description.inputDescriptionsByName[@"sample"]);
+                    f.context_shape = declared_shape(description.inputDescriptionsByName[@"encoder_hidden_states"]);
+                    impl->functions.push_back(f);
+                }
+            }
+        }
+
+        if (impl->functions.empty()) {
+            UNetFunction f;
+            if (!impl->load_function(f)) {
+                return nullptr;
+            }
+            MLModelDescription* description = f.model.modelDescription;
+            f.sample_shape                  = declared_shape(description.inputDescriptionsByName[@"sample"]);
+            f.context_shape                 = declared_shape(description.inputDescriptionsByName[@"encoder_hidden_states"]);
+            impl->functions.push_back(f);
+        }
+
+        for (auto& f : impl->functions) {
+            if (f.sample_shape.size() != 4 || f.context_shape.size() != 3) {
+                LOG_ERROR("coreml unet: %s%s does not have fixed-shape sample/encoder_hidden_states inputs",
+                          path.c_str(), f.name.empty() ? "" : (" (" + f.name + ")").c_str());
+                return nullptr;
+            }
+        }
+
+        // Load the first function now, so a bad model fails here rather than mid-generation.
+        if (impl->functions[0].model == nil && !impl->load_function(impl->functions[0])) {
             return nullptr;
         }
 
-        impl->desc = "CoreML UNet (" + std::string(compute_units_name(config.computeUnits)) + ")";
-        LOG_INFO("coreml unet: loaded %s in %.2f s, compute units %s, sample [%lld, %lld, %lld, %lld], context [%lld, %lld, %lld]",
+        std::string shapes;
+        for (auto& f : impl->functions) {
+            shapes += " " + std::to_string(f.sample_shape[3] * 8) + "x" + std::to_string(f.sample_shape[2] * 8);
+        }
+        impl->desc = "CoreML UNet (" + std::string(compute_units_name(impl->compute_units)) + ")";
+        LOG_INFO("coreml unet: %s ready in %.2f s, compute units %s, %zu function(s), WxH:%s",
                  path.c_str(),
-                 std::chrono::duration<double>(t1 - t0).count(),
-                 compute_units_name(config.computeUnits),
-                 impl->sample_shape[0], impl->sample_shape[1], impl->sample_shape[2], impl->sample_shape[3],
-                 impl->context_shape[0], impl->context_shape[1], impl->context_shape[2]);
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                 compute_units_name(impl->compute_units),
+                 impl->functions.size(),
+                 shapes.c_str());
         return impl;
     }
 }
