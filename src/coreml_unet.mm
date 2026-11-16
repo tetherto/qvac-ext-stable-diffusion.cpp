@@ -124,6 +124,11 @@ public:
                       f.name.empty() ? "model" : f.name.c_str(), error.localizedDescription.UTF8String);
             return false;
         }
+        if (f.sample_shape.empty()) {  // single-function model: shapes come from the loaded model
+            MLModelDescription* description = f.model.modelDescription;
+            f.sample_shape                  = declared_shape(description.inputDescriptionsByName[@"sample"]);
+            f.context_shape                 = declared_shape(description.inputDescriptionsByName[@"encoder_hidden_states"]);
+        }
         LOG_INFO("coreml unet: loaded %s in %.2f s, sample %s",
                  f.name.empty() ? "model" : f.name.c_str(),
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
@@ -301,9 +306,6 @@ std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
             if (!impl->load_function(f)) {
                 return nullptr;
             }
-            MLModelDescription* description = f.model.modelDescription;
-            f.sample_shape                  = declared_shape(description.inputDescriptionsByName[@"sample"]);
-            f.context_shape                 = declared_shape(description.inputDescriptionsByName[@"encoder_hidden_states"]);
             impl->functions.push_back(f);
         }
 
