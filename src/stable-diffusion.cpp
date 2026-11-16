@@ -933,7 +933,22 @@ public:
             prediction_t pred_type = sd_ctx_params->prediction;
 
             if (pred_type == PREDICTION_COUNT) {
-                if (sd_version_is_sd2(version)) {
+                if (sd_version_is_sd2(version) && use_coreml_unet) {
+#ifdef SD_USE_COREML
+                    // The probe below runs the UNet on an 8x8 latent, which a fixed-shape CoreML UNet cannot take.
+                    std::string recorded = std::dynamic_pointer_cast<CoreMLUNetModel>(diffusion_model)->coreml->prediction_type();
+                    if (recorded == "v_prediction") {
+                        pred_type = V_PRED;
+                    } else if (recorded == "epsilon") {
+                        pred_type = EPS_PRED;
+                    } else {
+                        LOG_ERROR("the CoreML UNet does not record its prediction type; re-export it with "
+                                  "convert_unet.py or pass --prediction");
+                        return false;
+                    }
+                    LOG_INFO("prediction type from the CoreML UNet: %s", recorded.c_str());
+#endif
+                } else if (sd_version_is_sd2(version)) {
                     // check is_using_v_parameterization_for_sd2
                     if (is_using_v_parameterization_for_sd2(ctx, sd_version_is_inpaint(version))) {
                         pred_type = V_PRED;

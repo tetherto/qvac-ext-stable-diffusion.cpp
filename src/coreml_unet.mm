@@ -23,6 +23,7 @@ public:
     MLComputeUnits compute_units;
     std::vector<UNetFunction> functions;
     std::string desc;
+    std::string prediction;
 
     UNetFunction* find_function(const int64_t x_shape[4], const int64_t ctx_shape[3]) {
         for (auto& f : functions) {
@@ -136,6 +137,10 @@ public:
     std::string get_desc() override {
         return desc;
     }
+
+    std::string prediction_type() override {
+        return prediction;
+    }
 };
 
 }  // namespace
@@ -203,17 +208,24 @@ std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
             return nullptr;
         }
 
+        NSDictionary* metadata = impl->functions[0].model.modelDescription.metadata[MLModelCreatorDefinedKey];
+        NSString* prediction   = metadata[@"prediction_type"];
+        if (prediction != nil) {
+            impl->prediction = prediction.UTF8String;
+        }
+
         std::string shapes;
         for (auto& f : impl->functions) {
             shapes += " " + std::to_string(f.sample_shape[3] * 8) + "x" + std::to_string(f.sample_shape[2] * 8);
         }
         impl->desc = "CoreML UNet (" + std::string(compute_units_name(impl->compute_units)) + ")";
-        LOG_INFO("coreml unet: %s ready in %.2f s, compute units %s, %zu function(s), WxH:%s",
+        LOG_INFO("coreml unet: %s ready in %.2f s, compute units %s, %zu function(s), WxH:%s, prediction %s",
                  path.c_str(),
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
                  compute_units_name(impl->compute_units),
                  impl->functions.size(),
-                 shapes.c_str());
+                 shapes.c_str(),
+                 impl->prediction.empty() ? "not recorded" : impl->prediction.c_str());
         return impl;
     }
 }

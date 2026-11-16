@@ -28,6 +28,9 @@ public:
                          float* out) = 0;
 
     virtual std::string get_desc() = 0;
+
+    // "epsilon" or "v_prediction" from the model's metadata (written by convert_unet.py), or "" if absent.
+    virtual std::string prediction_type() = 0;
 };
 
 #endif  // __COREML_UNET_H__

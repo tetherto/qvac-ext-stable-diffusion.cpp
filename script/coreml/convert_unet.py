@@ -22,6 +22,7 @@ pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 """
 
 import argparse
+import json
 import shutil
 import subprocess
 import tempfile
@@ -69,6 +70,16 @@ def is_sdxs(cfg):
             list(cfg.down_block_types)[0] == "DownBlock2D")
 
 
+def prediction_type(unet_dir, override):
+    """epsilon or v_prediction, from --prediction or the pipeline's scheduler config next to unet/."""
+    if override:
+        return override
+    sched = Path(unet_dir).resolve().parent / "scheduler" / "scheduler_config.json"
+    if sched.exists():
+        return json.loads(sched.read_text()).get("prediction_type", "epsilon")
+    raise SystemExit(f"error: {sched} not found; pass --prediction epsilon or --prediction v_prediction")
+
+
 def check_sizes(cfg, sizes, allow_untrained):
     native = native_size(cfg)
     off = [s for s in sizes if s != native]
@@ -95,6 +106,9 @@ def main():
     parser.add_argument("--sizes", default="512x512",
                         help="comma-separated image sizes as WIDTHxHEIGHT, only ones the model was trained at "
                              "(SDXS: 512x512); more than one makes a multifunction model")
+    parser.add_argument("--prediction", choices=["epsilon", "v_prediction"],
+                        help="what the UNet predicts; recorded in the model so sd.cpp can pick the denoiser "
+                             "(default: the pipeline's scheduler/scheduler_config.json)")
     parser.add_argument("--allow-untrained-sizes", action="store_true",
                         help="export sizes other than the model's native one even for SDXS (expect bad images)")
     parser.add_argument("--context-len", type=int, default=77, help="text tokens; sd.cpp uses 77 per prompt chunk")
@@ -109,10 +123,15 @@ def main():
     if not args.keep_silu:
         torch.nn.SiLU.forward = silu_via_tanh
 
-    unet = UNet2DConditionModel.from_pretrained(args.unet, torch_dtype=torch.float32).eval()
+    # Some pipelines ship only the fp16 variant (diffusion_pytorch_model.fp16.safetensors); trace in fp32 either way.
+    has_default = any((Path(args.unet) / f).exists() for f in ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"))
+    unet = UNet2DConditionModel.from_pretrained(args.unet, torch_dtype=torch.float32,
+                                                variant=None if has_default else "fp16").eval()
     wrapper = UNetWrapper(unet).eval()
     cfg = unet.config
     check_sizes(cfg, sizes, args.allow_untrained_sizes)
+    prediction = prediction_type(args.unet, args.prediction)
+    print(f"prediction type: {prediction}")
     multi = len(sizes) > 1
     parts_dir = Path(tempfile.mkdtemp(prefix="unet_parts_")) if multi else None
     checks = []  # (function name or None, inputs, fp32 reference output)
@@ -149,6 +168,7 @@ def main():
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
 
         inputs = {name: tensor.numpy() for name, tensor in zip(shapes, example)}
+        mlmodel.user_defined_metadata["prediction_type"] = prediction
         if multi:
             mlmodel.save(str(parts_dir / f"{function_name(width, height)}.mlpackage"))
             checks.append((function_name(width, height), inputs, reference))
@@ -164,6 +184,10 @@ def main():
             desc.add_function(str(parts_dir / f"{name}.mlpackage"), src_function_name="main", target_function_name=name)
         desc.default_function_name = function_name(*sizes[0])
         ct.utils.save_multifunction(desc, args.out)
+        merged = ct.models.MLModel(args.out, skip_model_load=True)
+        if merged.user_defined_metadata.get("prediction_type") != prediction:
+            merged.user_defined_metadata["prediction_type"] = prediction
+            merged.save(args.out)
         shutil.rmtree(parts_dir)
         print(f"saved {len(sizes)} functions to {args.out}")
 
