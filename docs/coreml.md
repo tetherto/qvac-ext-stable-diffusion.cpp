@@ -2,7 +2,7 @@
 
 On Apple devices, the UNet of SD 1.x/2.x models can run as a CoreML model on the Neural Engine (ANE), while the text encoder, tokenizer, scheduler and VAE stay on ggml (Metal/CPU). The ggml UNet weights are not loaded in this mode.
 
-SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR).
+SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR). [examples/ios-bench](../examples/ios-bench/README.md) reproduces this comparison on macOS and iOS.
 
 ### Build
 
