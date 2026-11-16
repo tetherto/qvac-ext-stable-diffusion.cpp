@@ -104,7 +104,7 @@ file(GLOB SD_LIB_SOURCES
     "src/vocab/*.cpp"
 )
 if(SD_COREML)
-    list(APPEND SD_LIB_SOURCES "src/coreml_unet.mm")
+    list(APPEND SD_LIB_SOURCES "src/coreml_unet.mm" "src/coreml_tae.mm")
 endif()
 
 find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
@@ -199,7 +199,7 @@ add_subdirectory(thirdparty)
 target_link_libraries(${SD_LIB} PUBLIC ggml zip)
 if(SD_COREML)
     target_link_libraries(${SD_LIB} PUBLIC "-framework CoreML" "-framework Foundation")
-    set_source_files_properties(src/coreml_unet.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(src/coreml_unet.mm src/coreml_tae.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 target_include_directories(${SD_LIB} PUBLIC . include)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)

@@ -1,76 +1,13 @@
 #include "coreml_unet.h"
 
-#import <CoreML/CoreML.h>
-#import <Foundation/Foundation.h>
-
-#include <chrono>
-#include <cstdlib>
 #include <algorithm>
-#include <cstring>
+#include <chrono>
 
-#include "util.h"
+#include "coreml_utils.h"
+
+using namespace sd_coreml;
 
 namespace {
-
-MLComputeUnits compute_units_from_env() {
-    const char* env = getenv("SD_COREML_COMPUTE_UNITS");
-    std::string v   = env ? env : "cpu_ne";
-    if (v == "all") {
-        return MLComputeUnitsAll;
-    }
-    if (v == "cpu_gpu") {
-        return MLComputeUnitsCPUAndGPU;
-    }
-    if (v == "cpu") {
-        return MLComputeUnitsCPUOnly;
-    }
-    return MLComputeUnitsCPUAndNeuralEngine;
-}
-
-const char* compute_units_name(MLComputeUnits units) {
-    switch (units) {
-        case MLComputeUnitsAll:
-            return "all";
-        case MLComputeUnitsCPUAndGPU:
-            return "cpu_gpu";
-        case MLComputeUnitsCPUOnly:
-            return "cpu";
-        default:
-            return "cpu_ne";
-    }
-}
-
-// Shape of a fixed-size multiarray input or output, or empty if the model does not declare one.
-std::vector<int64_t> declared_shape(MLFeatureDescription* desc) {
-    std::vector<int64_t> shape;
-    if (desc == nil || desc.multiArrayConstraint == nil) {
-        return shape;
-    }
-    for (NSNumber* d in desc.multiArrayConstraint.shape) {
-        shape.push_back(d.longLongValue);
-    }
-    return shape;
-}
-
-MLMultiArray* wrap(const float* data, const std::vector<int64_t>& shape, NSError** error) {
-    NSMutableArray<NSNumber*>* dims    = [NSMutableArray array];
-    NSMutableArray<NSNumber*>* strides = [NSMutableArray array];
-    int64_t stride                     = 1;
-    for (size_t i = 0; i < shape.size(); i++) {
-        [dims addObject:@(shape[i])];
-    }
-    for (size_t i = shape.size(); i-- > 0;) {
-        [strides insertObject:@(stride) atIndex:0];
-        stride *= shape[i];
-    }
-    // CoreML only reads inputs, so the const_cast does not let it write to caller memory.
-    return [[MLMultiArray alloc] initWithDataPointer:const_cast<float*>(data)
-                                               shape:dims
-                                            dataType:MLMultiArrayDataTypeFloat32
-                                             strides:strides
-                                         deallocator:nil
-                                               error:error];
-}
 
 // One fixed-shape UNet. A multifunction model has one per resolution, all sharing the same weights.
 struct UNetFunction {
@@ -79,14 +16,6 @@ struct UNetFunction {
     std::vector<int64_t> context_shape;
     MLModel* model = nil;  // loaded on first use
 };
-
-std::string shape_str(const int64_t* shape, size_t n) {
-    std::string s = "[";
-    for (size_t i = 0; i < n; i++) {
-        s += (i ? ", " : "") + std::to_string(shape[i]);
-    }
-    return s + "]";
-}
 
 class CoreMLUNetImpl : public CoreMLUNet {
 public:
@@ -200,49 +129,7 @@ public:
             for (int64_t d : sample_shape) {
                 n *= d;
             }
-            if (result.count != n) {
-                LOG_ERROR("coreml unet: output has %lld elements, expected %lld", (long long)result.count, (long long)n);
-                return false;
-            }
-
-            // The output may be float16 and may have padded strides, so copy element by element in logical order.
-            __block bool ok = true;
-            [result getBytesWithHandler:^(const void* bytes, NSInteger size) {
-                (void)size;
-                const int rank = (int)result.shape.count;
-                std::vector<int64_t> shape(rank), strides(rank), idx(rank, 0);
-                for (int i = 0; i < rank; i++) {
-                    shape[i]   = result.shape[i].longLongValue;
-                    strides[i] = result.strides[i].longLongValue;
-                }
-                for (int64_t i = 0; i < n; i++) {
-                    int64_t offset = 0;
-                    for (int d = 0; d < rank; d++) {
-                        offset += idx[d] * strides[d];
-                    }
-                    switch (result.dataType) {
-                        case MLMultiArrayDataTypeFloat32:
-                            out[i] = ((const float*)bytes)[offset];
-                            break;
-                        case MLMultiArrayDataTypeFloat16:
-                            out[i] = (float)((const _Float16*)bytes)[offset];
-                            break;
-                        default:
-                            ok = false;
-                            return;
-                    }
-                    for (int d = rank - 1; d >= 0; d--) {
-                        if (++idx[d] < shape[d]) {
-                            break;
-                        }
-                        idx[d] = 0;
-                    }
-                }
-            }];
-            if (!ok) {
-                LOG_ERROR("coreml unet: unsupported output data type");
-            }
-            return ok;
+            return copy_output(result, n, out, "coreml unet");
         }
     }
 
@@ -256,16 +143,10 @@ public:
 std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
     @autoreleasepool {
         NSError* error = nil;
-        NSURL* url     = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
-
-        auto t0 = std::chrono::steady_clock::now();
-        if (![url.pathExtension isEqualToString:@"mlmodelc"]) {
-            LOG_INFO("coreml unet: compiling %s (ship a .mlmodelc to skip this step)", path.c_str());
-            url = [MLModel compileModelAtURL:url error:&error];
-            if (url == nil) {
-                LOG_ERROR("coreml unet: failed to compile %s: %s", path.c_str(), error.localizedDescription.UTF8String);
-                return nullptr;
-            }
+        auto t0        = std::chrono::steady_clock::now();
+        NSURL* url     = compiled_model_url(path, "coreml unet");
+        if (url == nil) {
+            return nullptr;
         }
 
         auto impl           = std::make_unique<CoreMLUNetImpl>();

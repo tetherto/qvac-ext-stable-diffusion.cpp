@@ -1,7 +1,8 @@
 // SDXS benchmark: loads the model once, then generates 1 warm-up and 3 timed 512x512 images
 // (1 step, CFG 1, seed 42). Stage times come from sd.cpp's own log lines.
-// usage: sd-bench bench <model.gguf> <coreml.mlmodelc|-> <out_prefix>
-//   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar.
+// usage: sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]
+//   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar. The optional
+//   last argument runs the tiny decoder with its CoreML sidecar too.
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +37,7 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
     } else if ((v = after(text, "decode_first_stage completed, taking ")) >= 0) {
         g_stage.decode_ms = v * 1000;  // s
     }
-    if (level >= SD_LOG_WARN || strstr(text, "coreml unet") || strstr(text, "total params memory")) {
+    if (level >= SD_LOG_WARN || strstr(text, "coreml unet") || strstr(text, "coreml tae") || strstr(text, "total params memory")) {
         fputs(text, stdout);
     }
 }
@@ -45,12 +46,13 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
 
 int sd_bench_main(int argc, const char* argv[]) {
     if (argc < 5) {
-        fprintf(stderr, "usage: %s bench <model.gguf> <coreml.mlmodelc|-> <out_prefix>\n", argv[0]);
+        fprintf(stderr, "usage: %s bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]\n", argv[0]);
         return 1;
     }
     const char* model  = argv[2];
     const char* coreml = strcmp(argv[3], "-") == 0 ? "" : argv[3];
     std::string prefix = argv[4];
+    const char* tae    = argc > 5 ? argv[5] : "";
 
     struct Job {
         const char* name;
@@ -69,6 +71,7 @@ int sd_bench_main(int argc, const char* argv[]) {
     sd_ctx_params_init(&ctx_params);
     ctx_params.model_path              = model;
     ctx_params.coreml_unet_path        = coreml;
+    ctx_params.coreml_tae_decoder_path = tae;
     ctx_params.free_params_immediately = false;  // reuse the context for every image
 
     auto t0       = std::chrono::steady_clock::now();
@@ -78,7 +81,7 @@ int sd_bench_main(int argc, const char* argv[]) {
         fprintf(stdout, "[bench] new_sd_ctx failed\n");
         return 1;
     }
-    fprintf(stdout, "[bench] backend=%s load=%.2f s\n", *coreml ? "coreml-ane" : "metal", load_s);
+    fprintf(stdout, "[bench] unet=%s decoder=%s load=%.2f s\n", *coreml ? "coreml" : "metal", *tae ? "coreml" : "metal", load_s);
 
     for (const auto& job : jobs) {
         sd_img_gen_params_t params;

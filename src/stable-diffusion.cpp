@@ -12,6 +12,9 @@
 #include "control.hpp"
 #include "denoiser.hpp"
 #include "diffusion_model.hpp"
+#ifdef SD_USE_COREML
+#include "coreml_tae.h"
+#endif
 #include "easycache.hpp"
 #include "esrgan.hpp"
 #include "lora.hpp"
@@ -128,6 +131,9 @@ public:
     bool use_coreml_unet = false;
     std::shared_ptr<VAE> first_stage_model;
     std::shared_ptr<TinyAutoEncoder> tae_first_stage;
+#ifdef SD_USE_COREML
+    std::unique_ptr<CoreMLTAEDecoder> coreml_tae;  // replaces tae_first_stage for untiled decodes
+#endif
     std::shared_ptr<ControlNet> control_net;
     std::shared_ptr<PhotoMakerIDEncoder> pmid_model;
     std::shared_ptr<LoraModel> pmid_lora;
@@ -686,6 +692,22 @@ public:
                     LOG_INFO("Using Conv2d direct in the tae model");
                     tae_first_stage->set_conv2d_direct_enabled(true);
                 }
+            }
+
+            if (strlen(SAFE_STR(sd_ctx_params->coreml_tae_decoder_path)) > 0) {
+#ifdef SD_USE_COREML
+                if (!std::dynamic_pointer_cast<TinyImageAutoEncoder>(tae_first_stage)) {
+                    LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL model");
+                    return false;
+                }
+                coreml_tae = CoreMLTAEDecoder::load(sd_ctx_params->coreml_tae_decoder_path);
+                if (!coreml_tae) {
+                    return false;
+                }
+#else
+                LOG_ERROR("coreml_tae_decoder_path is set, but this build has no CoreML support (SD_COREML=OFF)");
+                return false;
+#endif
             }
 
             if (strlen(SAFE_STR(sd_ctx_params->control_net_path)) > 0) {
@@ -2738,7 +2760,18 @@ public:
                 };
                 sd_tiling(x, result, vae_scale_factor, 64, 0.5f, circular_x, circular_y, on_tiling);
             } else {
-                if (!tae_first_stage->compute(n_threads, x, true, &result)) {
+                bool decoded = false;
+#ifdef SD_USE_COREML
+                if (coreml_tae && x->type == GGML_TYPE_F32 && ggml_is_contiguous(x)) {
+                    // ggml's [w, h, C, N] latent and [W, H, 3, N] image are row-major [N, C, h, w] and [N, 3, H, W].
+                    const int64_t latent_shape[4] = {x->ne[3], x->ne[2], x->ne[1], x->ne[0]};
+                    decoded                       = coreml_tae->decode((const float*)x->data, latent_shape, (float*)result->data);
+                } else
+#endif
+                {
+                    decoded = tae_first_stage->compute(n_threads, x, true, &result);
+                }
+                if (!decoded) {
                     LOG_ERROR("Failed to decode latetnts");
                     tae_first_stage->free_compute_buffer();
                     return nullptr;

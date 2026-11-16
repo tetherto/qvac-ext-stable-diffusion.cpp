@@ -1,8 +1,8 @@
-## Running the UNet on the Apple Neural Engine (CoreML sidecar)
+## Running the UNet and the tiny decoder on the Apple Neural Engine (CoreML sidecars)
 
-On Apple devices, the UNet of SD 1.x/2.x models can run as a CoreML model on the Neural Engine (ANE), while the text encoder, tokenizer, scheduler and VAE stay on ggml (Metal/CPU). The ggml UNet weights are not loaded in this mode.
+On Apple devices, two parts of the pipeline can run as CoreML models on the Neural Engine (ANE): the UNet of SD 1.x/2.x models (`--coreml-unet`), and the tiny autoencoder's decoder used by SDXS and `--taesd` (`--coreml-tae`). The text encoder, tokenizer and scheduler stay on ggml (Metal/CPU). The ggml UNet weights are not loaded when the UNet runs on CoreML.
 
-SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR). [examples/ios-bench](../examples/ios-bench/README.md) reproduces this comparison on macOS and iOS.
+SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR). On an M2, running the tiny decoder on the ANE as well takes a whole image from 1,728 ms (all ggml Metal) to about 95 ms. [examples/ios-bench](../examples/ios-bench/README.md) reproduces this comparison on macOS and iOS.
 
 ### Build
 
@@ -11,7 +11,7 @@ cmake -B build -DSD_METAL=ON -DSD_COREML=ON
 cmake --build build --config Release
 ```
 
-`SD_COREML` needs an Apple platform. It links CoreML and adds the `--coreml-unet` option to `sd-cli` (`coreml_unet_path` in `sd_ctx_params_t`).
+`SD_COREML` needs an Apple platform. It links CoreML and adds the `--coreml-unet` and `--coreml-tae` options to `sd-cli` (`coreml_unet_path` and `coreml_tae_decoder_path` in `sd_ctx_params_t`).
 
 ### Export the UNet
 
@@ -22,15 +22,26 @@ python script/coreml/convert_unet.py --unet sdxs-512-dreamshaper/unet --out sdxs
 
 `--unet` is the `unet/` folder of a diffusers pipeline. The script checks the exported model against PyTorch fp32 on the CPU+ANE and CPU+GPU, and `--compile` also writes the `.mlmodelc` to ship. Use fp16 (the default): `--precision w8` halves the file but runs no faster on the ANE and drifts more.
 
+### Export the tiny decoder
+
+```bash
+python script/coreml/convert_tae_decoder.py --vae sdxs-512-dreamshaper/vae --out sdxs_tae_decoder.mlpackage --compile
+```
+
+`--vae` is a diffusers `AutoencoderTiny` folder: SDXS's own `vae/`, or [madebyollin/taesd](https://huggingface.co/madebyollin/taesd) for models used with `--taesd`. The export is the same graph as sd.cpp's `TinyDecoder` and returns the image in [0, 1]. It leaves out the `x * 2 - 1` that diffusers' `DecoderTiny.forward` ends with; including it gives dark images, because sd.cpp clamps the output to [0, 1]. The decoder has no attention and no SiLU, so it runs fully on the ANE as exported (53.7 dB against PyTorch fp32, 55 dB against the ggml decoder).
+
+The ggml decoder is unusually slow on Metal for so small a model (1.2M parameters, about 1.1 s at 512x512), so the decoder sidecar saves more time per image than the UNet one: it takes about 10-20 ms on an M2.
+
 ### Run
 
 ```bash
-sd-cli -m sdxs-f16.gguf --coreml-unet sdxs_unet_fp16.mlmodelc -p "portrait of a lovely cat" --cfg-scale 1 --steps 1
+sd-cli -m sdxs-f16.gguf --coreml-unet sdxs_unet_fp16.mlmodelc --coreml-tae sdxs_tae_decoder.mlmodelc \
+       -p "portrait of a lovely cat" --cfg-scale 1 --steps 1
 ```
 
-`-m` still has to point at the full model: the text encoder and VAE come from it, and the UNet tensors in it are skipped. `SD_COREML_COMPUTE_UNITS` picks where CoreML runs: `cpu_ne` (default), `all`, `cpu_gpu` or `cpu`.
+The two options are independent. `-m` still has to point at the full model: the text encoder and VAE come from it, and the UNet tensors in it are skipped. `--coreml-tae` needs the image tiny autoencoder (SDXS, or `--taesd` with an SD or SDXL model); with `--vae-tiling` the decoder falls back to ggml, because the CoreML decoder has one fixed latent shape. `SD_COREML_COMPUTE_UNITS` picks where CoreML runs: `cpu_ne` (default), `all`, `cpu_gpu` or `cpu`.
 
-The first load on a device compiles the model for the ANE (about 10 s on iPhone 16). CoreML caches the result, so later loads take well under a second. Ship a `.mlmodelc`; an `.mlpackage` is compiled on every load.
+The first load on a device compiles each model for the ANE (about 10 s for the SDXS UNet on iPhone 16). CoreML caches the result, so later loads take well under a second. Ship a `.mlmodelc`; an `.mlpackage` is compiled on every load.
 
 ### Supported sizes
 

@@ -202,6 +202,7 @@ typedef struct {
     int chroma_t5_mask_pad;
     bool qwen_image_zero_cond_t;
     const char* coreml_unet_path;  // UNet as a CoreML model (.mlmodelc/.mlpackage); needs SD_COREML
+    const char* coreml_tae_decoder_path;  // tiny autoencoder decoder as a CoreML model; needs SD_COREML
 } sd_ctx_params_t;
 
 typedef struct {

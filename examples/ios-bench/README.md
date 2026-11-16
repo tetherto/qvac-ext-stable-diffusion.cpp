@@ -1,12 +1,12 @@
-## sd-bench: Metal vs CoreML UNet benchmark (macOS and iOS)
+## sd-bench: Metal vs CoreML benchmark (macOS and iOS)
 
-Compares the ggml Metal UNet with the CoreML sidecar ([docs/coreml.md](../../docs/coreml.md)) on SDXS-512-DreamShaper. It loads the model once, generates 1 warm-up and 3 timed images (512x512, 1 step, CFG 1, seed 42), and prints the text encoder, UNet, decoder and total time for each. The prompts are a cat portrait, a cabin at sunset and a billboard with the text "COFFEE".
+Compares ggml Metal with the CoreML UNet and tiny-decoder sidecars ([docs/coreml.md](../../docs/coreml.md)) on SDXS-512-DreamShaper. It loads the model once, generates 1 warm-up and 3 timed images (512x512, 1 step, CFG 1, seed 42), and prints the text encoder, UNet, decoder and total time for each. The prompts are a cat portrait, a cabin at sunset and a billboard with the text "COFFEE".
 
 ```
-sd-bench bench <model.gguf> <coreml.mlmodelc|-> <out_prefix>
+sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]
 ```
 
-Pass `-` to run the UNet with ggml Metal, or a `.mlmodelc` to run it on CoreML (`SD_COREML_COMPUTE_UNITS` picks the device, `cpu_ne` by default). Images are written as `<out_prefix>_<prompt>.png`.
+Pass `-` to run the UNet with ggml Metal, or a `.mlmodelc` to run it on CoreML (`SD_COREML_COMPUTE_UNITS` picks the device, `cpu_ne` by default). The optional last argument runs the tiny decoder on CoreML too. Images are written as `<out_prefix>_<prompt>.png`.
 
 ### macOS
 
@@ -15,6 +15,7 @@ cmake -S examples/ios-bench -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-bench
 build-bench/sd-bench bench sdxs-f16.gguf - mac_metal
 build-bench/sd-bench bench sdxs-f16.gguf sdxs_unet_fp16.mlmodelc mac_ane
+build-bench/sd-bench bench sdxs-f16.gguf sdxs_unet_fp16.mlmodelc mac_ane_tae sdxs_tae_decoder.mlmodelc
 ```
 
 ### iOS
@@ -37,7 +38,11 @@ xcrun devicectl device process launch --device $DEVICE --console --terminate-exi
       bench sdxs-f16.gguf - ios_metal
 xcrun devicectl device process launch --device $DEVICE --console --terminate-existing io.tether.sdbench -- \
       bench sdxs-f16.gguf sdxs_unet_fp16.mlmodelc ios_ane
+xcrun devicectl device process launch --device $DEVICE --console --terminate-existing io.tether.sdbench -- \
+      bench sdxs-f16.gguf sdxs_unet_fp16.mlmodelc ios_ane_tae sdxs_tae_decoder.mlmodelc
 ```
+
+Copy `sdxs_tae_decoder.mlmodelc` to Documents as well for the last run.
 
 Copy the images back with `xcrun devicectl device copy from ... --source Documents/ios_ane_cat.png --destination .`. The first CoreML run on a device includes the ANE compile (about 10 s on iPhone 16); later runs load from the cache.
 
