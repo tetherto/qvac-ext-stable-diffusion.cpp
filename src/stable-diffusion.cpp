@@ -125,6 +125,7 @@ public:
     std::shared_ptr<FrozenCLIPVisionEmbedder> clip_vision;  // for svd or wan2.1 i2v
     std::shared_ptr<DiffusionModel> diffusion_model;
     std::shared_ptr<DiffusionModel> high_noise_diffusion_model;
+    bool use_coreml_unet = false;
     std::shared_ptr<VAE> first_stage_model;
     std::shared_ptr<TinyAutoEncoder> tae_first_stage;
     std::shared_ptr<ControlNet> control_net;
@@ -577,13 +578,27 @@ public:
                                                                                            embbeding_map,
                                                                                            version);
                 }
-                diffusion_model = std::make_shared<UNetModel>(backend,
-                                                              offload_params_to_cpu,
-                                                              tensor_storage_map,
-                                                              version);
-                if (sd_ctx_params->diffusion_conv_direct) {
-                    LOG_INFO("Using Conv2d direct in the diffusion model");
-                    std::dynamic_pointer_cast<UNetModel>(diffusion_model)->unet.set_conv2d_direct_enabled(true);
+                if (strlen(SAFE_STR(sd_ctx_params->coreml_unet_path)) > 0) {
+#ifdef SD_USE_COREML
+                    auto coreml_unet = CoreMLUNet::load(sd_ctx_params->coreml_unet_path);
+                    if (!coreml_unet) {
+                        return false;
+                    }
+                    diffusion_model  = std::make_shared<CoreMLUNetModel>(std::move(coreml_unet));
+                    use_coreml_unet  = true;
+#else
+                    LOG_ERROR("coreml_unet_path is set, but this build has no CoreML support (SD_COREML=OFF)");
+                    return false;
+#endif
+                } else {
+                    diffusion_model = std::make_shared<UNetModel>(backend,
+                                                                  offload_params_to_cpu,
+                                                                  tensor_storage_map,
+                                                                  version);
+                    if (sd_ctx_params->diffusion_conv_direct) {
+                        LOG_INFO("Using Conv2d direct in the diffusion model");
+                        std::dynamic_pointer_cast<UNetModel>(diffusion_model)->unet.set_conv2d_direct_enabled(true);
+                    }
                 }
             }
 
@@ -786,6 +801,9 @@ public:
         }
         if (use_pmid) {
             ignore_tensors.insert("pmid.unet.");
+        }
+        if (use_coreml_unet) {
+            ignore_tensors.insert("model.diffusion_model.");
         }
         ignore_tensors.insert("model.diffusion_model.__x0__");
         ignore_tensors.insert("model.diffusion_model.__32x32__");

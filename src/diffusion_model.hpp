@@ -9,6 +9,10 @@
 #include "wan.hpp"
 #include "z_image.hpp"
 
+#ifdef SD_USE_COREML
+#include "coreml_unet.h"
+#endif
+
 struct DiffusionParams {
     struct ggml_tensor* x                     = nullptr;
     struct ggml_tensor* timesteps             = nullptr;
@@ -108,6 +112,68 @@ struct UNetModel : public DiffusionModel {
                             diffusion_params.control_strength, output, output_ctx);
     }
 };
+
+#ifdef SD_USE_COREML
+// UNet offloaded to a CoreML model; holds no ggml weights.
+struct CoreMLUNetModel : public DiffusionModel {
+    std::unique_ptr<CoreMLUNet> coreml;
+
+    explicit CoreMLUNetModel(std::unique_ptr<CoreMLUNet> coreml)
+        : coreml(std::move(coreml)) {
+    }
+
+    std::string get_desc() override {
+        return coreml->get_desc();
+    }
+
+    void alloc_params_buffer() override {}
+    void free_params_buffer() override {}
+    void free_compute_buffer() override {}
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) override {}
+    size_t get_params_buffer_size() override { return 0; }
+    int64_t get_adm_in_channels() override { return 0; }
+    void set_flash_attention_enabled(bool enabled) override {}
+    void set_circular_axes(bool circular_x, bool circular_y) override {}
+
+    bool compute(int n_threads,
+                 DiffusionParams diffusion_params,
+                 struct ggml_tensor** output     = nullptr,
+                 struct ggml_context* output_ctx = nullptr) override {
+        ggml_tensor* x         = diffusion_params.x;
+        ggml_tensor* timesteps = diffusion_params.timesteps;
+        ggml_tensor* context   = diffusion_params.context;
+        if (diffusion_params.c_concat != nullptr || diffusion_params.y != nullptr || !diffusion_params.controls.empty()) {
+            LOG_ERROR("coreml unet: c_concat, y and controls are not supported");
+            return false;
+        }
+        for (ggml_tensor* t : {x, timesteps, context}) {
+            if (t == nullptr || t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) || t->data == nullptr) {
+                LOG_ERROR("coreml unet: inputs must be contiguous float32 host tensors");
+                return false;
+            }
+        }
+        if (output == nullptr) {
+            return false;
+        }
+        if (*output == nullptr) {
+            if (output_ctx == nullptr) {
+                return false;
+            }
+            *output = ggml_dup_tensor(output_ctx, x);
+        }
+
+        // ggml's [W, H, C, N] and [D, T, N] are row-major [N, C, H, W] and [N, T, D].
+        const int64_t x_shape[4]   = {x->ne[3], x->ne[2], x->ne[1], x->ne[0]};
+        const int64_t ctx_shape[3] = {context->ne[2] * context->ne[3], context->ne[1], context->ne[0]};
+        return coreml->predict((const float*)x->data,
+                               x_shape,
+                               (const float*)timesteps->data,
+                               (const float*)context->data,
+                               ctx_shape,
+                               (float*)(*output)->data);
+    }
+};
+#endif
 
 struct MMDiTModel : public DiffusionModel {
     MMDiTRunner mmdit;
