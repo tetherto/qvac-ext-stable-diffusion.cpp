@@ -29,6 +29,7 @@ python script/coreml/convert_unet.py --unet sdxs-512-dreamshaper/unet --out sdxs
 | `fp16` (default) | fp16 | Small UNets such as SDXS (603 MB). Matches ggml Metal closely. |
 | `w8b` | int8, one scale per block of 32 weights (iOS 18+) | SD 2.x and other multi-step models. |
 | `w8` | int8, one scale per output channel | Older iOS only; drifts over many steps. |
+| `p6` | 6-bit k-means palette per layer | Large UNets on iOS (SD 2.x): the ANE reads palettes directly, so the compiled model is cached. |
 
 The SD 2.1 UNet is 1.6 GB in fp16, too big to compile for the ANE: CoreML silently runs it on the CPU (about 1.1 s per call on an M2). int8 weights halve it and it runs on the ANE. How the int8 scales are shared matters for a 20-step model, because weight errors compound from step to step. Measured on an M2 with SD 2.1-768 at 512x512, 20 Euler steps, CFG 7, the same seed, against the ggml Metal (Q8_0) image:
 
@@ -67,6 +68,8 @@ The first load on a device compiles each model for the ANE (about 10 s for the S
 The UNets Apple publishes on Hugging Face ([apple/coreml-stable-diffusion-2-1-base-palettized](https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized) and the other `apple/coreml-stable-diffusion-*` repos) work as `--coreml-unet`. Use the `split_einsum_v2/compiled/Unet.mlmodelc` variant, which is made for the ANE. These models take float16 inputs, the text context as `[N, D, 1, T]`, and a batch of 2: CFG's conditional and unconditional passes run in one call. sd.cpp handles all three; the batch of 2 needs a CFG scale above 1 and no ControlNet, image CFG, skip layers or step caching. They do not record their prediction type, so pass `--prediction eps` for SD 2.1-base. The text encoder still comes from the `-m` model; SD 2.1 and SD 2.1-base share the same OpenCLIP text encoder.
 
 Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. The ANE reads palettized weights directly, so the compiled model is cached after the first load. The per-block int8 export (`w8b`) is expanded to fp16 on the CPU on every load instead: on an iPhone 16 that took about 105 s and 5.3 GB each time, and the app ran out of memory. On an M2, 512x512, 20 Euler steps, CFG 7, with TAESD on CoreML: 6.3 s per image, 0.25 s cached load, 0.9 GB peak footprint.
+
+`convert_unet.py --precision p6 --batch 2` follows the same recipe from the original diffusers weights (SD 2.1-base: 621 MB, about 4 minutes and 7 GB of RAM on an M2 with 2 k-means workers; needs scikit-learn). Its images match Apple's file in composition and subject (fine details differ after 20 steps), it caches the same way, but it is slower on an M2: 9.8 s per image against Apple's 6.3 s. Apple's export also rewrites attention for the ANE (`SPLIT_EINSUM_V2`); `convert_unet.py` keeps the standard attention.
 
 ### Supported sizes
 

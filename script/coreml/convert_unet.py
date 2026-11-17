@@ -18,11 +18,16 @@ Weights: fp16 fits small UNets such as SDXS (603 MB). The SD 2.x UNet is 1.6 GB 
 the ANE, so CoreML runs it on the CPU; use int8 weights. --precision w8b (one scale per block of 32 weights,
 iOS 18+) keeps a 20-step SD 2.1 image close to ggml Metal (24.8 dB); w8 (one scale per output channel) drifts
 enough over 20 steps to change the composition (19.9 dB). Both run at about the same speed.
+On iOS, prefer p6 (6-bit palettized, Apple's ml-stable-diffusion recipe): the ANE reads palettized
+weights directly, so the compiled model is cached, while w8b is expanded to fp16 on the CPU on every
+load (about 105 s and 5.3 GB on an iPhone 16). p6 runs k-means over every large layer, which takes
+a long time and much memory: 20-40 minutes for SD 2.1 on a 16 GB Mac (needs scikit-learn).
 
 Examples:
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_fp16.mlpackage --compile
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_multi.mlpackage --sizes 512x512,512x768,768x512 --compile
   python convert_unet.py --unet sd21/unet --out sd21_unet_w8b.mlpackage --precision w8b --compile
+  python convert_unet.py --unet sd21-base/unet --out sd21base_unet_p6.mlpackage --precision p6 --batch 2 --compile
 
 pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 """
@@ -106,10 +111,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--unet", required=True, help="diffusers UNet folder (the pipeline's unet/ directory)")
     parser.add_argument("--out", required=True, help="output .mlpackage path")
-    parser.add_argument("--precision", choices=["fp16", "w8", "w8b"], default="fp16",
-                        help="weights: fp16, int8 with one scale per output channel (w8), or int8 with one scale per "
-                             "block of 32 weights (w8b, iOS 18+, recommended for multi-step models such as SD 2.1); "
-                             "compute is fp16 in all cases")
+    parser.add_argument("--precision", choices=["fp16", "w8", "w8b", "p6"], default="fp16",
+                        help="weights: fp16, int8 with one scale per output channel (w8), int8 with one scale per "
+                             "block of 32 weights (w8b, iOS 18+), or a 6-bit k-means palette per layer (p6, for "
+                             "large UNets on iOS); compute is fp16 in all cases")
+    parser.add_argument("--kmeans-workers", type=int, default=2,
+                        help="parallel k-means workers for p6; each one adds memory, keep it low on a 16 GB Mac")
     parser.add_argument("--batch", type=int, default=1, help="UNet batch: 1, or 2 for batched CFG")
     parser.add_argument("--sizes", default="512x512",
                         help="comma-separated image sizes as WIDTHxHEIGHT, only ones the model was trained at "
@@ -181,6 +188,10 @@ def main():
                                                                    weight_threshold=2048, **granularity)
             mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
                                                                  ct.optimize.coreml.OptimizationConfig(op_config))
+        elif args.precision == "p6":
+            op_config = ct.optimize.coreml.OpPalettizerConfig(mode="kmeans", nbits=6, weight_threshold=2048,
+                                                              num_kmeans_workers=args.kmeans_workers)
+            mlmodel = ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
 
         inputs = {name: tensor.numpy() for name, tensor in zip(shapes, example)}
