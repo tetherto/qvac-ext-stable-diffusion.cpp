@@ -64,7 +64,9 @@ bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
             LOG_INFO("conv%dd direct auto: %s -> off (unsupported probe graph)", dims, name);
             return false;
         }
-        if (sd_backend_is(backend, "Vulkan")) {
+        const bool benchmark_cuda = !conv3d && sd_backend_is(backend, "CUDA") &&
+                                    sd_backend_supports_conv_implicit_gemm(backend, false);
+        if (sd_backend_is(backend, "Vulkan") || benchmark_cuda) {
             std::vector<BackendProbeCase> cases;
             for (const auto& shape : {std::pair<int, int>{32, 64}, {16, 128}}) {
                 BackendProbeCase test;
