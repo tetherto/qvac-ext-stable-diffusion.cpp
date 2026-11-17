@@ -83,6 +83,8 @@ sd-cli -m sdxs-f16.gguf --coreml-unet sdxs_unet_fp16.mlmodelc --coreml-tae sdxs_
 
 The two options are independent. `-m` still has to point at the full model: the text encoder and VAE come from it, and the UNet tensors in it are skipped. `--coreml-tae` needs the image tiny autoencoder (SDXS, or `--taesd` with an SD or SDXL model); with `--vae-tiling` the decoder falls back to ggml, because the CoreML decoder has one fixed latent shape. `SD_COREML_COMPUTE_UNITS` picks where CoreML runs: `cpu_ne` (default), `all`, `cpu_gpu` or `cpu`.
 
+The sidecars run fixed graphs, so some options are rejected instead of being silently ignored: circular padding (`--circular`, `--circularx`, `--circulary`) fails at load with either sidecar, and a LoRA that changes UNet weights fails the generation when `--coreml-unet` is set (LoRAs for the text encoder still work).
+
 The first load on a device compiles each model for the ANE (about 10 s for the SDXS UNet on iPhone 16). CoreML caches the result, so later loads take well under a second. Ship a `.mlmodelc`; an `.mlpackage` is compiled on every load.
 
 ### Apple's pre-converted UNets
@@ -132,6 +134,17 @@ For other models, `convert_unet.py` warns when a size differs from the one in th
 Flexible shapes do not work on the ANE. With `EnumeratedShapes` or `RangeDim` inputs, the traced UNet keeps runtime reshapes the ANE cannot run, and CoreML places the whole graph on the CPU (about 12x slower). A multifunction model built with the iOS 18 op set fails to load with ANE compute units, so the script defaults to the iOS 17 op set, which runs at the same speed.
 
 Known issue: loading several functions of a multifunction model in one process has shown a higher peak memory footprint (2.0 GB against 1.2 GB on iPhone 16). Prefer a single-size export until this is understood.
+
+### Tests
+
+`test-coreml` (built with `-DSD_COREML=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and UNet LoRAs are rejected, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention and SiLU rewrites against the original diffusers code on small random UNets.
+
+```bash
+python tests/coreml/make_fixtures.py build/coreml-fixtures
+build/bin/test-coreml build/coreml-fixtures
+SD_TEST_SDXS_DIR=artifacts build/bin/test-coreml build/coreml-fixtures
+python -m unittest script/coreml/test_convert_unet.py
+```
 
 ### Notes on accuracy
 
