@@ -8,6 +8,13 @@ sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc
 
 Pass `-` to run the UNet with ggml Metal, or a `.mlmodelc` to run it on CoreML (`SD_COREML_COMPUTE_UNITS` picks the device, `cpu_ne` by default). The optional last argument runs the tiny decoder on CoreML too. Images are written as `<out_prefix>_<prompt>.png`.
 
+Options after the positional arguments: `--steps N`, `--cfg F`, `--sampler NAME`, `--taesd FILE` (the ggml TAESD weights, for models without a built-in tiny decoder; needed with a CoreML decoder too) and `--images N` (1-3 timed images). The defaults fit SDXS. For SD 2.1 with the `w8b` UNet and TAESD on CoreML:
+
+```
+sd-bench bench stable-diffusion-v2-1-Q8_0.gguf sd21_unet_w8b.mlmodelc sd21_ane taesd_decoder.mlmodelc \
+         --taesd taesd.safetensors --steps 20 --cfg 7 --sampler euler
+```
+
 ### macOS
 
 ```bash

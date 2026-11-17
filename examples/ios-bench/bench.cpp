@@ -1,8 +1,11 @@
-// SDXS benchmark: loads the model once, then generates 1 warm-up and 3 timed 512x512 images
-// (1 step, CFG 1, seed 42). Stage times come from sd.cpp's own log lines.
-// usage: sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]
+// Metal vs CoreML benchmark: loads the model once, then generates 1 warm-up and up to 3 timed 512x512
+// images (seed 42). Stage times come from sd.cpp's own log lines. Defaults fit SDXS (1 step, CFG 1).
+// usage: sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc] [options]
 //   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar. The optional
-//   last argument runs the tiny decoder with its CoreML sidecar too.
+//   tae_decoder.mlmodelc runs the tiny decoder with its CoreML sidecar too.
+// options: --steps N  --cfg F  --sampler NAME  --taesd FILE (ggml TAESD, for models without a built-in
+//   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -49,21 +52,43 @@ int sd_bench_main(int argc, const char* argv[]) {
         fprintf(stderr, "usage: %s bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]\n", argv[0]);
         return 1;
     }
-    const char* model  = argv[2];
-    const char* coreml = strcmp(argv[3], "-") == 0 ? "" : argv[3];
-    std::string prefix = argv[4];
-    const char* tae    = argc > 5 ? argv[5] : "";
+    const char* model   = argv[2];
+    const char* coreml  = strcmp(argv[3], "-") == 0 ? "" : argv[3];
+    std::string prefix  = argv[4];
+    const char* tae     = argc > 5 && strncmp(argv[5], "--", 2) != 0 ? argv[5] : "";
+    int steps           = 1;
+    float cfg           = 1.0f;
+    const char* sampler = "";
+    const char* taesd   = "";
+    int images          = 3;
+    for (int i = *tae ? 6 : 5; i + 1 < argc; i += 2) {
+        if (strcmp(argv[i], "--steps") == 0) {
+            steps = atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--cfg") == 0) {
+            cfg = (float)atof(argv[i + 1]);
+        } else if (strcmp(argv[i], "--sampler") == 0) {
+            sampler = argv[i + 1];
+        } else if (strcmp(argv[i], "--taesd") == 0) {
+            taesd = argv[i + 1];
+        } else if (strcmp(argv[i], "--images") == 0) {
+            images = atoi(argv[i + 1]);
+        } else {
+            fprintf(stderr, "unknown option %s\n", argv[i]);
+            return 1;
+        }
+    }
 
     struct Job {
         const char* name;
         const char* prompt;
     };
-    const std::vector<Job> jobs = {
+    std::vector<Job> jobs = {
         {"warmup", "a red apple on a wooden table"},
         {"cat", "portrait of a lovely cat"},
         {"cabin", "a cozy mountain cabin at sunset, snow, warm window lights, photorealistic"},
         {"billboard", "a large billboard on a city street showing an advertisement with the text \"COFFEE\", photo, daytime"},
     };
+    jobs.resize(1 + std::max(1, std::min(images, 3)));
 
     sd_set_log_callback(log_cb, nullptr);
 
@@ -72,6 +97,7 @@ int sd_bench_main(int argc, const char* argv[]) {
     ctx_params.model_path              = model;
     ctx_params.coreml_unet_path        = coreml;
     ctx_params.coreml_tae_decoder_path = tae;
+    ctx_params.taesd_path              = taesd;
     ctx_params.free_params_immediately = false;  // reuse the context for every image
 
     auto t0       = std::chrono::steady_clock::now();
@@ -81,7 +107,8 @@ int sd_bench_main(int argc, const char* argv[]) {
         fprintf(stdout, "[bench] new_sd_ctx failed\n");
         return 1;
     }
-    fprintf(stdout, "[bench] unet=%s decoder=%s load=%.2f s\n", *coreml ? "coreml" : "metal", *tae ? "coreml" : "metal", load_s);
+    fprintf(stdout, "[bench] unet=%s decoder=%s steps=%d cfg=%.1f load=%.2f s\n", *coreml ? "coreml" : "metal",
+            *tae ? "coreml" : (*taesd ? "taesd-metal" : "metal"), steps, cfg, load_s);
 
     for (const auto& job : jobs) {
         sd_img_gen_params_t params;
@@ -91,9 +118,9 @@ int sd_bench_main(int argc, const char* argv[]) {
         params.height                         = 512;
         params.seed                           = 42;
         params.batch_count                    = 1;
-        params.sample_params.sample_steps     = 1;
-        params.sample_params.guidance.txt_cfg = 1.0f;
-        params.sample_params.sample_method    = sd_get_default_sample_method(sd);
+        params.sample_params.sample_steps     = steps;
+        params.sample_params.guidance.txt_cfg = cfg;
+        params.sample_params.sample_method    = *sampler ? str_to_sample_method(sampler) : sd_get_default_sample_method(sd);
         params.sample_params.scheduler        = sd_get_default_scheduler(sd, params.sample_params.sample_method);
 
         g_stage         = {};
