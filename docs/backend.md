@@ -245,14 +245,15 @@ sd-cli -m model.safetensors -p "a cat" --conv-direct off,diffusion=on
 - `on` requests direct 2D and 3D convolution.
 - `off` uses the existing im2col-based convolution paths.
 - `auto` first checks support for a representative F16-weight/F32-input direct
-  convolution graph. Vulkan then benchmarks direct convolution against im2col
-  using two small shapes per dimension, with warmup, output validation, and five
-  interleaved measurements per shape. Direct convolution must improve the sum of
-  median times by at least 5%; a failed probe defaults to `off`.
-  Other backends retain their implicit GEMM checks without benchmarking:
-  CUDA 2D requires a compiled Turing-or-newer MMA architecture; HIP 2D requires
-  the supported CDNA MFMA or RDNA WMMA architectures described below for flash
-  attention. MUSA 2D has a SIMT implementation. CUDA, HIP, and MUSA 3D also have
+  convolution graph. CUDA 2D also requires a compiled Turing-or-newer MMA
+  architecture. Vulkan and eligible CUDA 2D backends then benchmark direct
+  convolution against im2col using two small shapes per dimension, with warmup,
+  output validation, and five interleaved measurements per shape. Direct
+  convolution must improve the sum of median times by at least 5%; a failed
+  probe defaults to `off`.
+  Other paths retain their implicit GEMM checks without benchmarking. HIP 2D
+  requires the supported CDNA MFMA or RDNA WMMA architectures described below
+  for flash attention. MUSA 2D has a SIMT implementation. CUDA, HIP, and MUSA 3D also have
   a SIMT implementation, so they do not require MMA. Other backends default to
   `off`. Results and decision logs are cached per compute backend and dimension
   in the context, as with flash attention. Each dimension is selected independently,
