@@ -99,6 +99,8 @@ Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. 
 | `ane`: the same, with the whole transformer block channels-first (Linear as 1x1 conv) | 332 ms | not measured |
 | Apple's pre-converted file | 304 ms | 6.3 s |
 
+On an iPhone 16 (512x512, 20 Euler steps, CFG 7, TAESD on CoreML, mean of 3 warm images), the `split_einsum_v2` export takes 7.1 s per image against 6.1 s for Apple's file; both load from the cache in about 0.2 s after a one-time compile (64 s, 0.65 GB peak) and peak at 1.6 GB while generating.
+
 The artifacts below use `split_einsum_v2`. For SDXS the attention form makes no measurable difference, so it keeps `standard`.
 
 ### Supported sizes
