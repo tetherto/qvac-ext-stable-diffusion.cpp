@@ -27,6 +27,17 @@ public:
                          const int64_t context_shape[3],
                          float* out) = 0;
 
+    // Runs CFG's conditional and unconditional passes as one batch-2 prediction on a batch-2 model.
+    // x [1, C, H, W] and the timestep are shared; cond, uncond, out_cond and out_uncond are [1, ...].
+    bool predict_cfg_batch(const float* x,
+                           const int64_t x_shape[4],
+                           float timestep,
+                           const float* cond,
+                           const float* uncond,
+                           const int64_t context_shape[3],
+                           float* out_cond,
+                           float* out_uncond);
+
     virtual std::string get_desc() = 0;
 
     // "epsilon" or "v_prediction" from the model's metadata (written by convert_unet.py), or "" if absent.

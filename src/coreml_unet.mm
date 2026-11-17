@@ -180,6 +180,35 @@ public:
 
 }  // namespace
 
+bool CoreMLUNet::predict_cfg_batch(const float* x,
+                                   const int64_t x_shape[4],
+                                   float timestep,
+                                   const float* cond,
+                                   const float* uncond,
+                                   const int64_t context_shape[3],
+                                   float* out_cond,
+                                   float* out_uncond) {
+    if (x_shape[0] != 1 || context_shape[0] != 1) {
+        LOG_ERROR("coreml unet: batched CFG needs a batch-1 latent and batch-1 contexts");
+        return false;
+    }
+    const size_t nx = x_shape[1] * x_shape[2] * x_shape[3];
+    const size_t nc = context_shape[1] * context_shape[2];
+    std::vector<float> xs(2 * nx), ts(2, timestep), ctx(2 * nc), out(2 * nx);
+    std::copy(x, x + nx, xs.begin());
+    std::copy(x, x + nx, xs.begin() + nx);
+    std::copy(cond, cond + nc, ctx.begin());
+    std::copy(uncond, uncond + nc, ctx.begin() + nc);
+    const int64_t xs_shape[4]  = {2, x_shape[1], x_shape[2], x_shape[3]};
+    const int64_t ctx_shape[3] = {2, context_shape[1], context_shape[2]};
+    if (!predict(xs.data(), xs_shape, ts.data(), ctx.data(), ctx_shape, out.data())) {
+        return false;
+    }
+    std::copy(out.begin(), out.begin() + nx, out_cond);
+    std::copy(out.begin() + nx, out.end(), out_uncond);
+    return true;
+}
+
 std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
     @autoreleasepool {
         NSError* error = nil;
