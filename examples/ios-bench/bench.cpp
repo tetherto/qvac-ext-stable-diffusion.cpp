@@ -6,6 +6,7 @@
 // options: --steps N  --cfg F  --sampler NAME  --taesd FILE (ggml TAESD, for models without a built-in
 //   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)  --mmap (map the model file instead of
 //   reading it into memory; on iOS the mapped pages do not count against the app's memory limit)
+//   --prediction eps|v (for a CoreML UNet that does not record it, such as Apple's exports)
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -65,6 +66,7 @@ int sd_bench_main(int argc, const char* argv[]) {
     const char* taesd   = "";
     int images          = 3;
     bool mmap           = false;
+    const char* pred    = "";
     for (int i = *tae ? 6 : 5; i < argc; i += 2) {
         if (strcmp(argv[i], "--mmap") == 0) {
             mmap = true;
@@ -80,6 +82,8 @@ int sd_bench_main(int argc, const char* argv[]) {
             sampler = argv[i + 1];
         } else if (strcmp(argv[i], "--taesd") == 0) {
             taesd = argv[i + 1];
+        } else if (strcmp(argv[i], "--prediction") == 0) {
+            pred = argv[i + 1];
         } else if (strcmp(argv[i], "--images") == 0) {
             images = atoi(argv[i + 1]);
         } else {
@@ -109,6 +113,9 @@ int sd_bench_main(int argc, const char* argv[]) {
     ctx_params.coreml_tae_decoder_path = tae;
     ctx_params.taesd_path              = taesd;
     ctx_params.enable_mmap             = mmap;
+    if (*pred) {
+        ctx_params.prediction = str_to_prediction(pred);
+    }
     ctx_params.free_params_immediately = false;  // reuse the context for every image
 
     auto t0       = std::chrono::steady_clock::now();

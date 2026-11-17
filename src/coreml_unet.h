@@ -8,10 +8,10 @@
 // Runs a UNet exported to CoreML (see script/coreml/convert_unet.py) in place of the ggml UNet.
 // A multifunction model (iOS 18+) holds one fixed-shape function per resolution; each call uses
 // the function whose input shapes match, loading it on first use.
-// Expected model I/O (float32, fixed shapes):
+// Expected model I/O (fixed shapes; float32 or float16 inputs):
 //   sample                [N, C, H, W]
 //   timestep              [N]
-//   encoder_hidden_states [N, T, D]
+//   encoder_hidden_states [N, T, D], or [N, D, 1, T] as Apple's ml-stable-diffusion exports it
 //   noise_pred            [N, C, H, W]
 // Compute units come from SD_COREML_COMPUTE_UNITS: all | cpu_ne (default) | cpu_gpu | cpu.
 class CoreMLUNet {
@@ -31,6 +31,10 @@ public:
 
     // "epsilon" or "v_prediction" from the model's metadata (written by convert_unet.py), or "" if absent.
     virtual std::string prediction_type() = 0;
+
+    // The batch the model was exported for: 1, or 2 for models that run CFG's two passes in one call
+    // (such as Apple's ml-stable-diffusion exports).
+    virtual int64_t batch_size() = 0;
 };
 
 #endif  // __COREML_UNET_H__

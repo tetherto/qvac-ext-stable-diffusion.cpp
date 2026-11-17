@@ -2125,7 +2125,27 @@ public:
                 active_condition          = &id_cond;
             }
 
-            bool skip_model = cache_before_condition(active_condition, *active_output);
+            // A CoreML UNet exported for batch 2 (Apple's ml-stable-diffusion) runs both CFG passes in one call.
+            bool cfg_batched = false;
+#ifdef SD_USE_COREML
+            auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetModel>(work_diffusion_model);
+            if (coreml_unet && coreml_unet->takes_cfg_batch()) {
+                if (!has_unconditioned || has_img_cond || has_skiplayer || !controls.empty() || easycache_enabled ||
+                    ucache_enabled || cachedit_enabled) {
+                    LOG_ERROR("this CoreML UNet runs CFG's two passes as one batch of 2: use cfg-scale > 1, "
+                              "without ControlNet, image CFG, skip layers or step caching");
+                    return nullptr;
+                }
+                if (!coreml_unet->compute_cfg_batch(noised_input, timesteps, active_condition->c_crossattn,
+                                                    uncond.c_crossattn, out_cond, out_uncond)) {
+                    LOG_ERROR("diffusion model compute failed");
+                    return nullptr;
+                }
+                cfg_batched = true;
+            }
+#endif
+
+            bool skip_model = cfg_batched || cache_before_condition(active_condition, *active_output);
             if (!skip_model) {
                 if (!work_diffusion_model->compute(n_threads,
                                                    diffusion_params,
@@ -2153,7 +2173,7 @@ public:
                 diffusion_params.context  = uncond.c_crossattn;
                 diffusion_params.c_concat = uncond.c_concat;
                 diffusion_params.y        = uncond.c_vector;
-                bool skip_uncond          = cache_before_condition(&uncond, out_uncond);
+                bool skip_uncond          = cfg_batched || cache_before_condition(&uncond, out_uncond);
                 if (!skip_uncond) {
                     if (!work_diffusion_model->compute(n_threads,
                                                        diffusion_params,

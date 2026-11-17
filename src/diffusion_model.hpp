@@ -172,6 +172,41 @@ struct CoreMLUNetModel : public DiffusionModel {
                                ctx_shape,
                                (float*)(*output)->data);
     }
+
+    // True when the model takes CFG's conditional and unconditional passes as one batch of 2.
+    bool takes_cfg_batch() {
+        return coreml->batch_size() == 2;
+    }
+
+    // Runs both CFG passes in one call: x and timesteps are shared, the contexts differ.
+    bool compute_cfg_batch(ggml_tensor* x,
+                           ggml_tensor* timesteps,
+                           ggml_tensor* cond_context,
+                           ggml_tensor* uncond_context,
+                           ggml_tensor* out_cond,
+                           ggml_tensor* out_uncond) {
+        if (x->ne[3] != 1 || !ggml_are_same_shape(cond_context, uncond_context)) {
+            LOG_ERROR("coreml unet: batched CFG needs a batch-1 latent and contexts of equal length");
+            return false;
+        }
+        const size_t nx = ggml_nelements(x);
+        const size_t nc = ggml_nelements(cond_context);
+        std::vector<float> xs(2 * nx), ts(2), ctx(2 * nc), out(2 * nx);
+        memcpy(xs.data(), x->data, nx * sizeof(float));
+        memcpy(xs.data() + nx, x->data, nx * sizeof(float));
+        ts[0] = ts[1] = ((const float*)timesteps->data)[0];
+        memcpy(ctx.data(), cond_context->data, nc * sizeof(float));
+        memcpy(ctx.data() + nc, uncond_context->data, nc * sizeof(float));
+
+        const int64_t x_shape[4]   = {2, x->ne[2], x->ne[1], x->ne[0]};
+        const int64_t ctx_shape[3] = {2, cond_context->ne[1], cond_context->ne[0]};
+        if (!coreml->predict(xs.data(), x_shape, ts.data(), ctx.data(), ctx_shape, out.data())) {
+            return false;
+        }
+        memcpy(out_cond->data, out.data(), nx * sizeof(float));
+        memcpy(out_uncond->data, out.data() + nx, nx * sizeof(float));
+        return true;
+    }
 };
 #endif
 

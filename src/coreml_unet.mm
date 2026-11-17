@@ -13,8 +13,24 @@ namespace {
 struct UNetFunction {
     std::string name;  // empty for a single-function model
     std::vector<int64_t> sample_shape;
+    // [N, T, D], or [N, D, 1, T] for models exported with Apple's ml-stable-diffusion (channels first for the ANE)
     std::vector<int64_t> context_shape;
     MLModel* model = nil;  // loaded on first use
+
+    bool context_channels_first() const {
+        return context_shape.size() == 4;
+    }
+
+    bool matches(const int64_t x_shape[4], const int64_t ctx_shape[3]) const {
+        if (!std::equal(sample_shape.begin(), sample_shape.end(), x_shape)) {
+            return false;
+        }
+        if (context_channels_first()) {
+            return context_shape[0] == ctx_shape[0] && context_shape[1] == ctx_shape[2] && context_shape[2] == 1 &&
+                   context_shape[3] == ctx_shape[1];
+        }
+        return std::equal(context_shape.begin(), context_shape.end(), ctx_shape);
+    }
 };
 
 class CoreMLUNetImpl : public CoreMLUNet {
@@ -27,8 +43,7 @@ public:
 
     UNetFunction* find_function(const int64_t x_shape[4], const int64_t ctx_shape[3]) {
         for (auto& f : functions) {
-            if (std::equal(f.sample_shape.begin(), f.sample_shape.end(), x_shape) &&
-                std::equal(f.context_shape.begin(), f.context_shape.end(), ctx_shape)) {
+            if (f.matches(x_shape, ctx_shape)) {
                 return &f;
             }
         }
@@ -77,7 +92,7 @@ public:
             if (f == nullptr) {
                 std::string available;
                 for (auto& fn : functions) {
-                    available += " " + shape_str(fn.sample_shape.data(), 4) + "/" + shape_str(fn.context_shape.data(), 3);
+                    available += " " + shape_str(fn.sample_shape.data(), 4) + "/" + shape_str(fn.context_shape.data(), fn.context_shape.size());
                 }
                 LOG_ERROR("coreml unet: no function for sample %s, context %s; the model has:%s",
                           shape_str(x_shape, 4).c_str(), shape_str(ctx_shape, 3).c_str(), available.c_str());
@@ -90,10 +105,26 @@ public:
             const std::vector<int64_t>& sample_shape  = f->sample_shape;
             const std::vector<int64_t>& context_shape = f->context_shape;
 
+            // [N, T, D] -> [N, D, 1, T] for channels-first models.
+            std::vector<float> transposed;
+            if (f->context_channels_first()) {
+                const int64_t N = ctx_shape[0], T = ctx_shape[1], D = ctx_shape[2];
+                transposed.resize(N * T * D);
+                for (int64_t b = 0; b < N; b++) {
+                    for (int64_t t = 0; t < T; t++) {
+                        for (int64_t d = 0; d < D; d++) {
+                            transposed[(b * D + d) * T + t] = context[(b * T + t) * D + d];
+                        }
+                    }
+                }
+                context = transposed.data();
+            }
+
+            NSDictionary* in       = model.modelDescription.inputDescriptionsByName;
             NSError* error         = nil;
-            MLMultiArray* sample   = wrap(x, sample_shape, &error);
-            MLMultiArray* timestep = sample ? wrap(timesteps, {sample_shape[0]}, &error) : nil;
-            MLMultiArray* ehs      = timestep ? wrap(context, context_shape, &error) : nil;
+            MLMultiArray* sample   = make_input(x, sample_shape, declared_type(in[@"sample"]), &error);
+            MLMultiArray* timestep = sample ? make_input(timesteps, {sample_shape[0]}, declared_type(in[@"timestep"]), &error) : nil;
+            MLMultiArray* ehs      = timestep ? make_input(context, context_shape, declared_type(in[@"encoder_hidden_states"]), &error) : nil;
             if (ehs == nil) {
                 LOG_ERROR("coreml unet: failed to wrap inputs: %s", error.localizedDescription.UTF8String);
                 return false;
@@ -140,6 +171,10 @@ public:
 
     std::string prediction_type() override {
         return prediction;
+    }
+
+    int64_t batch_size() override {
+        return functions[0].sample_shape[0];
     }
 };
 
@@ -196,7 +231,7 @@ std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
         }
 
         for (auto& f : impl->functions) {
-            if (f.sample_shape.size() != 4 || f.context_shape.size() != 3) {
+            if (f.sample_shape.size() != 4 || (f.context_shape.size() != 3 && f.context_shape.size() != 4)) {
                 LOG_ERROR("coreml unet: %s%s does not have fixed-shape sample/encoder_hidden_states inputs",
                           path.c_str(), f.name.empty() ? "" : (" (" + f.name + ")").c_str());
                 return nullptr;

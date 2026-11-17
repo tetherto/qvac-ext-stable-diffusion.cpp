@@ -99,6 +99,36 @@ inline MLMultiArray* wrap(const float* data, const std::vector<int64_t>& shape, 
                                                error:error];
 }
 
+// The data type a model declares for a multiarray input (float32 when it declares none).
+inline MLMultiArrayDataType declared_type(MLFeatureDescription* desc) {
+    return desc && desc.multiArrayConstraint ? desc.multiArrayConstraint.dataType : MLMultiArrayDataTypeFloat32;
+}
+
+// An input in the type the model declares: float32 memory is wrapped without copying, float16 is converted.
+inline MLMultiArray* make_input(const float* data, const std::vector<int64_t>& shape, MLMultiArrayDataType type, NSError** error) {
+    if (type != MLMultiArrayDataTypeFloat16) {
+        return wrap(data, shape, error);
+    }
+    NSMutableArray<NSNumber*>* dims = [NSMutableArray array];
+    int64_t n                       = 1;
+    for (int64_t d : shape) {
+        [dims addObject:@(d)];
+        n *= d;
+    }
+    MLMultiArray* array = [[MLMultiArray alloc] initWithShape:dims dataType:MLMultiArrayDataTypeFloat16 error:error];
+    if (array != nil) {
+        [array getMutableBytesWithHandler:^(void* bytes, NSInteger size, NSArray<NSNumber*>* strides) {
+            (void)size;
+            (void)strides;  // a freshly allocated array is contiguous
+            _Float16* dst = (_Float16*)bytes;
+            for (int64_t i = 0; i < n; i++) {
+                dst[i] = (_Float16)data[i];
+            }
+        }];
+    }
+    return array;
+}
+
 // Copies a model output into contiguous float32 memory. The output may be float16 and may have
 // padded strides, so it is read element by element in logical order.
 inline bool copy_output(MLMultiArray* result, int64_t n, float* out, const char* tag) {

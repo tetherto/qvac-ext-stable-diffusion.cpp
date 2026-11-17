@@ -62,6 +62,12 @@ The two options are independent. `-m` still has to point at the full model: the 
 
 The first load on a device compiles each model for the ANE (about 10 s for the SDXS UNet on iPhone 16). CoreML caches the result, so later loads take well under a second. Ship a `.mlmodelc`; an `.mlpackage` is compiled on every load.
 
+### Apple's pre-converted UNets
+
+The UNets Apple publishes on Hugging Face ([apple/coreml-stable-diffusion-2-1-base-palettized](https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized) and the other `apple/coreml-stable-diffusion-*` repos) work as `--coreml-unet`. Use the `split_einsum_v2/compiled/Unet.mlmodelc` variant, which is made for the ANE. These models take float16 inputs, the text context as `[N, D, 1, T]`, and a batch of 2: CFG's conditional and unconditional passes run in one call. sd.cpp handles all three; the batch of 2 needs a CFG scale above 1 and no ControlNet, image CFG, skip layers or step caching. They do not record their prediction type, so pass `--prediction eps` for SD 2.1-base. The text encoder still comes from the `-m` model; SD 2.1 and SD 2.1-base share the same OpenCLIP text encoder.
+
+Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. The ANE reads palettized weights directly, so the compiled model is cached after the first load. The per-block int8 export (`w8b`) is expanded to fp16 on the CPU on every load instead: on an iPhone 16 that took about 105 s and 5.3 GB each time, and the app ran out of memory. On an M2, 512x512, 20 Euler steps, CFG 7, with TAESD on CoreML: 6.3 s per image, 0.25 s cached load, 0.9 GB peak footprint.
+
 ### Supported sizes
 
 Every input shape of the CoreML model is fixed at export time (batch 1, 77 prompt tokens, one image size). Prompts longer than 77 tokens, ControlNet and models that take `c_concat` or `y` fail with an error.
