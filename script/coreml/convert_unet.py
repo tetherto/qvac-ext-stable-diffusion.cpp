@@ -14,9 +14,15 @@ at 512x768, 768x512 and 768x768 it duplicates features (extra eyes and noses) on
 so this script refuses other sizes for it unless --allow-untrained-sizes is given. For other
 models it warns when a size differs from the one in the UNet config. See docs/coreml.md.
 
-Examples (SDXS-512-DreamShaper, fp16):
+Weights: fp16 fits small UNets such as SDXS (603 MB). The SD 2.x UNet is 1.6 GB in fp16, too big to compile for
+the ANE, so CoreML runs it on the CPU; use int8 weights. --precision w8b (one scale per block of 32 weights,
+iOS 18+) keeps a 20-step SD 2.1 image close to ggml Metal (24.8 dB); w8 (one scale per output channel) drifts
+enough over 20 steps to change the composition (19.9 dB). Both run at about the same speed.
+
+Examples:
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_fp16.mlpackage --compile
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_multi.mlpackage --sizes 512x512,512x768,768x512 --compile
+  python convert_unet.py --unet sd21/unet --out sd21_unet_w8b.mlpackage --precision w8b --compile
 
 pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 """
@@ -100,8 +106,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--unet", required=True, help="diffusers UNet folder (the pipeline's unet/ directory)")
     parser.add_argument("--out", required=True, help="output .mlpackage path")
-    parser.add_argument("--precision", choices=["fp16", "w8"], default="fp16",
-                        help="fp16 weights and compute, or int8 weights (linear, per channel) with fp16 compute")
+    parser.add_argument("--precision", choices=["fp16", "w8", "w8b"], default="fp16",
+                        help="weights: fp16, int8 with one scale per output channel (w8), or int8 with one scale per "
+                             "block of 32 weights (w8b, iOS 18+, recommended for multi-step models such as SD 2.1); "
+                             "compute is fp16 in all cases")
     parser.add_argument("--batch", type=int, default=1, help="UNet batch: 1, or 2 for batched CFG")
     parser.add_argument("--sizes", default="512x512",
                         help="comma-separated image sizes as WIDTHxHEIGHT, only ones the model was trained at "
@@ -112,14 +120,20 @@ def main():
     parser.add_argument("--allow-untrained-sizes", action="store_true",
                         help="export sizes other than the model's native one even for SDXS (expect bad images)")
     parser.add_argument("--context-len", type=int, default=77, help="text tokens; sd.cpp uses 77 per prompt chunk")
-    parser.add_argument("--target", choices=["iOS17", "iOS18"], default="iOS17",
-                        help="op set. iOS18 uses the native scaled_dot_product_attention op, but a multifunction "
-                             "model built with it fails to load on the ANE (macOS 27.2); iOS17 runs at the same speed")
+    parser.add_argument("--target", choices=["iOS17", "iOS18"],
+                        help="op set (default: iOS18 for w8b, which needs it, else iOS17). A multifunction model built "
+                             "with iOS18 fails to load on the ANE (macOS 27.2); iOS17 runs at the same speed")
     parser.add_argument("--compile", action="store_true", help="also write a compiled .mlmodelc next to the package")
     parser.add_argument("--keep-silu", action="store_true", help="keep the native silu op (inaccurate on the ANE)")
     args = parser.parse_args()
 
     sizes = [parse_size(s) for s in args.sizes.split(",")]
+    if args.target is None:
+        args.target = "iOS18" if args.precision == "w8b" else "iOS17"
+    if args.precision == "w8b" and args.target != "iOS18":
+        raise SystemExit("error: --precision w8b needs --target iOS18 (per-block quantization is an iOS 18 op)")
+    if args.precision == "w8b" and len(sizes) > 1:
+        print("warning: w8b needs the iOS 18 op set, and multifunction models built with it failed to load on the ANE")
     if not args.keep_silu:
         torch.nn.SiLU.forward = silu_via_tanh
 
@@ -160,9 +174,11 @@ def main():
             compute_precision=ct.precision.FLOAT16,
             minimum_deployment_target=getattr(ct.target, args.target),
         )
-        if args.precision == "w8":
+        if args.precision in ("w8", "w8b"):
+            # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
+            granularity = {"granularity": "per_block", "block_size": 32} if args.precision == "w8b" else {"granularity": "per_channel"}
             op_config = ct.optimize.coreml.OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
-                                                                   granularity="per_channel", weight_threshold=2048)
+                                                                   weight_threshold=2048, **granularity)
             mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
                                                                  ct.optimize.coreml.OptimizationConfig(op_config))
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")

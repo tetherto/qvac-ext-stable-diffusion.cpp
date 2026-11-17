@@ -20,7 +20,26 @@ pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 python script/coreml/convert_unet.py --unet sdxs-512-dreamshaper/unet --out sdxs_unet_fp16.mlpackage --compile
 ```
 
-`--unet` is the `unet/` folder of a diffusers pipeline. The script checks the exported model against PyTorch fp32 on the CPU+ANE and CPU+GPU, and `--compile` also writes the `.mlmodelc` to ship. Use fp16 (the default): `--precision w8` halves the file but runs no faster on the ANE and drifts more.
+`--unet` is the `unet/` folder of a diffusers pipeline (pipelines that only ship the `fp16` weight variant work too). The script checks the exported model against PyTorch fp32 on the CPU+ANE and CPU+GPU, and `--compile` also writes the `.mlmodelc` to ship. It records the UNet's prediction type (epsilon or v-prediction, from the pipeline's scheduler config or `--prediction`) in the model; sd.cpp reads it for SD 2.x, because its usual check runs the UNet on an 8x8 latent, which a fixed-shape CoreML UNet cannot take.
+
+#### Weight precision
+
+| `--precision` | Weights | Use for |
+| --- | --- | --- |
+| `fp16` (default) | fp16 | Small UNets such as SDXS (603 MB). Matches ggml Metal closely. |
+| `w8b` | int8, one scale per block of 32 weights (iOS 18+) | SD 2.x and other multi-step models. |
+| `w8` | int8, one scale per output channel | Older iOS only; drifts over many steps. |
+
+The SD 2.1 UNet is 1.6 GB in fp16, too big to compile for the ANE: CoreML silently runs it on the CPU (about 1.1 s per call on an M2). int8 weights halve it and it runs on the ANE. How the int8 scales are shared matters for a 20-step model, because weight errors compound from step to step. Measured on an M2 with SD 2.1-768 at 512x512, 20 Euler steps, CFG 7, the same seed, against the ggml Metal (Q8_0) image:
+
+| SD 2.1 UNet | Size | UNet per call | Image vs ggml Metal |
+| --- | --- | --- | --- |
+| ggml Metal, Q8_0 | 2.3 GB GGUF (whole model) | 1,320 ms | reference |
+| CoreML fp16, on the GPU | 1.6 GB | about 480 ms | 23.9 dB |
+| CoreML `w8`, on the ANE | 868 MB | 242 ms | 19.9 dB: valid image, but the composition shifts |
+| CoreML `w8b`, on the ANE | 891 MB | 258 ms | 24.8 dB: same composition as Metal |
+
+With one scale per channel, a single large weight coarsens the rounding of every other weight in that channel; with one scale per 32 weights it only affects its 31 neighbours. `w8b` needs the iOS 18 op set (the script selects it). Asymmetric int8 (with a zero point) moves the whole UNet off the ANE onto the CPU, so the script only uses symmetric int8.
 
 ### Export the tiny decoder
 
@@ -49,6 +68,7 @@ Every input shape of the CoreML model is fixed at export time (batch 1, 77 promp
 
 | Model | Sizes to export | Notes |
 | --- | --- | --- |
+| SD 2.1 (768-v) | 512x512 tested | Native size is 768x768. At 512x512 the images are good; 768x768 is not tested yet. |
 | SDXS-512-DreamShaper | 512x512 only | Distilled at 512 only. At 512x768, 768x512 and 768x768 it duplicates features (extra eyes and noses) on ggml Metal and on CoreML alike. `convert_unet.py` refuses other sizes for SDXS unless `--allow-untrained-sizes` is given. |
 
 For other models, `convert_unet.py` warns when a size differs from the one in the UNet config. Only list sizes the model was trained at.
