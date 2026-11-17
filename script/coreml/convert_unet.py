@@ -157,6 +157,25 @@ def ane_transformer_forward(query_chunk):
     return forward
 
 
+def apply_attention(unet, attention, query_chunk):
+    """Switches the UNet's attention to one of the ANE rewrites (standard leaves it unchanged)."""
+    if attention == "split_einsum_v2":
+        unet.set_attn_processor(SplitEinsumAttention(query_chunk))
+    elif attention == "ane":
+        for module in unet.modules():
+            if type(module).__name__ == "Transformer2DModel":
+                module.forward = ane_transformer_forward(query_chunk).__get__(module)
+
+
+def max_rel_err(out, reference):
+    """Largest absolute difference relative to the reference's largest magnitude."""
+    return float(np.abs(out - reference).max() / max(np.abs(reference).max(), 1e-12))
+
+
+# The rewrites change only the order of float32 operations; anything above this is a math error.
+REWRITE_TOLERANCE = 1e-4
+
+
 class UNetWrapper(torch.nn.Module):
     def __init__(self, unet):
         super().__init__()
@@ -253,19 +272,10 @@ def main():
         raise SystemExit("error: --precision w8b needs --target iOS18 (per-block quantization is an iOS 18 op)")
     if args.precision == "w8b" and len(sizes) > 1:
         print("warning: w8b needs the iOS 18 op set, and multifunction models built with it failed to load on the ANE")
-    if not args.keep_silu:
-        torch.nn.SiLU.forward = silu_via_tanh
-
     # Some pipelines ship only the fp16 variant (diffusion_pytorch_model.fp16.safetensors); trace in fp32 either way.
     has_default = any((Path(args.unet) / f).exists() for f in ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"))
     unet = UNet2DConditionModel.from_pretrained(args.unet, torch_dtype=torch.float32,
                                                 variant=None if has_default else "fp16").eval()
-    if args.attention == "split_einsum_v2":
-        unet.set_attn_processor(SplitEinsumAttention(args.query_chunk))
-    elif args.attention == "ane":
-        for module in unet.modules():
-            if type(module).__name__ == "Transformer2DModel":
-                module.forward = ane_transformer_forward(args.query_chunk).__get__(module)
     wrapper = UNetWrapper(unet).eval()
     cfg = unet.config
     check_sizes(cfg, sizes, args.allow_untrained_sizes)
@@ -275,6 +285,9 @@ def main():
     parts_dir = Path(tempfile.mkdtemp(prefix="unet_parts_")) if multi else None
     checks = []  # (function name or None, inputs, fp32 reference output)
 
+    # References come from the unmodified diffusers UNet (standard attention, x * sigmoid(x)), so the checks
+    # below catch mistakes in the rewrites as well as conversion error.
+    examples = {}
     for width, height in sizes:
         shapes = {
             "sample": (args.batch, cfg.in_channels, height // 8, width // 8),
@@ -287,8 +300,21 @@ def main():
             torch.randn(shapes["encoder_hidden_states"]),
         )
         with torch.no_grad():
+            examples[width, height] = (shapes, example, wrapper(*example).numpy())
+
+    if not args.keep_silu:
+        torch.nn.SiLU.forward = silu_via_tanh
+    apply_attention(unet, args.attention, args.query_chunk)
+
+    for width, height in sizes:
+        shapes, example, reference = examples[width, height]
+        with torch.no_grad():
             traced = torch.jit.trace(wrapper, example, strict=False)
-            reference = wrapper(*example).numpy()
+            err = max_rel_err(wrapper(*example).numpy(), reference)
+        print(f"{width}x{height}: rewritten UNet vs diffusers (fp32): max relative error {err:.2e}")
+        if err > REWRITE_TOLERANCE:
+            raise SystemExit(f"error: the {args.attention} attention / silu rewrite differs from diffusers by {err:.2e} "
+                             f"(tolerance {REWRITE_TOLERANCE:.0e})")
 
         t0 = time.time()
         mlmodel = ct.convert(
