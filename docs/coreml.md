@@ -21,6 +21,7 @@ cmake --build build --config Release
 pip install torch==2.5.1 diffusers==0.31.0 transformers==4.46.3 coremltools==8.3.0 numpy==1.26.4 scikit-learn==1.5.2 huggingface_hub
 python script/coreml/export_artifacts.py --out artifacts --sd-cli build/bin/sd-cli            # everything
 python script/coreml/export_artifacts.py --out artifacts --models sd21base --dry-run          # print the commands
+python script/coreml/export_artifacts.py --out artifacts --skip-existing                     # only what is missing
 ```
 
 | Model | Artifact | Used as |
@@ -28,7 +29,7 @@ python script/coreml/export_artifacts.py --out artifacts --models sd21base --dry
 | SDXS-512-DreamShaper | `sdxs-f16.gguf` (sd-cli -M convert) | `-m` |
 | | `sdxs_unet_fp16.mlmodelc` | `--coreml-unet` |
 | | `sdxs_tae_decoder.mlmodelc` | `--coreml-tae` |
-| SD 2.1-base | `stable-diffusion-v2-1-Q8_0.gguf` (text encoder; SD 2.1 and 2.1-base share it) | `-m` |
+| SD 2.1-base | `sd21base-Q8_0.gguf` (sd-cli -M convert; the ggml UNet is only used without `--coreml-unet`) | `-m` |
 | | `sd21base_unet_p6.mlmodelc` (6-bit palette, batch 2, split-einsum attention) | `--coreml-unet`, with `--prediction eps` |
 | | `taesd.safetensors`, `taesd_decoder.mlmodelc` | `--taesd`, `--coreml-tae` |
 
