@@ -7,6 +7,7 @@
 #import <Foundation/Foundation.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -14,33 +15,41 @@
 
 namespace sd_coreml {
 
-// SD_COREML_COMPUTE_UNITS: all | cpu_ne (default) | cpu_gpu | cpu.
+struct ComputeUnitsName {
+    const char* name;
+    MLComputeUnits units;
+};
+
+// The SD_COREML_COMPUTE_UNITS values; the first entry is the default.
+inline constexpr ComputeUnitsName kComputeUnits[] = {
+    {"cpu_ne", MLComputeUnitsCPUAndNeuralEngine},
+    {"all", MLComputeUnitsAll},
+    {"cpu_gpu", MLComputeUnitsCPUAndGPU},
+    {"cpu", MLComputeUnitsCPUOnly},
+};
+
+// SD_COREML_COMPUTE_UNITS: cpu_ne (default) | all | cpu_gpu | cpu.
 inline MLComputeUnits compute_units_from_env() {
     const char* env = getenv("SD_COREML_COMPUTE_UNITS");
-    std::string v   = env ? env : "cpu_ne";
-    if (v == "all") {
-        return MLComputeUnitsAll;
+    if (env == nullptr || *env == '\0') {
+        return kComputeUnits[0].units;
     }
-    if (v == "cpu_gpu") {
-        return MLComputeUnitsCPUAndGPU;
+    for (const ComputeUnitsName& c : kComputeUnits) {
+        if (strcmp(env, c.name) == 0) {
+            return c.units;
+        }
     }
-    if (v == "cpu") {
-        return MLComputeUnitsCPUOnly;
-    }
-    return MLComputeUnitsCPUAndNeuralEngine;
+    LOG_WARN("SD_COREML_COMPUTE_UNITS=%s is not one of cpu_ne, all, cpu_gpu, cpu; using cpu_ne", env);
+    return kComputeUnits[0].units;
 }
 
 inline const char* compute_units_name(MLComputeUnits units) {
-    switch (units) {
-        case MLComputeUnitsAll:
-            return "all";
-        case MLComputeUnitsCPUAndGPU:
-            return "cpu_gpu";
-        case MLComputeUnitsCPUOnly:
-            return "cpu";
-        default:
-            return "cpu_ne";
+    for (const ComputeUnitsName& c : kComputeUnits) {
+        if (c.units == units) {
+            return c.name;
+        }
     }
+    return "unknown";
 }
 
 inline std::string shape_str(const int64_t* shape, size_t n) {
