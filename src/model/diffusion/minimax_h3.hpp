@@ -149,6 +149,8 @@ namespace MiniMaxH3 {
     };
 
     struct MLP : public UnaryBlock {
+        bool local_ops_enabled = true;
+
         MLP(int64_t hidden_size,
             int64_t ffn_hidden_size) {
             blocks["fc1"] = std::make_shared<Linear>(hidden_size, ffn_hidden_size * 2, false, false, true, 1.f / 128.f);
@@ -171,8 +173,13 @@ namespace MiniMaxH3 {
             auto fc1       = std::dynamic_pointer_cast<Linear>(blocks["fc1"]);
             auto fc2       = std::dynamic_pointer_cast<Linear>(blocks["fc2"]);
             auto projected = fc1->forward(ctx, x);
-            auto activated = ggml_swiglu(ctx->ggml_ctx, projected);
-            return fc2->forward(ctx, activated);
+            if (local_ops_enabled) {
+                return fc2->forward(ctx, ggml_swiglu(ctx->ggml_ctx, projected));
+            }
+            auto uv = ggml_ext_chunk(ctx->ggml_ctx, projected, 2, 0);
+            return fc2->forward(ctx, ggml_mul(ctx->ggml_ctx,
+                                              ggml_silu(ctx->ggml_ctx, uv[0]),
+                                              uv[1]));
         }
     };
 
@@ -209,6 +216,7 @@ namespace MiniMaxH3 {
     struct Attention : public GGMLBlock {
         int64_t heads;
         int64_t head_dim;
+        bool local_ops_enabled = true;
 
         Attention(int64_t hidden_size,
                   int64_t heads,
@@ -237,14 +245,24 @@ namespace MiniMaxH3 {
             auto k_norm      = std::dynamic_pointer_cast<RMSNorm>(blocks["k_norm"]);
             int64_t sequence = projected->ne[1];
             int64_t batch    = projected->ne[2] * projected->ne[3];
-            auto view        = [&](int index) {
-                return ggml_view_4d(ctx->ggml_ctx, projected, head_dim, heads, sequence, batch,
-                                    head_dim * projected->nb[0], projected->nb[1], projected->nb[2],
-                                    index * heads * head_dim * projected->nb[0]);
-            };
-            auto q = view(0);
-            auto k = view(1);
-            auto v = view(2);
+            ggml_tensor* q;
+            ggml_tensor* k;
+            ggml_tensor* v;
+            if (local_ops_enabled) {
+                auto view = [&](int index) {
+                    return ggml_view_4d(ctx->ggml_ctx, projected, head_dim, heads, sequence, batch,
+                                        head_dim * projected->nb[0], projected->nb[1], projected->nb[2],
+                                        index * heads * head_dim * projected->nb[0]);
+                };
+                q = view(0);
+                k = view(1);
+                v = view(2);
+            } else {
+                auto qkv = ggml_ext_chunk(ctx->ggml_ctx, projected, 3, 0);
+                q        = ggml_reshape_4d(ctx->ggml_ctx, qkv[0], head_dim, heads, sequence, batch);
+                k        = ggml_reshape_4d(ctx->ggml_ctx, qkv[1], head_dim, heads, sequence, batch);
+                v        = ggml_reshape_4d(ctx->ggml_ctx, qkv[2], head_dim, heads, sequence, batch);
+            }
             q      = q_norm->forward(ctx, q);
             k      = k_norm->forward(ctx, k);
             if (pe != nullptr) {
@@ -988,6 +1006,19 @@ namespace MiniMaxH3 {
 
         std::string get_desc() override {
             return "minimax_h3";
+        }
+
+        void set_local_ops_enabled(bool enabled) {
+            std::vector<GGMLBlock*> blocks;
+            model.get_all_blocks(blocks);
+            for (auto* block : blocks) {
+                if (auto* mlp = dynamic_cast<MLP*>(block)) {
+                    mlp->local_ops_enabled = enabled;
+                }
+                if (auto* attention = dynamic_cast<Attention*>(block)) {
+                    attention->local_ops_enabled = enabled;
+                }
+            }
         }
 
         void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors,
