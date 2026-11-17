@@ -586,6 +586,10 @@ public:
                 }
                 if (strlen(SAFE_STR(sd_ctx_params->coreml_unet_path)) > 0) {
 #ifdef SD_USE_COREML
+                    if (sd_ctx_params->circular_x || sd_ctx_params->circular_y) {
+                        LOG_ERROR("coreml_unet_path does not support circular padding: the CoreML UNet keeps the padding it was exported with");
+                        return false;
+                    }
                     auto coreml_unet = CoreMLUNet::load(sd_ctx_params->coreml_unet_path);
                     if (!coreml_unet) {
                         return false;
@@ -698,6 +702,10 @@ public:
 #ifdef SD_USE_COREML
                 if (!std::dynamic_pointer_cast<TinyImageAutoEncoder>(tae_first_stage)) {
                     LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL model");
+                    return false;
+                }
+                if (sd_ctx_params->circular_x || sd_ctx_params->circular_y) {
+                    LOG_ERROR("coreml_tae_decoder_path does not support circular padding: the CoreML decoder keeps the padding it was exported with");
                     return false;
                 }
                 coreml_tae = CoreMLTAEDecoder::load(sd_ctx_params->coreml_tae_decoder_path);
@@ -1104,7 +1112,22 @@ public:
         return lora;
     }
 
-    void apply_loras_immediately(const std::unordered_map<std::string, float>& lora_state) {
+    // The CoreML UNet has no ggml weights for a LoRA to change, so a LoRA with UNet tensors is an error.
+    bool check_coreml_unet_lora(const std::shared_ptr<LoraModel>& lora) {
+        if (!use_coreml_unet) {
+            return true;
+        }
+        for (const auto& kv : lora->lora_tensors) {
+            if (is_diffusion_model_name(kv.first)) {
+                LOG_ERROR("lora '%s' changes the UNet, which runs on CoreML (coreml_unet_path) and cannot take LoRAs",
+                          lora->lora_id.c_str());
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool apply_loras_immediately(const std::unordered_map<std::string, float>& lora_state) {
         std::unordered_map<std::string, float> lora_state_diff;
         for (auto& kv : lora_state) {
             const std::string& lora_name = kv.first;
@@ -1118,7 +1141,7 @@ public:
         }
 
         if (lora_state_diff.empty()) {
-            return;
+            return true;
         }
 
         LOG_INFO("apply lora immediately");
@@ -1137,6 +1160,9 @@ public:
             if (!lora || lora->lora_tensors.empty()) {
                 continue;
             }
+            if (!check_coreml_unet_lora(lora)) {
+                return false;
+            }
             lora->apply(tensors, version, n_threads);
             lora->free_params_buffer();
 
@@ -1146,9 +1172,10 @@ public:
         }
 
         curr_lora_state = lora_state;
+        return true;
     }
 
-    void apply_loras_at_runtime(const std::unordered_map<std::string, float>& lora_state) {
+    bool apply_loras_at_runtime(const std::unordered_map<std::string, float>& lora_state) {
         cond_stage_lora_models.clear();
         diffusion_lora_models.clear();
         first_stage_lora_models.clear();
@@ -1165,7 +1192,7 @@ public:
             first_stage_model->set_weight_adapter(nullptr);
         }
         if (lora_state.empty()) {
-            return;
+            return true;
         }
         LOG_INFO("apply lora at runtime");
         if (cond_stage_model) {
@@ -1225,6 +1252,9 @@ public:
 
                 auto lora = load_lora_model_from_file(lora_name, multiplier, backend, lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
+                    if (!check_coreml_unet_lora(lora)) {
+                        return false;
+                    }
                     lora->preprocess_lora_tensors(tensors);
                     diffusion_lora_models.push_back(lora);
                 }
@@ -1268,6 +1298,7 @@ public:
             auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(first_stage_lora_models);
             first_stage_model->set_weight_adapter(multi_lora_adapter);
         }
+        return true;
     }
 
     void lora_stat() {
@@ -1293,7 +1324,7 @@ public:
         }
     }
 
-    void apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    bool apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
         std::unordered_map<std::string, float> lora_f2m;
         for (uint32_t i = 0; i < lora_count; i++) {
             std::string lora_id = SAFE_STR(loras[i].path);
@@ -1304,15 +1335,15 @@ public:
             LOG_DEBUG("lora %s:%.2f", lora_id.c_str(), loras[i].multiplier);
         }
         int64_t t0 = ggml_time_ms();
-        if (apply_lora_immediately) {
-            apply_loras_immediately(lora_f2m);
-        } else {
-            apply_loras_at_runtime(lora_f2m);
+        bool ok = apply_lora_immediately ? apply_loras_immediately(lora_f2m) : apply_loras_at_runtime(lora_f2m);
+        if (!ok) {
+            return false;
         }
         int64_t t1 = ggml_time_ms();
         if (!lora_f2m.empty()) {
             LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         }
+        return true;
     }
 
     SDCondition get_pmid_conditon(ggml_context* work_ctx,
@@ -2800,7 +2831,8 @@ public:
                 if (coreml_tae && x->type == GGML_TYPE_F32 && ggml_is_contiguous(x)) {
                     // ggml's [w, h, C, N] latent and [W, H, 3, N] image are row-major [N, C, h, w] and [N, 3, H, W].
                     const int64_t latent_shape[4] = {x->ne[3], x->ne[2], x->ne[1], x->ne[0]};
-                    decoded                       = coreml_tae->decode((const float*)x->data, latent_shape, (float*)result->data);
+                    const int64_t image_shape[4]  = {result->ne[3], result->ne[2], result->ne[1], result->ne[0]};
+                    decoded = coreml_tae->decode((const float*)x->data, latent_shape, (float*)result->data, image_shape);
                 } else
 #endif
                 {
@@ -3687,7 +3719,10 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
     sd_ctx->sd->set_flow_shift(sd_img_gen_params->sample_params.flow_shift);
 
     // Apply lora
-    sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count);
+    if (!sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count)) {
+        ggml_free(work_ctx);
+        return nullptr;
+    }
 
     enum sample_method_t sample_method = sd_img_gen_params->sample_params.sample_method;
     if (sample_method == SAMPLE_METHOD_COUNT) {
@@ -4045,7 +4080,10 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
     int64_t t0 = ggml_time_ms();
 
     // Apply lora
-    sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count);
+    if (!sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count)) {
+        ggml_free(work_ctx);
+        return nullptr;
+    }
 
     ggml_tensor* init_latent        = nullptr;
     ggml_tensor* clip_vision_output = nullptr;
