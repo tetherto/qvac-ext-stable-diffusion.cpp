@@ -43,7 +43,9 @@ from pathlib import Path
 import coremltools as ct
 import numpy as np
 import torch
+import torch.nn.functional as F
 from diffusers import UNet2DConditionModel
+from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
 
 def silu_via_tanh(self, x):
@@ -89,6 +91,70 @@ class SplitEinsumAttention:
         if attn.residual_connection:
             out = out + residual
         return out / attn.rescale_output_factor
+
+
+def _conv1x1(x, linear):
+    """A Linear layer applied to channels-first [B, C, 1, S] data, as a 1x1 convolution."""
+    return F.conv2d(x, linear.weight[:, :, None, None], linear.bias)
+
+
+def _layer_norm_channels(x, norm):
+    """LayerNorm over the channel axis of [B, C, 1, S] data."""
+    mean = x.mean(dim=1, keepdim=True)
+    var  = (x - mean).pow(2).mean(dim=1, keepdim=True)
+    x    = (x - mean) * torch.rsqrt(var + norm.eps)
+    return x * norm.weight[None, :, None, None] + norm.bias[None, :, None, None]
+
+
+def _attention_channels(attn, x, context, query_chunk):
+    """Split-einsum attention on channels-first data: x [B, C, 1, S], context [B, D, 1, T]."""
+    q        = _conv1x1(x, attn.to_q) * attn.scale
+    k        = _conv1x1(context, attn.to_k)
+    v        = _conv1x1(context, attn.to_v)
+    head_dim = q.shape[1] // attn.heads
+    chunk    = min(query_chunk, q.shape[3])
+    heads    = []
+    for qh, kh, vh in zip(q.split(head_dim, dim=1), k.split(head_dim, dim=1), v.split(head_dim, dim=1)):
+        kt    = kh.transpose(1, 3)  # [B, T, 1, d]
+        parts = []
+        for qc in qh.split(chunk, dim=3):
+            w = torch.softmax(torch.einsum("bchq,bkhc->bkhq", qc, kt), dim=1)  # [B, T, 1, q]
+            parts.append(torch.einsum("bkhq,bchk->bchq", w, vh))  # [B, d, 1, q]
+        heads.append(torch.cat(parts, dim=3) if len(parts) > 1 else parts[0])
+    return _conv1x1(torch.cat(heads, dim=1), attn.to_out[0])
+
+
+def ane_transformer_forward(query_chunk):
+    """Forward for diffusers' Transformer2DModel (SD 1.x/2.x) that keeps data channels-first, [B, C, 1, S].
+
+    Our own implementation of the layout Apple's ml-stable-diffusion uses for the ANE: every Linear in the block
+    becomes a 1x1 convolution and LayerNorm runs over the channel axis, so there are no [B, S, C] <-> [B, C, H, W]
+    transposes, and attention is split per head and per query chunk as in SplitEinsumAttention. Same math as the
+    standard block.
+    """
+
+    def forward(self, hidden_states, encoder_hidden_states=None, *args, return_dict=True, **kwargs):
+        b, c, h, w = hidden_states.shape
+        residual   = hidden_states
+        x          = self.norm(hidden_states).reshape(b, c, 1, h * w)
+        x          = _conv1x1(x, self.proj_in) if self.use_linear_projection else self.proj_in(x)
+        context    = encoder_hidden_states.transpose(1, 2).unsqueeze(2)  # [B, T, D] -> [B, D, 1, T]
+        for block in self.transformer_blocks:
+            if block.norm_type != "layer_norm" or block.only_cross_attention or block.pos_embed is not None:
+                raise ValueError("the ANE transformer layout supports SD 1.x/2.x transformer blocks only")
+            n = _layer_norm_channels(x, block.norm1)
+            x = x + _attention_channels(block.attn1, n, n, query_chunk)
+            n = _layer_norm_channels(x, block.norm2)
+            x = x + _attention_channels(block.attn2, n, context, query_chunk)
+            n = _layer_norm_channels(x, block.norm3)
+            geglu        = block.ff.net[0]
+            hidden, gate = _conv1x1(n, geglu.proj).split(geglu.proj.out_features // 2, dim=1)
+            x = x + _conv1x1(hidden * F.gelu(gate), block.ff.net[2])
+        x   = _conv1x1(x, self.proj_out) if self.use_linear_projection else self.proj_out(x)
+        out = x.reshape(b, c, h, w) + residual
+        return (out,) if not return_dict else Transformer2DModelOutput(sample=out)
+
+    return forward
 
 
 class UNetWrapper(torch.nn.Module):
@@ -153,9 +219,10 @@ def main():
                         help="weights: fp16, int8 with one scale per output channel (w8), int8 with one scale per "
                              "block of 32 weights (w8b, iOS 18+), or a 6-bit k-means palette per layer (p6, for "
                              "large UNets on iOS); compute is fp16 in all cases")
-    parser.add_argument("--attention", choices=["standard", "split_einsum_v2"], default="standard",
-                        help="standard diffusers attention, or per-head attention with chunked queries for the ANE "
-                             "(faster for large UNets such as SD 2.x)")
+    parser.add_argument("--attention", choices=["standard", "split_einsum_v2", "ane"], default="standard",
+                        help="standard diffusers attention; split_einsum_v2: per-head attention with chunked queries; "
+                             "ane: the same attention with the whole transformer block kept channels-first ([B, C, 1, S], "
+                             "Linear as 1x1 conv), as Apple lays it out for the ANE (fastest for SD 2.x)")
     parser.add_argument("--query-chunk", type=int, default=512, help="query tokens per chunk for split_einsum_v2")
     parser.add_argument("--palette-mode", choices=["kmeans", "uniform"], default="kmeans",
                         help="how p6 picks the 64 palette values: kmeans (accurate, slow) or uniform (fast; for "
@@ -195,6 +262,10 @@ def main():
                                                 variant=None if has_default else "fp16").eval()
     if args.attention == "split_einsum_v2":
         unet.set_attn_processor(SplitEinsumAttention(args.query_chunk))
+    elif args.attention == "ane":
+        for module in unet.modules():
+            if type(module).__name__ == "Transformer2DModel":
+                module.forward = ane_transformer_forward(args.query_chunk).__get__(module)
     wrapper = UNetWrapper(unet).eval()
     cfg = unet.config
     check_sizes(cfg, sizes, args.allow_untrained_sizes)
