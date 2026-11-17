@@ -13,6 +13,27 @@ cmake --build build --config Release
 
 `SD_COREML` needs an Apple platform. It links CoreML and adds the `--coreml-unet` and `--coreml-tae` options to `sd-cli` (`coreml_unet_path` and `coreml_tae_decoder_path` in `sd_ctx_params_t`).
 
+### Regenerate the artifacts
+
+`script/coreml/export_artifacts.py` rebuilds every model file used in the measurements here from the original weights at pinned Hugging Face revisions, running the converters below one step at a time:
+
+```bash
+pip install torch==2.5.1 diffusers==0.31.0 transformers==4.46.3 coremltools==8.3.0 numpy==1.26.4 scikit-learn==1.5.2 huggingface_hub
+python script/coreml/export_artifacts.py --out artifacts --sd-cli build/bin/sd-cli            # everything
+python script/coreml/export_artifacts.py --out artifacts --models sd21base --dry-run          # print the commands
+```
+
+| Model | Artifact | Used as |
+| --- | --- | --- |
+| SDXS-512-DreamShaper | `sdxs-f16.gguf` (sd-cli -M convert) | `-m` |
+| | `sdxs_unet_fp16.mlmodelc` | `--coreml-unet` |
+| | `sdxs_tae_decoder.mlmodelc` | `--coreml-tae` |
+| SD 2.1-base | `stable-diffusion-v2-1-Q8_0.gguf` (text encoder; SD 2.1 and 2.1-base share it) | `-m` |
+| | `sd21base_unet_p6.mlmodelc` (6-bit palette, batch 2, split-einsum attention) | `--coreml-unet`, with `--prediction eps` |
+| | `taesd.safetensors`, `taesd_decoder.mlmodelc` | `--taesd`, `--coreml-tae` |
+
+The SD 2.1-base UNet takes about 5 minutes and 8 GB of RAM; nothing else should run alongside it on a 16 GB Mac. k-means palettes are not bit-for-bit reproducible, so a regenerated UNet can differ slightly from an earlier one in fine image detail.
+
 ### Export the UNet
 
 ```bash
@@ -69,7 +90,16 @@ The UNets Apple publishes on Hugging Face ([apple/coreml-stable-diffusion-2-1-ba
 
 Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. The ANE reads palettized weights directly, so the compiled model is cached after the first load. The per-block int8 export (`w8b`) is expanded to fp16 on the CPU on every load instead: on an iPhone 16 that took about 105 s and 5.3 GB each time, and the app ran out of memory. On an M2, 512x512, 20 Euler steps, CFG 7, with TAESD on CoreML: 6.3 s per image, 0.25 s cached load, 0.9 GB peak footprint.
 
-`convert_unet.py --precision p6 --batch 2` follows the same recipe from the original diffusers weights (SD 2.1-base: 621 MB, about 4 minutes and 7 GB of RAM on an M2 with 2 k-means workers; needs scikit-learn). Its images match Apple's file in composition and subject (fine details differ after 20 steps), it caches the same way, but it is slower on an M2: 9.8 s per image against Apple's 6.3 s. Apple's export also rewrites attention for the ANE (`SPLIT_EINSUM_V2`); `convert_unet.py` keeps the standard attention.
+`convert_unet.py --precision p6 --batch 2` follows the same recipe from the original diffusers weights (SD 2.1-base: 621 MB, about 5 minutes and 8 GB of RAM on an M2 with 2 k-means workers; needs scikit-learn). Its images match Apple's file in composition and subject (fine details differ after 20 steps) and it caches the same way. Apple also rewrites attention for the ANE; `--attention` reimplements that (our own code, same math, 2e-6 max difference in fp32):
+
+| `--attention` (SD 2.1-base, p6, batch 2, M2) | One UNet call on the ANE | 20-step image |
+| --- | --- | --- |
+| `standard` | 537 ms | 9.8 s |
+| `split_einsum_v2`: one small attention per head, queries in chunks of 512 | 368-381 ms | 7.5 s |
+| `ane`: the same, with the whole transformer block channels-first (Linear as 1x1 conv) | 332 ms | not measured |
+| Apple's pre-converted file | 304 ms | 6.3 s |
+
+The artifacts below use `split_einsum_v2`. For SDXS the attention form makes no measurable difference, so it keeps `standard`.
 
 ### Supported sizes
 
