@@ -4,7 +4,8 @@
 //   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar. The optional
 //   tae_decoder.mlmodelc runs the tiny decoder with its CoreML sidecar too.
 // options: --steps N  --cfg F  --sampler NAME  --taesd FILE (ggml TAESD, for models without a built-in
-//   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)
+//   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)  --mmap (map the model file instead of
+//   reading it into memory; on iOS the mapped pages do not count against the app's memory limit)
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -40,7 +41,9 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
     } else if ((v = after(text, "decode_first_stage completed, taking ")) >= 0) {
         g_stage.decode_ms = v * 1000;  // s
     }
-    if (level >= SD_LOG_WARN || strstr(text, "coreml unet") || strstr(text, "coreml tae") || strstr(text, "total params memory")) {
+    static const bool verbose = getenv("SDBENCH_VERBOSE") != nullptr;
+    if (verbose || level >= SD_LOG_WARN || strstr(text, "coreml unet") || strstr(text, "coreml tae") ||
+        strstr(text, "total params memory")) {
         fputs(text, stdout);
     }
 }
@@ -61,8 +64,15 @@ int sd_bench_main(int argc, const char* argv[]) {
     const char* sampler = "";
     const char* taesd   = "";
     int images          = 3;
-    for (int i = *tae ? 6 : 5; i + 1 < argc; i += 2) {
-        if (strcmp(argv[i], "--steps") == 0) {
+    bool mmap           = false;
+    for (int i = *tae ? 6 : 5; i < argc; i += 2) {
+        if (strcmp(argv[i], "--mmap") == 0) {
+            mmap = true;
+            i--;  // no value
+        } else if (i + 1 >= argc) {
+            fprintf(stderr, "missing value for %s\n", argv[i]);
+            return 1;
+        } else if (strcmp(argv[i], "--steps") == 0) {
             steps = atoi(argv[i + 1]);
         } else if (strcmp(argv[i], "--cfg") == 0) {
             cfg = (float)atof(argv[i + 1]);
@@ -98,6 +108,7 @@ int sd_bench_main(int argc, const char* argv[]) {
     ctx_params.coreml_unet_path        = coreml;
     ctx_params.coreml_tae_decoder_path = tae;
     ctx_params.taesd_path              = taesd;
+    ctx_params.enable_mmap             = mmap;
     ctx_params.free_params_immediately = false;  // reuse the context for every image
 
     auto t0       = std::chrono::steady_clock::now();
