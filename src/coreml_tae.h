@@ -15,8 +15,9 @@ public:
     static std::unique_ptr<CoreMLTAEDecoder> load(const std::string& path);
     virtual ~CoreMLTAEDecoder() = default;
 
-    // latent is [N, C, h, w] and image is [N, 3, 8h, 8w], both contiguous float32.
-    virtual bool decode(const float* latent, const int64_t latent_shape[4], float* image) = 0;
+    // latent is [N, C, h, w] and image is [N, 3, 8h, 8w], both contiguous float32. Both shapes must match
+    // the model's, so the decoder never writes more than image_shape holds.
+    virtual bool decode(const float* latent, const int64_t latent_shape[4], float* image, const int64_t image_shape[4]) = 0;
 };
 
 #endif  // __COREML_TAE_H__

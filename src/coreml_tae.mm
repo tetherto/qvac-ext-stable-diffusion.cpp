@@ -15,11 +15,16 @@ public:
     std::vector<int64_t> latent_shape;
     std::vector<int64_t> image_shape;
 
-    bool decode(const float* latent, const int64_t shape[4], float* image) override {
+    bool decode(const float* latent, const int64_t shape[4], float* image, const int64_t out_shape[4]) override {
         @autoreleasepool {
             if (!std::equal(latent_shape.begin(), latent_shape.end(), shape)) {
                 LOG_ERROR("coreml tae: latent %s does not match the model's %s",
                           shape_str(shape, 4).c_str(), shape_str(latent_shape.data(), latent_shape.size()).c_str());
+                return false;
+            }
+            if (!std::equal(image_shape.begin(), image_shape.end(), out_shape)) {
+                LOG_ERROR("coreml tae: image buffer %s does not match the model's output %s",
+                          shape_str(out_shape, 4).c_str(), shape_str(image_shape.data(), image_shape.size()).c_str());
                 return false;
             }
 
@@ -85,6 +90,14 @@ std::unique_ptr<CoreMLTAEDecoder> CoreMLTAEDecoder::load(const std::string& path
         impl->image_shape  = declared_shape(model.modelDescription.outputDescriptionsByName[@"image"]);
         if (impl->latent_shape.size() != 4 || impl->image_shape.size() != 4) {
             LOG_ERROR("coreml tae: %s does not have a fixed-shape 'latent' input and 'image' output", path.c_str());
+            return nullptr;
+        }
+        const std::vector<int64_t>& z = impl->latent_shape;
+        const std::vector<int64_t> expected = {z[0], 3, 8 * z[2], 8 * z[3]};
+        if (impl->image_shape != expected) {
+            LOG_ERROR("coreml tae: %s maps latent %s to image %s, expected %s",
+                      path.c_str(), shape_str(z.data(), 4).c_str(), shape_str(impl->image_shape.data(), 4).c_str(),
+                      shape_str(expected.data(), 4).c_str());
             return nullptr;
         }
         LOG_INFO("coreml tae: %s ready in %.2f s, compute units %s, latent %s, image %s",
