@@ -102,6 +102,16 @@ Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. 
 
 On an iPhone 16 (512x512, 20 Euler steps, CFG 7, TAESD on CoreML, mean of 3 warm images), the `split_einsum_v2` export takes 7.1 s per image against 6.1 s for Apple's file; both load from the cache in about 0.2 s after a one-time compile (64 s, 0.65 GB peak) and peak at 1.6 GB while generating.
 
+Against ggml Metal (`sd21base-Q8_0.gguf`, TAESD as the decoder in every run, 512x512, 20 Euler steps, CFG 7, mean of 3 warm images):
+
+| SD 2.1-base | iPhone 16 | M2 | Peak memory (iPhone 16) |
+| --- | --- | --- | --- |
+| All ggml Metal | 71.8 s | 47.3 s | 2.0 GB |
+| UNet on CoreML, TAESD on Metal | 9.6 s | 8.8 s | 1.3 GB |
+| UNet and TAESD on CoreML | 7.7 s (9.4x faster) | 7.6 s (6.2x faster) | 1.3 GB |
+
+The UNet is 97% of an all-Metal image (20 steps, two passes each for CFG): 70.2 s on Metal against 7.5 s on the ANE on the iPhone. The iPhone runs followed each other without a cool-down, so the phone throttled as it warmed and times grow from image to image (all Metal 68.7, 72.6, 74.1 s); on a cool phone the CoreML pipeline took 7.1-7.3 s. CoreML's compute plan places 4,394 of the UNet's 4,399 operations and all 84 TAESD operations on the ANE; the rest is the timestep's sin/cos on the CPU.
+
 The artifacts below use `split_einsum_v2`. For SDXS the attention form makes no measurable difference, so it keeps `standard`.
 
 ### Supported sizes
