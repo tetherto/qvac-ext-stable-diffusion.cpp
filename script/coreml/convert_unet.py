@@ -53,6 +53,44 @@ def silu_via_tanh(self, x):
     return 0.5 * x * (1.0 + torch.tanh(0.5 * x))
 
 
+class SplitEinsumAttention:
+    """Attention written for the Apple Neural Engine (same math as standard attention).
+
+    Our own implementation of the idea behind Apple's SPLIT_EINSUM_V2 (apple/ml-stable-diffusion): every head
+    becomes its own small matmul + softmax instead of one batched multi-head attention, and long query sequences
+    (4096 tokens for a 64x64 latent) are split into chunks. The ANE runs many small 2D attentions much faster
+    than one large 4D one.
+    """
+
+    def __init__(self, query_chunk=512):
+        self.query_chunk = query_chunk
+
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, temb=None, *args, **kwargs):
+        if attention_mask is not None or attn.spatial_norm is not None or attn.group_norm is not None or hidden_states.ndim != 3:
+            raise ValueError("SplitEinsumAttention supports the plain 3D self/cross attention of SD 1.x/2.x UNets only")
+        residual = hidden_states
+        context  = hidden_states if encoder_hidden_states is None else encoder_hidden_states
+        if attn.norm_cross and encoder_hidden_states is not None:
+            context = attn.norm_encoder_hidden_states(context)
+
+        q = attn.to_q(hidden_states) * attn.scale  # scale before q @ k^T keeps the fp16 scores small
+        k = attn.to_k(context)
+        v = attn.to_v(context)
+        head_dim = q.shape[-1] // attn.heads
+        chunk    = min(self.query_chunk, q.shape[1])  # split, not chunk: coremltools cannot convert torch.chunk
+
+        heads = []
+        for qh, kh, vh in zip(q.split(head_dim, dim=-1), k.split(head_dim, dim=-1), v.split(head_dim, dim=-1)):
+            kt    = kh.transpose(1, 2)
+            parts = [torch.bmm(torch.softmax(torch.bmm(qc, kt), dim=-1), vh) for qc in qh.split(chunk, dim=1)]
+            heads.append(torch.cat(parts, dim=1) if len(parts) > 1 else parts[0])
+        out = attn.to_out[1](attn.to_out[0](torch.cat(heads, dim=-1)))
+
+        if attn.residual_connection:
+            out = out + residual
+        return out / attn.rescale_output_factor
+
+
 class UNetWrapper(torch.nn.Module):
     def __init__(self, unet):
         super().__init__()
@@ -115,6 +153,13 @@ def main():
                         help="weights: fp16, int8 with one scale per output channel (w8), int8 with one scale per "
                              "block of 32 weights (w8b, iOS 18+), or a 6-bit k-means palette per layer (p6, for "
                              "large UNets on iOS); compute is fp16 in all cases")
+    parser.add_argument("--attention", choices=["standard", "split_einsum_v2"], default="standard",
+                        help="standard diffusers attention, or per-head attention with chunked queries for the ANE "
+                             "(faster for large UNets such as SD 2.x)")
+    parser.add_argument("--query-chunk", type=int, default=512, help="query tokens per chunk for split_einsum_v2")
+    parser.add_argument("--palette-mode", choices=["kmeans", "uniform"], default="kmeans",
+                        help="how p6 picks the 64 palette values: kmeans (accurate, slow) or uniform (fast; for "
+                             "speed experiments, same file format and run time)")
     parser.add_argument("--kmeans-workers", type=int, default=2,
                         help="parallel k-means workers for p6; each one adds memory, keep it low on a 16 GB Mac")
     parser.add_argument("--batch", type=int, default=1, help="UNet batch: 1, or 2 for batched CFG")
@@ -148,6 +193,8 @@ def main():
     has_default = any((Path(args.unet) / f).exists() for f in ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"))
     unet = UNet2DConditionModel.from_pretrained(args.unet, torch_dtype=torch.float32,
                                                 variant=None if has_default else "fp16").eval()
+    if args.attention == "split_einsum_v2":
+        unet.set_attn_processor(SplitEinsumAttention(args.query_chunk))
     wrapper = UNetWrapper(unet).eval()
     cfg = unet.config
     check_sizes(cfg, sizes, args.allow_untrained_sizes)
@@ -189,7 +236,7 @@ def main():
             mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
                                                                  ct.optimize.coreml.OptimizationConfig(op_config))
         elif args.precision == "p6":
-            op_config = ct.optimize.coreml.OpPalettizerConfig(mode="kmeans", nbits=6, weight_threshold=2048,
+            op_config = ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=6, weight_threshold=2048,
                                                               num_kmeans_workers=args.kmeans_workers)
             mlmodel = ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
