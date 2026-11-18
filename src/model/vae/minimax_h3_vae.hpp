@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -774,6 +776,13 @@ namespace MiniMaxH3VAE {
                 auto mean        = make_input(pixel_mean);
                 auto std         = make_input(pixel_std);
                 auto runner_ctx  = get_context();
+                static const bool vae_flash = [] {
+                    const char* value = std::getenv("SD_H3_VAE_FLASH_ATTN");
+                    return value && std::strcmp(value, "1") == 0;
+                }();
+                if (vae_flash && decode_graph && sd_backend_is(runner_ctx.backend, "CUDA")) {
+                    runner_ctx.flash_attn_enabled = true;
+                }
                 ggml_tensor* out = nullptr;
                 if (decode_graph) {
                     auto pe = make_input(rope_cache);

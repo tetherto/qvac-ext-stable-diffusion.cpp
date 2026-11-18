@@ -107,6 +107,10 @@ struct MiniMaxH3ReferenceBlock {
     int32_t audio_index         = -1;
 };
 
+namespace sd_sample {
+    struct H3TeaCacheState;
+}
+
 struct MiniMaxH3DiffusionExtra {
     const sd::Tensor<int32_t>* text_token_tags                    = nullptr;
     const sd::Tensor<int32_t>* keyframe_indices                   = nullptr;
@@ -115,6 +119,10 @@ struct MiniMaxH3DiffusionExtra {
     int audio_length                                              = 0;
     float video_sigma_shift                                       = 12.f;
     float audio_sigma_shift                                       = 3.f;
+    sd_sample::H3TeaCacheState* step_cache                        = nullptr;
+    const void* cache_condition                                   = nullptr;
+    int denoise_step                                              = -1;
+    int denoise_steps                                             = 0;
 };
 
 struct MiniT2IDiffusionExtra {
