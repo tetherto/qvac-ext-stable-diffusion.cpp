@@ -1311,6 +1311,13 @@ bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d) {
         (module == SDBackendModule::VAE ? params.vae_conv_direct : params.diffusion_conv_direct)) {
         return true;
     }
+    if (!conv3d && module == SDBackendModule::VAE && sd_version_is_flux2(version)) {
+        const auto backends = backend_manager.runtime_backends(module);
+        if (backends.size() == 1 && sd_backend_is_hip_gfx1151(backends.front())) {
+            LOG_INFO("conv2d direct auto: %s -> off (Flux.2 VAE on gfx1151)", ggml_backend_name(backends.front()));
+            return false;
+        }
+    }
     auto& by_backend = conv3d ? conv3d_direct_by_backend : conv2d_direct_by_backend;
     auto backends    = backend_manager.runtime_backends(module);
     bool enabled     = !backends.empty();

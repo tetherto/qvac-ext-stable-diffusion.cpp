@@ -264,6 +264,9 @@ These are backend-level defaults. GGML still chooses the actual kernel based on
 weight type, shape, and hardware; enabling direct convolution does not guarantee
 that every operation uses implicit GEMM. The CUDA-family implicit GEMM paths
 require F16 weights and can use ordinary direct kernels for other cases.
+For Flux.2 on ROCm gfx1151, `auto` uses im2col for the VAE's 2D convolutions;
+the direct path is substantially slower for this VAE on that device. An explicit
+`--conv-direct auto,vae=on` still selects the direct path.
 This option does not change the separately created image upscaler context.
 
 Repeating `--conv-direct` replaces the previous assignment string. Existing

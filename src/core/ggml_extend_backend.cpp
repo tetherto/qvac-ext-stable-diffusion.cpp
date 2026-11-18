@@ -525,14 +525,14 @@ bool sd_backend_supports_cuda_mma(ggml_backend_t backend) {
     return arch == 700 || arch >= 750;
 }
 
-bool sd_backend_supports_hip_mma(ggml_backend_t backend) {
+static long hip_arch_code(ggml_backend_t backend) {
 #ifdef SD_USE_HIP
     if (!sd_backend_is(backend, "ROCm")) {
-        return false;
+        return 0;
     }
     auto dev = ggml_backend_get_device(backend);
     if (dev == nullptr) {
-        return false;
+        return 0;
     }
     ggml_backend_dev_props props{};
     ggml_backend_dev_get_props(dev, &props);
@@ -541,17 +541,30 @@ bool sd_backend_supports_hip_mma(ggml_backend_t backend) {
     if (props.device_id == nullptr ||
         hipDeviceGetByPCIBusId(&device, props.device_id) != hipSuccess ||
         hipGetDeviceProperties(&hip_props, device) != hipSuccess) {
-        return false;
+        return 0;
     }
     const char* arch = hip_props.gcnArchName;
     if (std::strncmp(arch, "gfx", 3) != 0) {
-        return false;
+        return 0;
     }
     char* end        = nullptr;
     const long value = std::strtol(arch + 3, &end, 16);
     if (end == arch + 3 || (*end != '\0' && *end != ':')) {
-        return false;
+        return 0;
     }
+    return value;
+#else
+    (void)backend;
+    return 0;
+#endif
+}
+
+bool sd_backend_is_hip_gfx1151(ggml_backend_t backend) {
+    return hip_arch_code(backend) == 0x1151;
+}
+
+bool sd_backend_supports_hip_mma(ggml_backend_t backend) {
+    const long value = hip_arch_code(backend);
     // Match the HIP FA kernels; keep unknown architecture families on the probe path.
     if (value >= 0x1100 && value < 0x1300) {
         return true;
@@ -560,10 +573,6 @@ bool sd_backend_supports_hip_mma(ggml_backend_t backend) {
     return value == 0x908 || value == 0x90a ||
            value == 0x940 || value == 0x941 || value == 0x942 || value == 0x950;
 #else
-    return false;
-#endif
-#else
-    (void)backend;
     return false;
 #endif
 }
