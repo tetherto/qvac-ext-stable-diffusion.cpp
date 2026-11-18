@@ -13,6 +13,7 @@
 #include "model/diffusion/control.hpp"
 #include "model/diffusion/model.hpp"
 #include "model/vae/auto_encoder_kl.hpp"
+#include "model/vae/coreml_tae_runner.h"
 #include "model/vae/hunyuan_vae.hpp"
 #include "model/vae/ltx_audio_vae.hpp"
 #include "model/vae/ltx_vae.hpp"
@@ -129,6 +130,14 @@ namespace sd::model_builders {
                                                               version,
                                                               weight_manager);
 
+            } else if (!decode_only && strlen(SAFE_STR(sd_ctx_params->coreml_tae_decoder_path)) > 0) {
+                return std::make_shared<CoreMLTinyImageAutoEncoder>(ctx.backends.runtime_backend(SDBackendModule::VAE),
+                                                                    tensor_storage_map,
+                                                                    "decoder.layers",
+                                                                    decode_only,
+                                                                    version,
+                                                                    weight_manager,
+                                                                    sd_ctx_params->coreml_tae_decoder_path);
             } else {
                 auto model = std::make_shared<TinyImageAutoEncoder>(ctx.backends.runtime_backend(SDBackendModule::VAE),
                                                                     tensor_storage_map,
@@ -229,6 +238,16 @@ namespace sd::model_builders {
             }
         }
 
+        if (strlen(SAFE_STR(sd_ctx_params->coreml_tae_decoder_path)) > 0) {
+            auto coreml_tae = std::dynamic_pointer_cast<CoreMLTinyImageAutoEncoder>(result.vae);
+            if (!coreml_tae) {
+                LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL model");
+                return false;
+            }
+            if (!coreml_tae->is_coreml_ready()) {
+                return false;
+            }
+        }
         if (result.vae) {
             result.vae->set_scale_overrides(sd_ctx_params->linear_scale, sd_ctx_params->attn_scale);
         }

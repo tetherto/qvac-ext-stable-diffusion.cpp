@@ -380,6 +380,38 @@ jobs:
           path: |
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
 
+  macOS-coreml-tests:
+    runs-on: macos-latest
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # torch 2.5.1 has no wheels for newer Pythons
+
+      - name: Python dependencies
+        run: |
+          python3 -m venv venv
+          venv/bin/pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
+
+      - name: Build
+        run: |
+          cmake -B build -DSD_COREML=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target test-coreml -j 4
+
+      - name: CoreML sidecar tests
+        run: |
+          venv/bin/python tests/coreml/make_fixtures.py build/coreml-fixtures
+          build/bin/test-coreml build/coreml-fixtures
+
+      - name: Converter parity tests
+        run: venv/bin/python -m unittest script/coreml/test_convert_unet.py
+
   windows-latest-cmake:
     runs-on: windows-2022
 

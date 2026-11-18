@@ -1,4 +1,5 @@
 #include "conditioning/conditioner.hpp"
+#include "model/diffusion/coreml_unet_runner.h"
 #include "model/diffusion/unet.hpp"
 #include "model/vae/auto_encoder_kl.hpp"
 #include "model_definition.h"
@@ -33,6 +34,15 @@ static bool build_sd(const sd::model_builders::Context& ctx, const TokenizerConf
                                                                              version,
                                                                              weight_manager,
                                                                              tokenizers);
+    if (strlen(SAFE_STR(sd_ctx_params->coreml_unet_path)) > 0) {
+        result.diffusion = std::make_shared<CoreMLUNetRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
+                                                              tensor_storage_map,
+                                                              "model.diffusion_model",
+                                                              version,
+                                                              weight_manager,
+                                                              sd_ctx_params->coreml_unet_path);
+        return true;
+    }
     result.diffusion   = std::make_shared<UNetModelRunner>(ctx.backends.runtime_backend(SDBackendModule::DIFFUSION),
                                                            tensor_storage_map,
                                                            "model.diffusion_model",

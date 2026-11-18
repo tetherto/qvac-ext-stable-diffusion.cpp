@@ -141,6 +141,8 @@ struct SDContextParams {
     std::string audio_vae_path;
     std::string audio_encoder_path;
     std::string taesd_path;
+    std::string coreml_unet_path;
+    std::string coreml_tae_decoder_path;
     std::string esrgan_path;
     std::string control_net_path;
     std::string ip_adapter_path;
