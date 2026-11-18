@@ -116,3 +116,5 @@ Even though the name "SDXS-512-0.9" is similar to "SDXS-512-DreamShaper", it is 
 * https://huggingface.co/akleine/sdxs-09
 
 For the use of this model, both options ``` --cfg-scale 1 ``` and ``` --steps 1 ``` are again absolutely necessary.
+
+SDXS-512-DreamShaper gives good images at 512x512 only. On Apple devices its UNet can run on the Neural Engine, see [CoreML sidecar](./coreml.md).

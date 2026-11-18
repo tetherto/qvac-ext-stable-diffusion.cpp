@@ -283,6 +283,8 @@ typedef struct {
     // fraction of reported free memory, execute only that graph on CPU.
     bool vae_auto_cpu_fallback;
     float vae_auto_cpu_fallback_memory_ratio;
+    const char* coreml_unet_path;  // UNet as a CoreML model (.mlmodelc/.mlpackage); needs SD_COREML
+    const char* coreml_tae_decoder_path;  // tiny autoencoder decoder as a CoreML model; needs SD_COREML
 } sd_ctx_params_t;
 
 typedef struct {

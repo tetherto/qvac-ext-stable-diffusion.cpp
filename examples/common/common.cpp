@@ -493,6 +493,16 @@ ArgOptions SDContextParams::get_options() {
          0,
          &taesd_path},
         {"",
+         "--coreml-unet",
+         "path to the UNet as a CoreML model (.mlmodelc), run on the Apple Neural Engine (SD 1.x/2.x; SD_COREML builds)",
+         0,
+         &coreml_unet_path},
+        {"",
+         "--coreml-tae",
+         "path to the tiny autoencoder decoder as a CoreML model (.mlmodelc); needs SDXS or --taesd (SD_COREML builds)",
+         0,
+         &coreml_tae_decoder_path},
+        {"",
          "--tae",
          "alias of --taesd",
          0,
@@ -1002,6 +1012,8 @@ std::string SDContextParams::to_string() const {
         << "  audio_vae_path: \"" << audio_vae_path << "\",\n"
         << "  audio_encoder_path: \"" << audio_encoder_path << "\",\n"
         << "  taesd_path: \"" << taesd_path << "\",\n"
+        << "  coreml_unet_path: \"" << coreml_unet_path << "\",\n"
+        << "  coreml_tae_decoder_path: \"" << coreml_tae_decoder_path << "\",\n"
         << "  esrgan_path: \"" << esrgan_path << "\",\n"
         << "  control_net_path: \"" << control_net_path << "\",\n"
         << "  embedding_dir: \"" << embedding_dir << "\",\n"
@@ -1074,6 +1086,8 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t() {
     sd_ctx_params.audio_vae_path                  = audio_vae_path.c_str();
     sd_ctx_params.audio_encoder_path              = audio_encoder_path.c_str();
     sd_ctx_params.taesd_path                      = taesd_path.c_str();
+    sd_ctx_params.coreml_unet_path                = coreml_unet_path.c_str();
+    sd_ctx_params.coreml_tae_decoder_path         = coreml_tae_decoder_path.c_str();
     sd_ctx_params.control_net_path                = control_net_path.c_str();
     sd_ctx_params.ip_adapter_path                 = ip_adapter_path.c_str();
     sd_ctx_params.motion_module_path              = motion_module_path.c_str();

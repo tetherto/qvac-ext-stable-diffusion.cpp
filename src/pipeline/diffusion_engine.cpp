@@ -1,3 +1,4 @@
+#include "model/diffusion/coreml_unet_runner.h"
 #include "model/diffusion/flux_coreml_runner.h"
 #include "diffusion_engine.h"
 
@@ -1158,6 +1159,16 @@ bool StableDiffusionGGML::build_core_runners() {
         LOG_ERROR("Core ML FLUX.2 denoiser was requested but could not be loaded");
         return false;
     }
+    if (strlen(SAFE_STR(config_->params.coreml_unet_path)) > 0) {
+        auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
+        if (!coreml_unet) {
+            LOG_ERROR("coreml_unet_path only supports SD 1.x/2.x UNet models (including SDXS)");
+            return false;
+        }
+        if (!coreml_unet->is_coreml_ready()) {
+            return false;
+        }
+    }
     cond_stage_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::TE));
     diffusion_model->set_max_graph_vram_bytes(max_graph_vram_bytes_for_module(SDBackendModule::DIFFUSION));
     if (high_noise_diffusion_model) {
@@ -1408,7 +1419,9 @@ bool StableDiffusionGGML::validate_and_load_runners() {
         extension->add_ignore_tensors(ignore_tensors);
     }
     auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
-    if (coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
+    auto coreml_unet_model = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
+    if ((coreml_flux_model && coreml_flux_model->is_coreml_requested()) ||
+        (coreml_unet_model && coreml_unet_model->is_coreml_requested())) {
         ignore_tensors.insert("model.diffusion_model.");
     }
     ignore_tensors.insert("model.diffusion_model.__x0__");
@@ -1548,7 +1561,22 @@ bool StableDiffusionGGML::build_denoiser() {
         const auto& policy = definition->sampling;
         pred_type          = policy.default_prediction;
         default_flow_shift = policy.flow_shift_from_weights ? policy.flow_shift_from_weights(tensor_storage_map) : policy.default_flow_shift;
-        if (policy.probe_v_prediction) {
+        auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
+        if (coreml_unet && coreml_unet->is_coreml_requested()) {
+            // The probe below runs the UNet on a small input, which a fixed-shape CoreML model cannot take;
+            // convert_unet.py records the prediction type in the model instead.
+            const std::string recorded = coreml_unet->prediction_type();
+            if (recorded == "v_prediction") {
+                pred_type = V_PRED;
+            } else if (recorded == "epsilon") {
+                pred_type = EPS_PRED;
+            } else if (policy.probe_v_prediction) {
+                LOG_ERROR("the CoreML UNet does not record its prediction type; pass --prediction eps or v");
+                return false;
+            } else if (policy.prediction_from_weights) {
+                pred_type = policy.prediction_from_weights(tensor_storage_map);
+            }
+        } else if (policy.probe_v_prediction) {
             pred_type = !fit_dry_run && is_using_v_parameterization_for_sd2(sd_version_is_inpaint(version)) ? V_PRED : EPS_PRED;
         } else if (policy.prediction_from_weights) {
             pred_type = policy.prediction_from_weights(tensor_storage_map);
@@ -1960,6 +1988,12 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
     auto coreml_flux_model = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
     if (!all_loras.empty() && coreml_flux_model && coreml_flux_model->is_coreml_requested()) {
         LOG_ERROR("LoRA requests are not supported by the Core ML FLUX.2 denoiser");
+        last_lora_apply_result = {false, false};
+        return false;
+    }
+    auto coreml_unet_model = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
+    if (!all_loras.empty() && coreml_unet_model && coreml_unet_model->is_coreml_requested()) {
+        LOG_ERROR("LoRA requests are not supported with the CoreML UNet (coreml_unet_path)");
         last_lora_apply_result = {false, false};
         return false;
     }

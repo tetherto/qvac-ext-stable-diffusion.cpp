@@ -159,6 +159,7 @@ API and command-line option may change frequently.***
 
 If you want to improve performance or reduce VRAM/RAM usage, please refer to [performance guide](./docs/performance.md).
 For runtime and parameter backend placement, see the [backend selection guide](./docs/backend.md).
+On Apple devices, the UNet of SD 1.x/2.x models can run on the Neural Engine: see [CoreML sidecar](./docs/coreml.md).
 
 ## More Guides
 

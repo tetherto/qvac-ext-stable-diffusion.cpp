@@ -389,6 +389,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "audio_vae_path: %s\n"
              "audio_encoder_path: %s\n"
              "taesd_path: %s\n"
+             "coreml_unet_path: %s\n"
+             "coreml_tae_decoder_path: %s\n"
              "control_net_path: %s\n"
              "photo_maker_path: %s\n"
              "pulid_weights_path: %s\n"
@@ -434,6 +436,8 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              SAFE_STR(sd_ctx_params->audio_vae_path),
              SAFE_STR(sd_ctx_params->audio_encoder_path),
              SAFE_STR(sd_ctx_params->taesd_path),
+             SAFE_STR(sd_ctx_params->coreml_unet_path),
+             SAFE_STR(sd_ctx_params->coreml_tae_decoder_path),
              SAFE_STR(sd_ctx_params->control_net_path),
              SAFE_STR(sd_ctx_params->photo_maker_path),
              SAFE_STR(sd_ctx_params->pulid_weights_path),
