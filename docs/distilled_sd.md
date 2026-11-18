@@ -135,5 +135,3 @@ python convert_diffusers_to_original_stable_diffusion.py \
 ```
 
 Both options: ``` --cfg-scale 1 ``` and  ``` --steps 1 ``` are mandatory here.                                                 
-
-SDXS gives good images at 512x512 only. On Apple devices its UNet can run on the Neural Engine, see [CoreML sidecar](./coreml.md).

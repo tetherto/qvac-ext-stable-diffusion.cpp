@@ -439,8 +439,6 @@ struct SDContextParams {
     std::string high_noise_diffusion_model_path;
     std::string vae_path;
     std::string taesd_path;
-    std::string coreml_unet_path;
-    std::string coreml_tae_decoder_path;
     std::string esrgan_path;
     std::string control_net_path;
     std::string embedding_dir;
@@ -539,15 +537,6 @@ struct SDContextParams {
              "--tae",
              "alias of --taesd",
              &taesd_path},
-            {"",
-             "--coreml-unet",
-             "path to the UNet as a CoreML model (.mlmodelc or .mlpackage), run in place of the ggml UNet (needs SD_COREML)",
-             &coreml_unet_path},
-            {"",
-             "--coreml-tae",
-             "path to the tiny autoencoder decoder as a CoreML model (.mlmodelc or .mlpackage), run in place of the ggml "
-             "one for SDXS or --taesd (needs SD_COREML)",
-             &coreml_tae_decoder_path},
             {"",
              "--control-net",
              "path to control net model",
@@ -900,8 +889,6 @@ struct SDContextParams {
             << "  high_noise_diffusion_model_path: \"" << high_noise_diffusion_model_path << "\",\n"
             << "  vae_path: \"" << vae_path << "\",\n"
             << "  taesd_path: \"" << taesd_path << "\",\n"
-            << "  coreml_unet_path: \"" << coreml_unet_path << "\",\n"
-            << "  coreml_tae_decoder_path: \"" << coreml_tae_decoder_path << "\",\n"
             << "  esrgan_path: \"" << esrgan_path << "\",\n"
             << "  control_net_path: \"" << control_net_path << "\",\n"
             << "  embedding_dir: \"" << embedding_dir << "\",\n"
@@ -994,8 +981,6 @@ struct SDContextParams {
             chroma_use_t5_mask,
             chroma_t5_mask_pad,
             qwen_image_zero_cond_t,
-            coreml_unet_path.c_str(),
-            coreml_tae_decoder_path.c_str(),
         };
         return sd_ctx_params;
     }

@@ -12,9 +12,6 @@
 #include "control.hpp"
 #include "denoiser.hpp"
 #include "diffusion_model.hpp"
-#ifdef SD_USE_COREML
-#include "coreml_tae.h"
-#endif
 #include "easycache.hpp"
 #include "esrgan.hpp"
 #include "lora.hpp"
@@ -128,12 +125,8 @@ public:
     std::shared_ptr<FrozenCLIPVisionEmbedder> clip_vision;  // for svd or wan2.1 i2v
     std::shared_ptr<DiffusionModel> diffusion_model;
     std::shared_ptr<DiffusionModel> high_noise_diffusion_model;
-    bool use_coreml_unet = false;
     std::shared_ptr<VAE> first_stage_model;
     std::shared_ptr<TinyAutoEncoder> tae_first_stage;
-#ifdef SD_USE_COREML
-    std::unique_ptr<CoreMLTAEDecoder> coreml_tae;  // replaces tae_first_stage for untiled decodes
-#endif
     std::shared_ptr<ControlNet> control_net;
     std::shared_ptr<PhotoMakerIDEncoder> pmid_model;
     std::shared_ptr<LoraModel> pmid_lora;
@@ -584,31 +577,13 @@ public:
                                                                                            embbeding_map,
                                                                                            version);
                 }
-                if (strlen(SAFE_STR(sd_ctx_params->coreml_unet_path)) > 0) {
-#ifdef SD_USE_COREML
-                    if (sd_ctx_params->circular_x || sd_ctx_params->circular_y) {
-                        LOG_ERROR("coreml_unet_path does not support circular padding: the CoreML UNet keeps the padding it was exported with");
-                        return false;
-                    }
-                    auto coreml_unet = CoreMLUNet::load(sd_ctx_params->coreml_unet_path);
-                    if (!coreml_unet) {
-                        return false;
-                    }
-                    diffusion_model  = std::make_shared<CoreMLUNetModel>(std::move(coreml_unet));
-                    use_coreml_unet  = true;
-#else
-                    LOG_ERROR("coreml_unet_path is set, but this build has no CoreML support (SD_COREML=OFF)");
-                    return false;
-#endif
-                } else {
-                    diffusion_model = std::make_shared<UNetModel>(backend,
-                                                                  offload_params_to_cpu,
-                                                                  tensor_storage_map,
-                                                                  version);
-                    if (sd_ctx_params->diffusion_conv_direct) {
-                        LOG_INFO("Using Conv2d direct in the diffusion model");
-                        std::dynamic_pointer_cast<UNetModel>(diffusion_model)->unet.set_conv2d_direct_enabled(true);
-                    }
+                diffusion_model = std::make_shared<UNetModel>(backend,
+                                                              offload_params_to_cpu,
+                                                              tensor_storage_map,
+                                                              version);
+                if (sd_ctx_params->diffusion_conv_direct) {
+                    LOG_INFO("Using Conv2d direct in the diffusion model");
+                    std::dynamic_pointer_cast<UNetModel>(diffusion_model)->unet.set_conv2d_direct_enabled(true);
                 }
             }
 
@@ -696,26 +671,6 @@ public:
                     LOG_INFO("Using Conv2d direct in the tae model");
                     tae_first_stage->set_conv2d_direct_enabled(true);
                 }
-            }
-
-            if (strlen(SAFE_STR(sd_ctx_params->coreml_tae_decoder_path)) > 0) {
-#ifdef SD_USE_COREML
-                if (!std::dynamic_pointer_cast<TinyImageAutoEncoder>(tae_first_stage)) {
-                    LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL model");
-                    return false;
-                }
-                if (sd_ctx_params->circular_x || sd_ctx_params->circular_y) {
-                    LOG_ERROR("coreml_tae_decoder_path does not support circular padding: the CoreML decoder keeps the padding it was exported with");
-                    return false;
-                }
-                coreml_tae = CoreMLTAEDecoder::load(sd_ctx_params->coreml_tae_decoder_path);
-                if (!coreml_tae) {
-                    return false;
-                }
-#else
-                LOG_ERROR("coreml_tae_decoder_path is set, but this build has no CoreML support (SD_COREML=OFF)");
-                return false;
-#endif
             }
 
             if (strlen(SAFE_STR(sd_ctx_params->control_net_path)) > 0) {
@@ -832,9 +787,6 @@ public:
         if (use_pmid) {
             ignore_tensors.insert("pmid.unet.");
         }
-        if (use_coreml_unet) {
-            ignore_tensors.insert("model.diffusion_model.");
-        }
         ignore_tensors.insert("model.diffusion_model.__x0__");
         ignore_tensors.insert("model.diffusion_model.__32x32__");
         ignore_tensors.insert("model.diffusion_model.__index_timestep_zero__");
@@ -941,22 +893,7 @@ public:
             prediction_t pred_type = sd_ctx_params->prediction;
 
             if (pred_type == PREDICTION_COUNT) {
-                if (sd_version_is_sd2(version) && use_coreml_unet) {
-#ifdef SD_USE_COREML
-                    // The probe below runs the UNet on an 8x8 latent, which a fixed-shape CoreML UNet cannot take.
-                    std::string recorded = std::dynamic_pointer_cast<CoreMLUNetModel>(diffusion_model)->coreml->prediction_type();
-                    if (recorded == "v_prediction") {
-                        pred_type = V_PRED;
-                    } else if (recorded == "epsilon") {
-                        pred_type = EPS_PRED;
-                    } else {
-                        LOG_ERROR("the CoreML UNet does not record its prediction type; re-export it with "
-                                  "convert_unet.py or pass --prediction");
-                        return false;
-                    }
-                    LOG_INFO("prediction type from the CoreML UNet: %s", recorded.c_str());
-#endif
-                } else if (sd_version_is_sd2(version)) {
+                if (sd_version_is_sd2(version)) {
                     // check is_using_v_parameterization_for_sd2
                     if (is_using_v_parameterization_for_sd2(ctx, sd_version_is_inpaint(version))) {
                         pred_type = V_PRED;
@@ -1112,22 +1049,7 @@ public:
         return lora;
     }
 
-    // The CoreML UNet has no ggml weights for a LoRA to change, so a LoRA with UNet tensors is an error.
-    bool check_coreml_unet_lora(const std::shared_ptr<LoraModel>& lora) {
-        if (!use_coreml_unet) {
-            return true;
-        }
-        for (const auto& kv : lora->lora_tensors) {
-            if (is_diffusion_model_name(kv.first)) {
-                LOG_ERROR("lora '%s' changes the UNet, which runs on CoreML (coreml_unet_path) and cannot take LoRAs",
-                          lora->lora_id.c_str());
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool apply_loras_immediately(const std::unordered_map<std::string, float>& lora_state) {
+    void apply_loras_immediately(const std::unordered_map<std::string, float>& lora_state) {
         std::unordered_map<std::string, float> lora_state_diff;
         for (auto& kv : lora_state) {
             const std::string& lora_name = kv.first;
@@ -1141,7 +1063,7 @@ public:
         }
 
         if (lora_state_diff.empty()) {
-            return true;
+            return;
         }
 
         LOG_INFO("apply lora immediately");
@@ -1160,9 +1082,6 @@ public:
             if (!lora || lora->lora_tensors.empty()) {
                 continue;
             }
-            if (!check_coreml_unet_lora(lora)) {
-                return false;
-            }
             lora->apply(tensors, version, n_threads);
             lora->free_params_buffer();
 
@@ -1172,10 +1091,9 @@ public:
         }
 
         curr_lora_state = lora_state;
-        return true;
     }
 
-    bool apply_loras_at_runtime(const std::unordered_map<std::string, float>& lora_state) {
+    void apply_loras_at_runtime(const std::unordered_map<std::string, float>& lora_state) {
         cond_stage_lora_models.clear();
         diffusion_lora_models.clear();
         first_stage_lora_models.clear();
@@ -1192,7 +1110,7 @@ public:
             first_stage_model->set_weight_adapter(nullptr);
         }
         if (lora_state.empty()) {
-            return true;
+            return;
         }
         LOG_INFO("apply lora at runtime");
         if (cond_stage_model) {
@@ -1252,9 +1170,6 @@ public:
 
                 auto lora = load_lora_model_from_file(lora_name, multiplier, backend, lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
-                    if (!check_coreml_unet_lora(lora)) {
-                        return false;
-                    }
                     lora->preprocess_lora_tensors(tensors);
                     diffusion_lora_models.push_back(lora);
                 }
@@ -1298,7 +1213,6 @@ public:
             auto multi_lora_adapter = std::make_shared<MultiLoraAdapter>(first_stage_lora_models);
             first_stage_model->set_weight_adapter(multi_lora_adapter);
         }
-        return true;
     }
 
     void lora_stat() {
@@ -1324,7 +1238,7 @@ public:
         }
     }
 
-    bool apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
+    void apply_loras(const sd_lora_t* loras, uint32_t lora_count) {
         std::unordered_map<std::string, float> lora_f2m;
         for (uint32_t i = 0; i < lora_count; i++) {
             std::string lora_id = SAFE_STR(loras[i].path);
@@ -1335,15 +1249,15 @@ public:
             LOG_DEBUG("lora %s:%.2f", lora_id.c_str(), loras[i].multiplier);
         }
         int64_t t0 = ggml_time_ms();
-        bool ok = apply_lora_immediately ? apply_loras_immediately(lora_f2m) : apply_loras_at_runtime(lora_f2m);
-        if (!ok) {
-            return false;
+        if (apply_lora_immediately) {
+            apply_loras_immediately(lora_f2m);
+        } else {
+            apply_loras_at_runtime(lora_f2m);
         }
         int64_t t1 = ggml_time_ms();
         if (!lora_f2m.empty()) {
             LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
         }
-        return true;
     }
 
     SDCondition get_pmid_conditon(ggml_context* work_ctx,
@@ -2156,27 +2070,7 @@ public:
                 active_condition          = &id_cond;
             }
 
-            // A CoreML UNet exported for batch 2 (Apple's ml-stable-diffusion) runs both CFG passes in one call.
-            bool cfg_batched = false;
-#ifdef SD_USE_COREML
-            auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetModel>(work_diffusion_model);
-            if (coreml_unet && coreml_unet->takes_cfg_batch()) {
-                if (!has_unconditioned || has_img_cond || has_skiplayer || !controls.empty() || easycache_enabled ||
-                    ucache_enabled || cachedit_enabled) {
-                    LOG_ERROR("this CoreML UNet runs CFG's two passes as one batch of 2: use cfg-scale > 1, "
-                              "without ControlNet, image CFG, skip layers or step caching");
-                    return nullptr;
-                }
-                if (!coreml_unet->compute_cfg_batch(noised_input, timesteps, active_condition->c_crossattn,
-                                                    uncond.c_crossattn, out_cond, out_uncond)) {
-                    LOG_ERROR("diffusion model compute failed");
-                    return nullptr;
-                }
-                cfg_batched = true;
-            }
-#endif
-
-            bool skip_model = cfg_batched || cache_before_condition(active_condition, *active_output);
+            bool skip_model = cache_before_condition(active_condition, *active_output);
             if (!skip_model) {
                 if (!work_diffusion_model->compute(n_threads,
                                                    diffusion_params,
@@ -2204,7 +2098,7 @@ public:
                 diffusion_params.context  = uncond.c_crossattn;
                 diffusion_params.c_concat = uncond.c_concat;
                 diffusion_params.y        = uncond.c_vector;
-                bool skip_uncond          = cfg_batched || cache_before_condition(&uncond, out_uncond);
+                bool skip_uncond          = cache_before_condition(&uncond, out_uncond);
                 if (!skip_uncond) {
                     if (!work_diffusion_model->compute(n_threads,
                                                        diffusion_params,
@@ -2826,19 +2720,7 @@ public:
                 };
                 sd_tiling(x, result, vae_scale_factor, 64, 0.5f, circular_x, circular_y, on_tiling);
             } else {
-                bool decoded = false;
-#ifdef SD_USE_COREML
-                if (coreml_tae && x->type == GGML_TYPE_F32 && ggml_is_contiguous(x)) {
-                    // ggml's [w, h, C, N] latent and [W, H, 3, N] image are row-major [N, C, h, w] and [N, 3, H, W].
-                    const int64_t latent_shape[4] = {x->ne[3], x->ne[2], x->ne[1], x->ne[0]};
-                    const int64_t image_shape[4]  = {result->ne[3], result->ne[2], result->ne[1], result->ne[0]};
-                    decoded = coreml_tae->decode((const float*)x->data, latent_shape, (float*)result->data, image_shape);
-                } else
-#endif
-                {
-                    decoded = tae_first_stage->compute(n_threads, x, true, &result);
-                }
-                if (!decoded) {
+                if (!tae_first_stage->compute(n_threads, x, true, &result)) {
                     LOG_ERROR("Failed to decode latetnts");
                     tae_first_stage->free_compute_buffer();
                     return nullptr;
@@ -3719,10 +3601,7 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
     sd_ctx->sd->set_flow_shift(sd_img_gen_params->sample_params.flow_shift);
 
     // Apply lora
-    if (!sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count)) {
-        ggml_free(work_ctx);
-        return nullptr;
-    }
+    sd_ctx->sd->apply_loras(sd_img_gen_params->loras, sd_img_gen_params->lora_count);
 
     enum sample_method_t sample_method = sd_img_gen_params->sample_params.sample_method;
     if (sample_method == SAMPLE_METHOD_COUNT) {
@@ -4080,10 +3959,7 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
     int64_t t0 = ggml_time_ms();
 
     // Apply lora
-    if (!sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count)) {
-        ggml_free(work_ctx);
-        return nullptr;
-    }
+    sd_ctx->sd->apply_loras(sd_vid_gen_params->loras, sd_vid_gen_params->lora_count);
 
     ggml_tensor* init_latent        = nullptr;
     ggml_tensor* clip_vision_output = nullptr;

@@ -9,10 +9,6 @@
 #include "wan.hpp"
 #include "z_image.hpp"
 
-#ifdef SD_USE_COREML
-#include "coreml_unet.h"
-#endif
-
 struct DiffusionParams {
     struct ggml_tensor* x                     = nullptr;
     struct ggml_tensor* timesteps             = nullptr;
@@ -112,96 +108,6 @@ struct UNetModel : public DiffusionModel {
                             diffusion_params.control_strength, output, output_ctx);
     }
 };
-
-#ifdef SD_USE_COREML
-// UNet offloaded to a CoreML model; holds no ggml weights.
-struct CoreMLUNetModel : public DiffusionModel {
-    std::unique_ptr<CoreMLUNet> coreml;
-
-    explicit CoreMLUNetModel(std::unique_ptr<CoreMLUNet> coreml)
-        : coreml(std::move(coreml)) {
-    }
-
-    std::string get_desc() override {
-        return coreml->get_desc();
-    }
-
-    void alloc_params_buffer() override {}
-    void free_params_buffer() override {}
-    void free_compute_buffer() override {}
-    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) override {}
-    size_t get_params_buffer_size() override { return 0; }
-    int64_t get_adm_in_channels() override { return 0; }
-    void set_flash_attention_enabled(bool enabled) override {}
-    void set_circular_axes(bool circular_x, bool circular_y) override {}
-
-    bool compute(int n_threads,
-                 DiffusionParams diffusion_params,
-                 struct ggml_tensor** output     = nullptr,
-                 struct ggml_context* output_ctx = nullptr) override {
-        ggml_tensor* x         = diffusion_params.x;
-        ggml_tensor* timesteps = diffusion_params.timesteps;
-        ggml_tensor* context   = diffusion_params.context;
-        if (diffusion_params.c_concat != nullptr || diffusion_params.y != nullptr || !diffusion_params.controls.empty()) {
-            LOG_ERROR("coreml unet: c_concat, y and controls are not supported");
-            return false;
-        }
-        for (ggml_tensor* t : {x, timesteps, context}) {
-            if (t == nullptr || t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) || t->data == nullptr) {
-                LOG_ERROR("coreml unet: inputs must be contiguous float32 host tensors");
-                return false;
-            }
-        }
-        if (output == nullptr) {
-            return false;
-        }
-        if (*output == nullptr) {
-            if (output_ctx == nullptr) {
-                return false;
-            }
-            *output = ggml_dup_tensor(output_ctx, x);
-        }
-
-        // ggml's [W, H, C, N] and [D, T, N] are row-major [N, C, H, W] and [N, T, D].
-        const int64_t x_shape[4]   = {x->ne[3], x->ne[2], x->ne[1], x->ne[0]};
-        const int64_t ctx_shape[3] = {context->ne[2] * context->ne[3], context->ne[1], context->ne[0]};
-        return coreml->predict((const float*)x->data,
-                               x_shape,
-                               (const float*)timesteps->data,
-                               (const float*)context->data,
-                               ctx_shape,
-                               (float*)(*output)->data);
-    }
-
-    // True when the model takes CFG's conditional and unconditional passes as one batch of 2.
-    bool takes_cfg_batch() {
-        return coreml->batch_size() == 2;
-    }
-
-    // Runs both CFG passes in one call: x and timesteps are shared, the contexts differ.
-    bool compute_cfg_batch(ggml_tensor* x,
-                           ggml_tensor* timesteps,
-                           ggml_tensor* cond_context,
-                           ggml_tensor* uncond_context,
-                           ggml_tensor* out_cond,
-                           ggml_tensor* out_uncond) {
-        if (x->ne[3] != 1 || !ggml_are_same_shape(cond_context, uncond_context)) {
-            LOG_ERROR("coreml unet: batched CFG needs a batch-1 latent and contexts of equal length");
-            return false;
-        }
-        const int64_t x_shape[4]   = {1, x->ne[2], x->ne[1], x->ne[0]};
-        const int64_t ctx_shape[3] = {1, cond_context->ne[1], cond_context->ne[0]};
-        return coreml->predict_cfg_batch((const float*)x->data,
-                                         x_shape,
-                                         ((const float*)timesteps->data)[0],
-                                         (const float*)cond_context->data,
-                                         (const float*)uncond_context->data,
-                                         ctx_shape,
-                                         (float*)out_cond->data,
-                                         (float*)out_uncond->data);
-    }
-};
-#endif
 
 struct MMDiTModel : public DiffusionModel {
     MMDiTRunner mmdit;
