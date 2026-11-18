@@ -198,7 +198,7 @@ add_subdirectory(thirdparty)
 
 target_link_libraries(${SD_LIB} PUBLIC ggml zip)
 if(SD_COREML)
-    target_link_libraries(${SD_LIB} PUBLIC "-framework CoreML" "-framework Foundation")
+    target_link_libraries(${SD_LIB} PUBLIC "-framework CoreML" "-framework Foundation" "-framework Accelerate")
     set_source_files_properties(src/coreml_unet.mm src/coreml_tae.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 target_include_directories(${SD_LIB} PUBLIC . include)
