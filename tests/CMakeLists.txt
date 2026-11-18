@@ -88,3 +88,12 @@ add_executable(test-h3-localops test-h3-localops.cpp)
 target_include_directories(test-h3-localops PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-h3-localops PRIVATE stable-diffusion)
 add_test(NAME test-h3-localops COMMAND test-h3-localops)
+
+# CoreML sidecars. Needs fixtures from tests/coreml/make_fixtures.py (coremltools), so it is not an add_test:
+#   python tests/coreml/make_fixtures.py build/coreml-fixtures && build/bin/test-coreml build/coreml-fixtures
+if(SD_COREML AND NOT SD_BUILD_SHARED_LIBS)
+    add_executable(test-coreml coreml/test_coreml.cpp)
+    target_include_directories(test-coreml PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/core")
+    target_link_libraries(test-coreml PRIVATE stable-diffusion)
+    set_target_properties(test-coreml PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+endif()

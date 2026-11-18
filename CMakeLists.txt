@@ -437,15 +437,6 @@ if (SD_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# CoreML sidecar tests: build/bin/test-coreml FIXTURE_DIR (see tests/coreml/test_coreml.cpp)
-if(SD_COREML AND NOT SD_BUILD_SHARED_LIBS)
-    add_executable(test-coreml tests/coreml/test_coreml.cpp)
-    target_link_libraries(test-coreml PRIVATE ${SD_LIB})
-    target_include_directories(test-coreml PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src
-                                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/core)
-    set_target_properties(test-coreml PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-endif()
-
 if (SD_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)

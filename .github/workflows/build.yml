@@ -401,7 +401,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -DSD_COREML=ON -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DSD_COREML=ON -DSD_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target test-coreml -j 4
 
       - name: CoreML sidecar tests
