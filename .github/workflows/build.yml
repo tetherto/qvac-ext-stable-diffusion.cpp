@@ -300,6 +300,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # torch 2.5.1 has no wheels for newer Pythons
+
       - name: Python dependencies
         run: |
           python3 -m venv venv
