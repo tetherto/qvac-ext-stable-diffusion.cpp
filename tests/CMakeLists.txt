@@ -80,3 +80,36 @@ add_executable(test-qwen-image-21 test_qwen_image_21.cpp)
 target_include_directories(test-qwen-image-21 PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-qwen-image-21 PRIVATE stable-diffusion)
 add_test(NAME test-qwen-image-21 COMMAND test-qwen-image-21)
+
+add_executable(test-h3-modulation test_h3_modulation.cpp)
+target_include_directories(test-h3-modulation PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-modulation PRIVATE stable-diffusion)
+add_test(NAME test-h3-modulation COMMAND test-h3-modulation)
+
+add_executable(test-h3-vae-decoder test_h3_vae_decoder.cpp)
+target_include_directories(test-h3-vae-decoder PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-vae-decoder PRIVATE stable-diffusion)
+add_test(NAME test-h3-vae-decoder COMMAND test-h3-vae-decoder)
+
+add_executable(test-h3-attention test_h3_attention.cpp)
+target_include_directories(test-h3-attention PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-attention PRIVATE stable-diffusion)
+add_test(NAME test-h3-attention COMMAND test-h3-attention)
+
+add_executable(test-h3-cache test_h3_cache.cpp)
+target_include_directories(test-h3-cache PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME test-h3-cache COMMAND test-h3-cache)
+
+add_executable(test-h3-cache-graph test_h3_cache_graph.cpp)
+target_include_directories(test-h3-cache-graph PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-cache-graph PRIVATE stable-diffusion)
+add_test(NAME test-h3-cache-graph COMMAND test-h3-cache-graph)
+
+add_executable(test-h3-sol-attention test_h3_sol_attn.cpp)
+target_include_directories(test-h3-sol-attention PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-h3-sol-attention PRIVATE stable-diffusion)
+add_test(NAME test-h3-sol-attention COMMAND test-h3-sol-attention)
+
+add_executable(test-h3-cache-boundary test_h3_cache_boundary.cpp)
+target_link_libraries(test-h3-cache-boundary PRIVATE stable-diffusion)
+add_test(NAME test-h3-cache-boundary COMMAND test-h3-cache-boundary)

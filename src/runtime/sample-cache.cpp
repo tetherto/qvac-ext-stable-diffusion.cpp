@@ -178,6 +178,16 @@ namespace sd_sample {
                                                  Denoiser* denoiser,
                                                  const std::vector<float>& sigmas) {
         SampleCacheRuntime runtime;
+        if (sd_version_is_minimax_h3(version)) {
+            runtime.h3.config      = H3CacheConfig::from_environment();
+            runtime.h3.total_steps = sigmas.empty() ? 0 : static_cast<int>(sigmas.size() - 1);
+            if (runtime.h3.enabled() && cache_params && cache_params->mode != SD_CACHE_DISABLED) {
+                LOG_WARN("H3 TeaCache disabled: select one cache policy per request");
+                runtime.h3.config.policy = H3CachePolicy::OFF;
+            }
+            if (runtime.h3.uses_probe())
+                return runtime;
+        }
         if (cache_params == nullptr || cache_params->mode == SD_CACHE_DISABLED) {
             return runtime;
         }
@@ -291,6 +301,12 @@ namespace sd_sample {
     }
 
     void log_sample_cache_summary(const SampleCacheRuntime& runtime, size_t total_steps) {
+        if (runtime.h3.enabled()) {
+            LOG_INFO("h3_cache_summary policy=%d computed=%d reused=%d steps=%zu threshold=%.8g warmup=%d cooldown=%d max_consecutive=%d max_reuses=%d",
+                     static_cast<int>(runtime.h3.config.policy), runtime.h3.computed_calls, runtime.h3.reused_calls,
+                     total_steps, runtime.h3.config.threshold, runtime.h3.config.warmup_steps,
+                     runtime.h3.config.cooldown_steps, runtime.h3.config.max_consecutive, runtime.h3.config.max_reuses);
+        }
         if (runtime.easycache_enabled()) {
             if (runtime.easycache.total_steps_skipped > 0 && total_steps > 0) {
                 if (runtime.easycache.total_steps_skipped < static_cast<int>(total_steps)) {

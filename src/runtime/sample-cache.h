@@ -9,6 +9,7 @@
 #include "runtime/cache_dit.hpp"
 #include "runtime/denoiser.hpp"
 #include "runtime/easycache.hpp"
+#include "runtime/h3_teacache.h"
 #include "runtime/spectrum.hpp"
 #include "runtime/ucache.hpp"
 
@@ -24,6 +25,7 @@ namespace sd_sample {
     struct SampleCacheRuntime {
         SampleCacheMode mode = SampleCacheMode::NONE;
 
+        H3TeaCacheState h3;
         EasyCacheState easycache;
         UCacheState ucache;
         CacheDitConditionState cachedit;

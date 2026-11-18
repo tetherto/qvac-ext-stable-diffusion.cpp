@@ -11,6 +11,8 @@
 
 #include "core/ggml_graph_cut.h"
 #include "model/diffusion/dit.hpp"
+#include "model/diffusion/h3_cache_graph.h"
+#include "model/diffusion/h3_sol_attn.h"
 #include "model/diffusion/model.hpp"
 
 namespace MiniMaxH3 {
@@ -176,9 +178,44 @@ namespace MiniMaxH3 {
 
     static ggml_tensor* apply_partial_rope(ggml_context* ctx,
                                            ggml_tensor* x,
-                                           ggml_tensor* pe) {
+                                           ggml_tensor* pe,
+                                           bool optimized = false) {
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
+        if (optimized && x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 &&
+            pe->ne[0] == 2 && pe->ne[1] == 2 && pe->ne[2] > 0 && pe->ne[3] == x->ne[2]) {
+            const int64_t half = pe->ne[2];
+            // ggml_view_4d preserves higher strides but fixes the channel stride.
+            if (x->nb[0] != sizeof(float)) {
+                x = ggml_cont(ctx, x);
+            }
+            auto half_view = [&](int64_t start) {
+                return ggml_view_4d(ctx, x, half, x->ne[1], x->ne[2], x->ne[3],
+                                    x->nb[1], x->nb[2], x->nb[3], start * x->nb[0]);
+            };
+            auto coefficient = [&](int i0, int i1) {
+                auto value = ggml_view_4d(ctx, pe, 1, 1, half, pe->ne[3],
+                                          pe->nb[1], pe->nb[2], pe->nb[3],
+                                          i0 * pe->nb[0] + i1 * pe->nb[1]);
+                value      = ggml_ext_torch_permute(ctx, value, 2, 0, 3, 1);
+                return ggml_cont(ctx, value);
+            };
+            auto a      = half_view(0);
+            auto b      = half_view(half);
+            auto c00    = coefficient(0, 0);
+            auto c10    = coefficient(1, 0);
+            auto c01    = coefficient(0, 1);
+            auto c11    = coefficient(1, 1);
+            auto first  = ggml_add_inplace(ctx, ggml_mul(ctx, a, c00), ggml_mul(ctx, b, c10));
+            auto second = ggml_add_inplace(ctx, ggml_mul(ctx, a, c01), ggml_mul(ctx, b, c11));
+            auto result = ggml_concat(ctx, first, second, 0);
+            if (rot_dim < x->ne[0]) {
+                auto tail = ggml_view_4d(ctx, x, x->ne[0] - rot_dim, x->ne[1], x->ne[2], x->ne[3],
+                                         x->nb[1], x->nb[2], x->nb[3], rot_dim * x->nb[0]);
+                result    = ggml_concat(ctx, result, tail, 0);
+            }
+            return attention_layout(ctx, result);
+        }
         auto rotated = Rope::apply_rope(ctx,
                                         ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                         pe,
@@ -208,7 +245,8 @@ namespace MiniMaxH3 {
 
         ggml_tensor* forward(GGMLRunnerContext* ctx,
                              ggml_tensor* x,
-                             ggml_tensor* pe = nullptr) {
+                             ggml_tensor* pe                    = nullptr,
+                             const SolAttentionMetadata* sparse = nullptr) {
             auto qkv_proj = std::dynamic_pointer_cast<Linear>(blocks["qkv_proj"]);
             auto q_norm   = std::dynamic_pointer_cast<RMSNorm>(blocks["q_norm"]);
             auto k_norm   = std::dynamic_pointer_cast<RMSNorm>(blocks["k_norm"]);
@@ -223,8 +261,9 @@ namespace MiniMaxH3 {
             q                = q_norm->forward(ctx, q);
             k                = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx->ggml_ctx, q, pe);
-                k = apply_partial_rope(ctx->ggml_ctx, k, pe);
+                const bool optimized = sd_backend_is(ctx->backend, "CUDA");
+                q                    = apply_partial_rope(ctx->ggml_ctx, q, pe, optimized);
+                k                    = apply_partial_rope(ctx->ggml_ctx, k, pe, optimized);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);
@@ -239,6 +278,8 @@ namespace MiniMaxH3 {
                                               true,
                                               ctx->flash_attn_enabled,
                                               1.f / 128.f);
+            if (sd_backend_is(ctx->backend, "CUDA"))
+                annotate_sol_attention(out, sparse);
             return out_proj->forward(ctx, out);
         }
     };
@@ -342,14 +383,15 @@ namespace MiniMaxH3 {
                                                     int64_t hidden_size,
                                                     int expand,
                                                     int modalities,
-                                                    int64_t row) {
+                                                    int64_t row,
+                                                    bool use_views = false) {
         int64_t timestep_rows = projection->ne[1];
         auto reshaped         = ggml_reshape_2d(ctx,
                                                 projection,
                                                 hidden_size * expand,
                                                 timestep_rows * modalities);
-        auto selected         = ggml_ext_slice(ctx, reshaped, 1, row, row + 1);
-        return ggml_ext_chunk(ctx, selected, expand, 0);
+        auto selected         = ggml_ext_slice(ctx, reshaped, 1, row, row + 1, !use_views);
+        return ggml_ext_chunk(ctx, selected, expand, 0, !use_views);
     }
 
     static ggml_tensor* modulate_segments(ggml_context* ctx,
@@ -360,7 +402,8 @@ namespace MiniMaxH3 {
                                           int expand,
                                           int modalities,
                                           int shift_index,
-                                          int scale_index) {
+                                          int scale_index,
+                                          bool use_views = false) {
         ggml_tensor* out = nullptr;
         for (const auto& segment : segments) {
             auto mods = modulation_row(ctx,
@@ -368,8 +411,9 @@ namespace MiniMaxH3 {
                                        hidden_size,
                                        expand,
                                        modalities,
-                                       segment.modulation_row);
-            auto part = ggml_ext_slice(ctx, x, 1, segment.start, segment.end);
+                                       segment.modulation_row,
+                                       use_views);
+            auto part = ggml_ext_slice(ctx, x, 1, segment.start, segment.end, !use_views);
             part      = ggml_add(ctx,
                                  ggml_add(ctx, part, ggml_mul(ctx, part, mods[scale_index])),
                                  mods[shift_index]);
@@ -384,12 +428,13 @@ namespace MiniMaxH3 {
                                                 ggml_tensor* projection,
                                                 const std::vector<TokenModulationSpan>& segments,
                                                 int64_t hidden_size,
-                                                int gate_index) {
+                                                int gate_index,
+                                                bool use_views = false) {
         ggml_tensor* out = nullptr;
         for (const auto& segment : segments) {
-            auto mods = modulation_row(ctx, projection, hidden_size, 6, 3, segment.modulation_row);
-            auto base = ggml_ext_slice(ctx, x, 1, segment.start, segment.end);
-            auto add  = ggml_ext_slice(ctx, update, 1, segment.start, segment.end);
+            auto mods = modulation_row(ctx, projection, hidden_size, 6, 3, segment.modulation_row, use_views);
+            auto base = ggml_ext_slice(ctx, x, 1, segment.start, segment.end, !use_views);
+            auto add  = ggml_ext_slice(ctx, update, 1, segment.start, segment.end, !use_views);
             auto part = ggml_add(ctx, base, ggml_mul(ctx, add, mods[gate_index]));
             out       = out == nullptr ? part : ggml_concat(ctx, out, part, 1);
         }
@@ -420,17 +465,27 @@ namespace MiniMaxH3 {
                                                                                 config.is_comfyui_layout);
         }
 
+        ggml_tensor* cache_probe(GGMLRunnerContext* ctx, ggml_tensor* x, ggml_tensor* t_emb, const std::vector<TokenModulationSpan>& segments) {
+            auto norm  = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
+            auto adaln = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
+            auto mods  = adaln->forward(ctx, t_emb);
+            return modulate_segments(ctx->ggml_ctx, norm->forward(ctx, x), mods, segments,
+                                     config.hidden_size, 6, 3, 0, 1, sd_backend_is(ctx->backend, "CUDA"));
+        }
+
         ggml_tensor* forward(GGMLRunnerContext* ctx,
                              ggml_tensor* x,
                              ggml_tensor* t_emb,
                              const std::vector<TokenModulationSpan>& segments,
-                             ggml_tensor* pe) {
-            auto norm1 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
-            auto norm2 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm2"]);
-            auto attn  = std::dynamic_pointer_cast<Attention>(blocks["attn"]);
-            auto mlp   = std::dynamic_pointer_cast<MLP>(blocks["mlp"]);
-            auto adaln = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
-            auto mods  = adaln->forward(ctx, t_emb);
+                             ggml_tensor* pe,
+                             const SolAttentionMetadata* sparse = nullptr) {
+            auto norm1           = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
+            auto norm2           = std::dynamic_pointer_cast<RMSNorm>(blocks["norm2"]);
+            auto attn            = std::dynamic_pointer_cast<Attention>(blocks["attn"]);
+            auto mlp             = std::dynamic_pointer_cast<MLP>(blocks["mlp"]);
+            auto adaln           = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
+            auto mods            = adaln->forward(ctx, t_emb);
+            const bool use_views = sd_backend_is(ctx->backend, "CUDA");
 
             auto h = modulate_segments(ctx->ggml_ctx,
                                        norm1->forward(ctx, x),
@@ -440,14 +495,16 @@ namespace MiniMaxH3 {
                                        6,
                                        3,
                                        0,
-                                       1);
+                                       1,
+                                       use_views);
             x      = gated_residual_segments(ctx->ggml_ctx,
                                              x,
-                                             attn->forward(ctx, h, pe),
+                                             attn->forward(ctx, h, pe, sparse),
                                              mods,
                                              segments,
                                              config.hidden_size,
-                                             2);
+                                             2,
+                                             use_views);
             h      = modulate_segments(ctx->ggml_ctx,
                                        norm2->forward(ctx, x),
                                        mods,
@@ -456,14 +513,16 @@ namespace MiniMaxH3 {
                                        6,
                                        3,
                                        3,
-                                       4);
+                                       4,
+                                       use_views);
             return gated_residual_segments(ctx->ggml_ctx,
                                            x,
                                            mlp->forward(ctx, h),
                                            mods,
                                            segments,
                                            config.hidden_size,
-                                           5);
+                                           5,
+                                           use_views);
         }
     };
 
@@ -492,17 +551,18 @@ namespace MiniMaxH3 {
                                                       ggml_tensor* t_emb,
                                                       const TokenModulationSpan& video,
                                                       const TokenModulationSpan& audio) {
-            auto norm      = std::dynamic_pointer_cast<RMSNorm>(blocks["norm"]);
-            auto adaln     = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
-            auto video_out = std::dynamic_pointer_cast<Linear>(blocks["video_out"]);
-            auto audio_out = std::dynamic_pointer_cast<Linear>(blocks["audio_out"]);
-            auto mods      = adaln->forward(ctx, t_emb);
-            auto apply     = [&](const TokenModulationSpan& segment) {
-                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row);
-                auto value = norm->forward(ctx, ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end));
+            auto norm            = std::dynamic_pointer_cast<RMSNorm>(blocks["norm"]);
+            auto adaln           = std::dynamic_pointer_cast<AdaLayerNormModulation>(blocks["adaln_proj"]);
+            auto video_out       = std::dynamic_pointer_cast<Linear>(blocks["video_out"]);
+            auto audio_out       = std::dynamic_pointer_cast<Linear>(blocks["audio_out"]);
+            auto mods            = adaln->forward(ctx, t_emb);
+            const bool use_views = sd_backend_is(ctx->backend, "CUDA");
+            auto apply           = [&](const TokenModulationSpan& segment) {
+                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row, use_views);
+                auto value = norm->forward(ctx, ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end, !use_views));
                 return ggml_add(ctx->ggml_ctx,
-                                    ggml_add(ctx->ggml_ctx, value, ggml_mul(ctx->ggml_ctx, value, row[1])),
-                                    row[0]);
+                                          ggml_add(ctx->ggml_ctx, value, ggml_mul(ctx->ggml_ctx, value, row[1])),
+                                          row[0]);
             };
             return {video_out->forward(ctx, apply(video)),
                     audio_out->forward(ctx, apply(audio))};
@@ -612,7 +672,9 @@ namespace MiniMaxH3 {
                                                       const std::vector<SequenceSegment>& sequence_segments,
                                                       const TokenModulationSpan& video_segment,
                                                       const TokenModulationSpan& audio_segment,
-                                                      float audio_slope) {
+                                                      float audio_slope,
+                                                      H3CacheGraph* cache_graph          = nullptr,
+                                                      const SolAttentionMetadata* sparse = nullptr) {
             auto video_proj = std::dynamic_pointer_cast<Linear>(blocks["video_patch_proj"]);
             auto audio_proj = std::dynamic_pointer_cast<Linear>(blocks["audio_patch_proj"]);
 
@@ -704,15 +766,84 @@ namespace MiniMaxH3 {
                                         curve_indices,
                                         curve_upper_indices,
                                         curve_fractions);
-            auto pe    = build_rope(ctx, position_ids);
-            for (int64_t i = 0; i < config.num_layers; ++i) {
+            auto pe                   = build_rope(ctx, position_ids);
+            const bool split_cache    = cache_graph && cache_graph->phase != H3CacheGraph::Phase::DENSE;
+            const int64_t cache_begin = split_cache ? cache_graph->config->dense_prefix_layers : 0;
+            const int64_t cache_end   = split_cache ? config.num_layers - cache_graph->config->dense_suffix_layers : config.num_layers;
+            auto run_block            = [&](int64_t i, ggml_tensor* hidden) {
                 auto block = std::dynamic_pointer_cast<TransformerBlock>(blocks["blocks." + std::to_string(i)]);
-                h          = block->forward(ctx, h, t_emb, segments, pe);
-                sd::ggml_graph_cut::mark_graph_cut(h,
-                                                   "minimax_h3.blocks." + std::to_string(i),
-                                                   "hidden_states");
+                const bool protected_cache_layer = cache_graph && (i < cache_graph->config->dense_prefix_layers ||
+                                                                   i >= config.num_layers - cache_graph->config->dense_suffix_layers);
+                const auto* layer_sparse         = sparse && !protected_cache_layer && i >= sparse->dense_prefix_layers &&
+                                                   i < config.num_layers - sparse->dense_suffix_layers
+                                                                  ? sparse
+                                                                  : nullptr;
+                hidden                           = block->forward(ctx, hidden, t_emb, segments, pe, layer_sparse);
+                sd::ggml_graph_cut::mark_graph_cut(hidden, "minimax_h3.blocks." + std::to_string(i), "hidden_states");
+                return hidden;
+            };
+            if (cache_graph && cache_graph->phase == H3CacheGraph::Phase::PROBE) {
+                for (int64_t i = 0; i < cache_begin; ++i)
+                    h = run_block(i, h);
+                // The probe and subsequent computation share this request's freshly
+                // evaluated prefix; audio and conditioning participate every step.
+                cache_graph->failed = cache_graph->store->capture(cache_graph->prefix + ".prefix", h) == nullptr;
+                auto first          = std::dynamic_pointer_cast<TransformerBlock>(blocks["blocks." + std::to_string(cache_begin)]);
+                auto probe          = first->cache_probe(ctx, h, t_emb, segments);
+                auto previous       = cache_graph->entry->has_probe ? cache_graph->store->get(cache_graph->prefix + ".probe") : nullptr;
+                if (previous && !ggml_are_same_shape(previous, probe))
+                    previous = nullptr;
+                ggml_tensor* stats = nullptr;
+                for (const auto& span : {video_segment, audio_segment, TokenModulationSpan{0, h->ne[1], 0}}) {
+                    auto current    = ggml_ext_slice(ctx->ggml_ctx, probe, 1, span.start, span.end);
+                    auto old        = previous ? ggml_ext_slice(ctx->ggml_ctx, previous, 1, span.start, span.end) : current;
+                    auto difference = ggml_sum(ctx->ggml_ctx, ggml_abs(ctx->ggml_ctx, ggml_sub(ctx->ggml_ctx, current, old)));
+                    auto magnitude  = ggml_sum(ctx->ggml_ctx, ggml_abs(ctx->ggml_ctx, old));
+                    auto pair       = ggml_concat(ctx->ggml_ctx, difference, magnitude, 0);
+                    stats           = stats ? ggml_concat(ctx->ggml_ctx, stats, pair, 0) : pair;
+                }
+                cache_graph->failed = (cache_graph->store->capture(cache_graph->prefix + ".probe", probe) == nullptr) || cache_graph->failed;
+                return {stats, nullptr};
+            }
+            if (split_cache) {
+                auto prefix = cache_graph->store->get(cache_graph->prefix + ".prefix");
+                GGML_ASSERT(prefix && ggml_are_same_shape(prefix, h));
+                h = prefix;
+            }
+            auto initial_hidden = h;
+            if (cache_graph && cache_graph->phase == H3CacheGraph::Phase::REUSE) {
+                if (cache_graph->config->full_stack()) {
+                    auto residual = cache_graph->store->get(cache_graph->prefix + ".residual");
+                    GGML_ASSERT(residual && ggml_are_same_shape(residual, h));
+                    h = ggml_add(ctx->ggml_ctx, h, residual);
+                } else {
+                    auto cached_input  = cache_graph->store->get(cache_graph->prefix + ".block_input");
+                    auto cached_output = cache_graph->store->get(cache_graph->prefix + ".block_output");
+                    GGML_ASSERT(cached_input && cached_output && ggml_are_same_shape(cached_input, h) && ggml_are_same_shape(cached_output, h));
+                    // Keeping both endpoints avoids subtract/add cancellation for identical inputs.
+                    auto input_delta = ggml_sub(ctx->ggml_ctx, h, cached_input);
+                    h                = ggml_add(ctx->ggml_ctx, cached_output, input_delta);
+                }
+            }
+            for (int64_t i = cache_begin; i < cache_end &&
+                                          (!cache_graph || cache_graph->phase != H3CacheGraph::Phase::REUSE);
+                 ++i) {
+                h = run_block(i, h);
             }
 
+            if (cache_graph && cache_graph->phase == H3CacheGraph::Phase::FULL) {
+                if (cache_graph->config->full_stack()) {
+                    auto residual              = ggml_sub(ctx->ggml_ctx, h, initial_hidden);
+                    cache_graph->cached_output = cache_graph->store->capture(cache_graph->prefix + ".residual", residual);
+                    cache_graph->failed        = cache_graph->cached_output == nullptr;
+                } else {
+                    const auto cached_input    = cache_graph->store->capture(cache_graph->prefix + ".block_input", initial_hidden);
+                    cache_graph->cached_output = cache_graph->store->capture(cache_graph->prefix + ".block_output", h);
+                    cache_graph->failed        = cached_input == nullptr || cache_graph->cached_output == nullptr;
+                }
+            }
+            for (int64_t i = cache_end; i < config.num_layers; ++i)
+                h = run_block(i, h);
             auto final_layer = std::dynamic_pointer_cast<FinalLayer>(blocks["final_layer"]);
             auto output      = final_layer->forward(ctx, h, t_emb, video_segment, audio_segment);
             auto video_out   = DiT::unpatchify_3d(ctx->ggml_ctx,
@@ -1052,7 +1183,10 @@ namespace MiniMaxH3 {
                                  const std::vector<MiniMaxH3ReferenceBlock>& reference_blocks,
                                  int audio_length,
                                  float video_shift,
-                                 float audio_shift) {
+                                 float audio_shift,
+                                 H3CacheGraph* cache_graph = nullptr,
+                                 int denoise_step          = -1,
+                                 int denoise_steps         = 0) {
             auto split        = split_av_latents(packed, audio_length);
             video_input_cache = std::move(split.first);
             audio_input_cache = std::move(split.second);
@@ -1133,25 +1267,48 @@ namespace MiniMaxH3 {
                 timestep_features = make_input(timestep_feature_input_cache);
             }
 
+            const auto sparse_options = sol_attention_options_from_environment();
+            SolAttentionMetadata sparse;
+            sparse.mode                = sparse_options.mode != 0 && flash_attn_enabled && direct_backend_supported(runtime_backend) && sd_sample::h3_shape_supported(packed.shape()[0], packed.shape()[1], packed.shape()[2], denoise_steps) &&
+                                  condition_videos.empty() && condition_audios.empty() && reference_blocks.empty() &&
+                                  video_shift == 12.f && audio_shift == 3.f &&
+                                  !is_multi_device() && !can_attempt_graph_cut_segmented_compute() &&
+                                  sol_attention_step_eligible(denoise_step, denoise_steps, sparse_options)
+                                             ? sparse_options.mode
+                                             : 0;
+            sparse.beta                = sparse_options.beta;
+            sparse.video_start         = static_cast<int32_t>(layout.video_segment.start);
+            sparse.video_end           = static_cast<int32_t>(layout.video_segment.end);
+            sparse.frame_tokens        = static_cast<int32_t>((video->ne[0] / config.patch_w) * (video->ne[1] / config.patch_h));
+            sparse.dense_prefix_layers = sparse_options.dense_prefix_layers;
+            sparse.dense_suffix_layers = sparse_options.dense_suffix_layers;
             auto runner_ctx = get_context();
-            auto output     = model.forward(&runner_ctx,
-                                            video,
-                                            audio,
-                                            context,
-                                            condition_inputs,
-                                            audio_condition_inputs,
-                                            positions,
-                                            timestep_features,
-                                            curve_indices,
-                                            curve_upper_indices,
-                                            curve_fractions,
-                                            layout.segments,
-                                            layout.sequence_segments,
-                                            layout.video_segment,
-                                            layout.audio_segment,
-                                            time_shift_slope(sigma_v, video_shift, audio_shift));
-            auto merged     = merge_av_latents(compute_ctx, output.first, output.second);
-            auto graph      = new_graph_custom(H3_GRAPH_SIZE);
+            auto output                = model.forward(&runner_ctx,
+                                                       video,
+                                                       audio,
+                                                       context,
+                                                       condition_inputs,
+                                                       audio_condition_inputs,
+                                                       positions,
+                                                       timestep_features,
+                                                       curve_indices,
+                                                       curve_upper_indices,
+                                                       curve_fractions,
+                                                       layout.segments,
+                                                       layout.sequence_segments,
+                                                       layout.video_segment,
+                                                       layout.audio_segment,
+                                                       time_shift_slope(sigma_v, video_shift, audio_shift),
+                                                       cache_graph,
+                                        sparse.mode ? &sparse : nullptr);
+            auto graph                 = new_graph_custom(H3_GRAPH_SIZE);
+            if (cache_graph && cache_graph->phase == H3CacheGraph::Phase::PROBE) {
+                ggml_build_forward_expand(graph, output.first);
+                return graph;
+            }
+            auto merged = merge_av_latents(compute_ctx, output.first, output.second);
+            if (cache_graph && cache_graph->cached_output)
+                ggml_build_forward_expand(graph, cache_graph->cached_output);
             ggml_build_forward_expand(graph, merged);
             return graph;
         }
@@ -1170,19 +1327,102 @@ namespace MiniMaxH3 {
                                                ? empty_reference_blocks
                                                : *extra->reference_blocks;
             const sd::Tensor<int32_t> empty_int;
-            auto get_graph = [&]() {
+            H3CacheGraph graph_cache;
+            H3CacheGraph* active_cache = nullptr;
+            auto get_graph             = [&]() {
+                if (active_cache) {
+                    active_cache->store->pending.clear();
+                    active_cache->cached_output   = nullptr;
+                    active_cache->failed          = false;
+                }
                 return build_graph(*params.x,
-                                   *params.timesteps,
-                                   *params.context,
-                                   conditions,
-                                   audio_conditions,
+                                               *params.timesteps,
+                                               *params.context,
+                                               conditions,
+                                               audio_conditions,
                                    extra->text_token_tags == nullptr ? empty_int : *extra->text_token_tags,
                                    extra->keyframe_indices == nullptr ? empty_int : *extra->keyframe_indices,
-                                   reference_blocks,
-                                   extra->audio_length,
-                                   extra->video_sigma_shift,
-                                   extra->audio_sigma_shift);
+                                               reference_blocks,
+                                               extra->audio_length,
+                                               extra->video_sigma_shift,
+                                               extra->audio_sigma_shift,
+                                               active_cache,
+                                               extra->denoise_step,
+                                               extra->denoise_steps);
             };
+            if (extra->step_cache && extra->step_cache->uses_probe() && extra->step_cache->config.has_cached_layers(model.config.num_layers) && extra->cache_condition && extra->denoise_step >= 0 &&
+                sd_sample::h3_shape_supported(params.x->shape()[0], params.x->shape()[1], params.x->shape()[2], extra->denoise_steps) &&
+                conditions.empty() && audio_conditions.empty() && reference_blocks.empty() &&
+                extra->video_sigma_shift == 12.f && extra->audio_sigma_shift == 3.f &&
+                !measure_mode_enabled() && flash_attn_enabled && sd_backend_is(runtime_backend, "CUDA") && direct_backend_supported(runtime_backend) &&
+                !is_multi_device() && !can_attempt_graph_cut_segmented_compute()) {
+                auto& state = *extra->step_cache;
+                auto store  = std::static_pointer_cast<H3GpuCacheStore>(state.device_store);
+                if (!store || store->owner != this || store->backend != runtime_backend) {
+                    state.entries.clear();
+                    store              = std::make_shared<H3GpuCacheStore>();
+                    store->owner       = this;
+                    store->backend     = runtime_backend;
+                    state.device_store = store;
+                }
+                auto& entry        = state.prepare(extra->cache_condition, cache_signature(params), extra->denoise_step);
+                graph_cache.store  = store.get();
+                graph_cache.entry  = &entry;
+                graph_cache.config = &state.config;
+                graph_cache.prefix = "h3_teacache." + std::to_string(entry.slot);
+                graph_cache.phase  = H3CacheGraph::Phase::PROBE;
+                active_cache       = &graph_cache;
+                if (!state.needs_step_probe(extra->denoise_step)) {
+                    graph_cache.phase = H3CacheGraph::Phase::DENSE;
+                    auto output       = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
+                    if (!output) {
+                        state.config.policy = sd_sample::H3CachePolicy::OFF;
+                        state.device_store.reset();
+                        store.reset();
+                        graph_cache.store = nullptr;
+                        active_cache      = nullptr;
+                        return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), params.x->dim());
+                    }
+                    state.dense_refresh(entry);
+                    LOG_INFO("h3_cache policy=%s step=%d action=compute reason=forced_full slot=%zu probe=skipped dense_prefix=%d dense_suffix=%d",
+                             state.config.policy_name(), extra->denoise_step, entry.slot, state.config.dense_prefix_layers, state.config.dense_suffix_layers);
+                    return restore_trailing_singleton_dims(std::move(output), params.x->dim());
+                }
+                auto probe = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
+                if (!probe || probe->numel() != 6 || graph_cache.failed || !store->commit()) {
+                    LOG_WARN("H3 TeaCache probe failed; falling back to dense for this request");
+                    state.config.policy = sd_sample::H3CachePolicy::OFF;
+                    state.device_store.reset();
+                    active_cache = nullptr;
+                } else {
+                    std::array<float, 6> sums;
+                    std::copy_n(probe->data(), 6, sums.begin());
+                    auto decision     = state.decide(entry, extra->denoise_step, sums);
+                    graph_cache.phase = decision.reuse ? H3CacheGraph::Phase::REUSE : H3CacheGraph::Phase::FULL;
+                    auto output       = GGMLRunner::compute<float>(get_graph, n_threads, false, false, false);
+                    if (!output || graph_cache.failed || !store->commit()) {
+                        LOG_WARN("H3 TeaCache residual compute/copy failed; falling back to dense for this request");
+                        state.config.policy = sd_sample::H3CachePolicy::OFF;
+                        state.device_store.reset();
+                        store.reset();
+                        graph_cache.store = nullptr;
+                        active_cache      = nullptr;
+                        return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph,
+                                                                                          n_threads,
+                                                                                          false,
+                                                                                          false,
+                                                                                          false),
+                                                               params.x->dim());
+                    }
+                    if (!decision.reuse)
+                        entry.has_residual = true;
+                    LOG_INFO("h3_cache policy=%s step=%d action=%s reason=%s slot=%zu video_l1=%.9g audio_l1=%.9g joint_l1=%.9g accumulator=%.9g audio_accumulator=%.9g dense_prefix=%d dense_suffix=%d",
+                             state.config.policy_name(), extra->denoise_step, decision.reuse ? "reuse" : "compute", decision.reason, entry.slot,
+                             decision.relative_l1[0], decision.relative_l1[1], decision.relative_l1[2], decision.accumulator,
+                             decision.audio_accumulator, state.config.dense_prefix_layers, state.config.dense_suffix_layers);
+                    return restore_trailing_singleton_dims(std::move(output), params.x->dim());
+                }
+            }
             return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph,
                                                                               n_threads,
                                                                               false,

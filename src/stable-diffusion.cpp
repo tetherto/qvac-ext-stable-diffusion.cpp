@@ -2886,6 +2886,11 @@ public:
                         condition.c_vinput_mask.empty() ? nullptr : &condition.c_vinput_mask,
                         condition.c_image_embeds.empty() ? nullptr : &condition.c_image_embeds};
                 } else if (sd_version_is_minimax_h3(version)) {
+                    const bool h3_request_supported = method == EULER_SAMPLE_METHOD && cfg_scale == 1.f &&
+                                                      guidance_schedule.empty() && !has_skiplayer && !use_apg_guidance &&
+                                                      control_image.empty() && ref_latents.empty() &&
+                                                      condition.c_ref_images.empty() && condition.c_ref_audios.empty() &&
+                                                      condition.c_reference_blocks.empty();
                     diffusion_params.extra = MiniMaxH3DiffusionExtra{
                         condition.c_token_types.empty() ? nullptr : &condition.c_token_types,
                         condition.c_position_ids.empty() ? nullptr : &condition.c_position_ids,
@@ -2893,7 +2898,11 @@ public:
                         condition.c_reference_blocks.empty() ? nullptr : &condition.c_reference_blocks,
                         audio_length,
                         std::isfinite(active_flow_shift) ? active_flow_shift : 12.f,
-                        3.f};
+                        3.f,
+                        h3_request_supported && cache_runtime.h3.uses_probe() ? &cache_runtime.h3 : nullptr,
+                        &condition,
+                        h3_request_supported && step > 0 ? step - 1 : -1,
+                        static_cast<int>(steps)};
                 } else if (sd_version_is_ltxav(version)) {
                     diffusion_params.extra = LTXAVDiffusionExtra{
                         nullptr,
