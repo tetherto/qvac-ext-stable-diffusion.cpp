@@ -477,6 +477,56 @@ struct KLOptimalScheduler : SigmaScheduler {
     }
 };
 
+// LTX-2 "LinearQuadratic" flow-matching schedule (Diffusers
+// `linear_quadratic_schedule`): the first `linear_steps` steps are spaced
+// linearly up to `threshold_noise`, the remainder follow a quadratic curve.
+// Produces n+1 sigmas in [0,1] flow space (descending, last == 0). This is a
+// closed-form schedule independent of the denoiser's t_to_sigma mapping.
+struct LinearQuadraticScheduler : SigmaScheduler {
+    float threshold_noise = 0.025f;
+    int linear_steps      = -1;  // <0 => num_steps / 2
+
+    std::vector<float> get_sigmas(uint32_t n, float /*sigma_min*/, float /*sigma_max*/, t_to_sigma_t /*t_to_sigma*/) override {
+        std::vector<float> sigmas;
+        if (n == 0) {
+            return sigmas;
+        }
+        if (n == 1) {
+            sigmas.push_back(1.0f);
+            sigmas.push_back(0.0f);
+            return sigmas;
+        }
+
+        int num_steps = static_cast<int>(n);
+        int lin_steps = linear_steps >= 0 ? linear_steps : num_steps / 2;
+        lin_steps     = std::max(1, std::min(lin_steps, num_steps - 1));
+        int quad_steps = num_steps - lin_steps;
+
+        float threshold_step_diff = static_cast<float>(lin_steps) - threshold_noise * static_cast<float>(num_steps);
+        float quad_coef           = threshold_step_diff / (static_cast<float>(lin_steps) * static_cast<float>(quad_steps) * static_cast<float>(quad_steps));
+        float lin_coef            = threshold_noise / static_cast<float>(lin_steps) - 2.0f * threshold_step_diff / (static_cast<float>(quad_steps) * static_cast<float>(quad_steps));
+        float const_term          = quad_coef * static_cast<float>(lin_steps) * static_cast<float>(lin_steps);
+
+        std::vector<float> schedule;
+        schedule.reserve(num_steps + 1);
+        for (int i = 0; i < lin_steps; i++) {
+            schedule.push_back(static_cast<float>(i) * threshold_noise / static_cast<float>(lin_steps));
+        }
+        for (int i = lin_steps; i < num_steps; i++) {
+            float fi = static_cast<float>(i);
+            schedule.push_back(quad_coef * fi * fi + lin_coef * fi + const_term);
+        }
+        schedule.push_back(1.0f);
+
+        sigmas.reserve(num_steps + 1);
+        for (float x : schedule) {
+            sigmas.push_back(1.0f - x);
+        }
+        sigmas[num_steps] = 0.0f;
+        return sigmas;
+    }
+};
+
 struct Denoiser {
     virtual float sigma_min()                                                                = 0;
     virtual float sigma_max()                                                                = 0;
@@ -533,6 +583,10 @@ struct Denoiser {
             case LCM_SCHEDULER:
                 LOG_INFO("get_sigmas with LCM scheduler");
                 scheduler = std::make_shared<LCMScheduler>();
+                break;
+            case LINEAR_QUADRATIC_SCHEDULER:
+                LOG_INFO("get_sigmas with LinearQuadratic scheduler");
+                scheduler = std::make_shared<LinearQuadraticScheduler>();
                 break;
             default:
                 LOG_INFO("get_sigmas with discrete scheduler (default)");
