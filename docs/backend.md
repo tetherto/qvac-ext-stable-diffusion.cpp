@@ -251,6 +251,10 @@ sd-cli -m model.safetensors -p "a cat" --conv-direct off,diffusion=on
   output validation, and five interleaved measurements per shape. Direct
   convolution must improve the sum of median times by at least 5%; a failed
   probe defaults to `off`.
+  Flux.2 VAE on a single Metal compute backend uses the same checks with three
+  representative VAE shapes, including an early layer and larger spatial layers.
+  Its decision is cached separately from the generic 2D policy. Other Metal
+  modules and 3D convolution retain their existing selection.
   Other paths retain their implicit GEMM checks without benchmarking. HIP 2D
   requires the supported CDNA MFMA or RDNA WMMA architectures described below
   for flash attention. MUSA 2D has a SIMT implementation. CUDA, HIP, and MUSA 3D also have
