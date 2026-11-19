@@ -5,8 +5,10 @@ policy stays separate: `src/core/probe/flash_attn.cpp`, for example, defines att
 shapes and its CPU/CUDA/HIP/Vulkan shortcuts, then calls `sd_run_backend_probe` for unknown
 configurations. `src/core/probe/conv_direct.cpp` uses metadata-only probe graphs
 to check direct 2D/3D convolution support, then enables known implicit GEMM
-paths on non-Vulkan backends. Vulkan compares direct convolution with im2col
-using the shared measurement machinery.
+paths on backends without a measured policy. Vulkan and eligible CUDA 2D compare
+direct convolution with im2col using the shared measurement machinery. Flux.2 VAE
+on a single Metal backend uses a separate profile with (size, channels) shapes
+32x512, 128x256 and 256x128; its cached result is separate from generic 2D results.
 
 For each representative shape, create a `BackendProbeCase`:
 

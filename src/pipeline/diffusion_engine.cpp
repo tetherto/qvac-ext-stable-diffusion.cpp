@@ -962,6 +962,7 @@ bool StableDiffusionGGML::init(const sd_ctx_params_t* sd_ctx_params) {
     }
     flash_attn_by_backend.clear();
     conv2d_direct_by_backend.clear();
+    flux2_metal_vae_conv2d_by_backend.clear();
     conv3d_direct_by_backend.clear();
     conditioning_cache_->set_capacity(static_cast<size_t>(sd_ctx_params->conditioning_cache_size));
     auto configuration = std::make_unique<ModelConfig>(*sd_ctx_params);
@@ -1322,21 +1323,25 @@ bool StableDiffusionGGML::conv_direct_for(SDBackendModule module, bool conv3d) {
         (module == SDBackendModule::VAE ? params.vae_conv_direct : params.diffusion_conv_direct)) {
         return true;
     }
-    if (!conv3d && module == SDBackendModule::VAE && sd_version_is_flux2(version)) {
-        const auto backends = backend_manager.runtime_backends(module);
+    auto backends        = backend_manager.runtime_backends(module);
+    const bool flux2_vae = !conv3d && module == SDBackendModule::VAE && sd_version_is_flux2(version);
+    if (flux2_vae) {
         if (backends.size() == 1 && sd_backend_is_hip_gfx1151(backends.front())) {
             LOG_INFO("conv2d direct auto: %s -> off (Flux.2 VAE on gfx1151)", ggml_backend_name(backends.front()));
             return false;
         }
     }
-    auto& by_backend = conv3d ? conv3d_direct_by_backend : conv2d_direct_by_backend;
-    auto backends    = backend_manager.runtime_backends(module);
-    bool enabled     = !backends.empty();
-    bool any_enabled = false;
+    const bool benchmark_flux2_metal = flux2_vae && backends.size() == 1 && sd_backend_is(backends.front(), "MTL");
+    auto& by_backend                 = conv3d                  ? conv3d_direct_by_backend
+                                       : benchmark_flux2_metal ? flux2_metal_vae_conv2d_by_backend
+                                                               : conv2d_direct_by_backend;
+    bool enabled                     = !backends.empty();
+    bool any_enabled                 = false;
     for (auto backend : backends) {
         auto it = by_backend.find(backend);
         if (it == by_backend.end()) {
-            it = by_backend.emplace(backend, sd_probe_conv_direct(backend, conv3d)).first;
+            const auto profile = benchmark_flux2_metal ? ConvDirectProbeProfile::Flux2MetalVAE : ConvDirectProbeProfile::Default;
+            it                 = by_backend.emplace(backend, sd_probe_conv_direct(backend, conv3d, profile)).first;
         }
         enabled     = enabled && it->second;
         any_enabled = any_enabled || it->second;

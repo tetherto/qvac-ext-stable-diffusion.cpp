@@ -52,6 +52,7 @@ public:
     SDBackendAssignment flash_attn_assignment;
     SDBackendAssignment conv_direct_assignment;
     std::unordered_map<ggml_backend_t, bool> conv2d_direct_by_backend;
+    std::unordered_map<ggml_backend_t, bool> flux2_metal_vae_conv2d_by_backend;
     std::unordered_map<ggml_backend_t, bool> conv3d_direct_by_backend;
 
     SDVersion version;

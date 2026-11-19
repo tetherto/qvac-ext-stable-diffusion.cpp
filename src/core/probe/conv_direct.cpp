@@ -47,7 +47,7 @@ static bool initialize_conv_probe(BackendProbeGraph& graph, bool conv3d) {
     return true;
 }
 
-bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
+bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d, ConvDirectProbeProfile profile) {
     if (backend == nullptr) {
         return false;
     }
@@ -64,11 +64,15 @@ bool sd_probe_conv_direct(ggml_backend_t backend, bool conv3d) {
             LOG_INFO("conv%dd direct auto: %s -> off (unsupported probe graph)", dims, name);
             return false;
         }
-        const bool benchmark_cuda = !conv3d && sd_backend_is(backend, "CUDA") &&
-                                    sd_backend_supports_conv_implicit_gemm(backend, false);
-        if (sd_backend_is(backend, "Vulkan") || benchmark_cuda) {
+        const bool benchmark_cuda  = !conv3d && sd_backend_is(backend, "CUDA") &&
+                                     sd_backend_supports_conv_implicit_gemm(backend, false);
+        const bool benchmark_metal = !conv3d && profile == ConvDirectProbeProfile::Flux2MetalVAE && sd_backend_is(backend, "MTL");
+        if (sd_backend_is(backend, "Vulkan") || benchmark_cuda || benchmark_metal) {
             std::vector<BackendProbeCase> cases;
-            for (const auto& shape : {std::pair<int, int>{32, 64}, {16, 128}}) {
+            const std::vector<std::pair<int, int>> shapes = benchmark_metal
+                                                                ? std::vector<std::pair<int, int>>{{32, 512}, {128, 256}, {256, 128}}
+                                                                : std::vector<std::pair<int, int>>{{32, 64}, {16, 128}};
+            for (const auto& shape : shapes) {
                 BackendProbeCase test;
                 test.build = [conv3d, shape](BackendProbeGraph& graph, bool direct) {
                     build_conv_direct_probe(graph, conv3d, direct, shape.first, shape.second);
