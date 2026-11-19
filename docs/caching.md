@@ -65,6 +65,10 @@ Condition-level caching for DiT models. Caches and reuses outputs when input cha
 | `start` | Start caching at this percent of steps | 0.15 |
 | `end` | Stop caching at this percent of steps | 0.95 |
 
+For MiniMax-H3 on Strix, see the [TAE-H3 and EasyCache example](minimax_h3.md#tae-h3-and-easycache).
+It records an explicit `threshold=0.20,start=0.20,end=0.80` policy and the
+resulting video/audio differences; reuse counts and quality depend on the input.
+
 ### Cache-DIT (DiT Models)
 
 For DiT models like FLUX and QWEN, use block-level caching modes.
