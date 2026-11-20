@@ -161,7 +161,7 @@ The UNet is 23-24 s of the CoreML image, so the speed is the same at every bit w
 
 Apple's [coreml-stable-diffusion-xl-base-ios](https://huggingface.co/apple/coreml-stable-diffusion-xl-base-ios) chunks (4.04-bit) also load and run at the same speed (18 s sampling), but with sd.cpp's conditioning they do not follow the prompt (an apple prompt gives a red railing); prefer the `mixed` export.
 
-Known issue: on the 2026-11-01 branch the ggml SDXL UNet gives flat images on Metal; the Metal numbers above come from an sd-cli built from the 2026-03-01 branch.
+The Metal numbers above come from an sd-cli built from the 2026-03-01 branch, measured before batched CFG gave flat images on Metal (fixed since); this branch's Metal image matches it at 38.6 dB.
 
 ### Supported sizes
 
