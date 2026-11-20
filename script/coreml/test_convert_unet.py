@@ -36,6 +36,27 @@ def tiny_unet(sd2):
     ).eval()
 
 
+def tiny_sdxl_unet():
+    """An SDXL-shaped UNet: linear projections, two transformer layers at the lowest level, and text_time
+    conditioning (16 pooled values + 6 ids embedded into 8 values each)."""
+    torch.manual_seed(0)
+    return UNet2DConditionModel(
+        sample_size=8,
+        block_out_channels=(32, 64, 64),
+        down_block_types=("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+        up_block_types=("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
+        layers_per_block=1,
+        transformer_layers_per_block=(1, 1, 2),
+        cross_attention_dim=48,
+        attention_head_dim=(2, 4, 4),
+        use_linear_projection=True,
+        addition_embed_type="text_time",
+        addition_time_embed_dim=8,
+        projection_class_embeddings_input_dim=16 + 6 * 8,
+        norm_num_groups=8,
+    ).eval()
+
+
 def rel_err(a, b):
     return convert_unet.max_rel_err(a.detach().numpy(), b.detach().numpy())
 
@@ -83,6 +104,49 @@ class UNetParity(unittest.TestCase):
                     for chunk in (512, 16):
                         with self.subTest(sd2=sd2, attention=attention, batch=batch, chunk=chunk):
                             self.check(sd2, attention, batch, chunk)
+
+    def test_sdxl_embedded_time_ids(self):
+        """The export takes y with the ids already embedded; it must match diffusers given the raw ids."""
+        for attention in ("standard", "split_einsum_v2", "ane"):
+            with self.subTest(attention=attention):
+                unet = tiny_sdxl_unet()
+                wrapper = convert_unet.UNetWrapper(unet)
+                torch.manual_seed(2)
+                sample = torch.randn(2, 4, 8, 8)
+                timestep = torch.full((2,), 999.0)
+                context = torch.randn(2, 77, 48)
+                y, added = convert_unet.sdxl_example(unet, 2, 64, 64)
+                self.assertEqual(y.shape, (2, convert_unet.adm_dim(unet.config)))
+                with torch.no_grad():
+                    reference = unet(sample, timestep, context, added_cond_kwargs=added).sample
+                    convert_unet.apply_attention(unet, attention, 16)
+                    convert_unet.use_embedded_time_ids(unet)
+                    out = wrapper(sample, timestep, context, y)
+                self.assertLess(rel_err(out, reference), TOL)
+
+    def test_palettize_tensor(self):
+        torch.manual_seed(3)
+        w = torch.randn(64, 48, 3, 3)
+        for nbits in (4, 6):
+            with self.subTest(nbits=nbits):
+                q = convert_unet.palettize_tensor(w, nbits)
+                self.assertEqual(q.shape, w.shape)
+                self.assertLessEqual(q.unique().numel(), 2 ** nbits)
+        # More bits, less error.
+        err4 = (convert_unet.palettize_tensor(w, 4) - w).abs().mean()
+        err6 = (convert_unet.palettize_tensor(w, 6) - w).abs().mean()
+        self.assertLess(err6, err4 / 2)
+
+    def test_mixed_bits_stays_within_target(self):
+        unet = tiny_sdxl_unet()
+        names = [n for n, p in unet.named_parameters() if p.numel() >= convert_unet.PALETTE_THRESHOLD]
+        sensitivity = {n: 30.0 + i for i, n in enumerate(names)}  # the first layers are the most sensitive
+        sizes = {n: p.numel() for n, p in unet.named_parameters() if n in sensitivity}
+        bits = convert_unet.mixed_bits(unet, sensitivity, 4.5, 4, 6)
+        average = sum(bits[n] * sizes[n] for n in sizes) / sum(sizes.values())
+        self.assertLessEqual(average, 4.5)
+        self.assertGreater(average, 4.0)
+        self.assertEqual(bits[names[0]], 6)
 
     def test_silu_rewrite(self):
         x = torch.linspace(-20, 20, 4001)

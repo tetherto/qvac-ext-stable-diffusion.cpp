@@ -1163,7 +1163,7 @@ bool StableDiffusionGGML::build_core_runners() {
     if (strlen(SAFE_STR(config_->params.coreml_unet_path)) > 0) {
         auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
         if (!coreml_unet) {
-            LOG_ERROR("coreml_unet_path only supports SD 1.x/2.x UNet models (including SDXS)");
+            LOG_ERROR("coreml_unet_path only supports SD 1.x/2.x and SDXL UNet models (including SDXS)");
             return false;
         }
         if (!coreml_unet->is_coreml_ready()) {

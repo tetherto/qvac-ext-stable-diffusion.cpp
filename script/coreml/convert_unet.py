@@ -1,7 +1,9 @@
-"""Export a diffusers SD 1.x/2.x UNet to CoreML for sd-cli --coreml-unet.
+"""Export a diffusers SD 1.x/2.x or SDXL UNet to CoreML for sd-cli --coreml-unet.
 
 The model takes float32 inputs and returns float32, with the names the runtime expects:
   sample [N, 4, H/8, W/8], timestep [N], encoder_hidden_states [N, T, D] -> noise_pred [N, 4, H/8, W/8]
+SDXL UNets also take y [N, 2816]: the pooled text embedding followed by the embedded size and crop ids, as
+sd.cpp's SDXL conditioner builds it (the model applies add_embedding to it directly).
 
 Every input shape is fixed, because the Neural Engine only runs fixed-shape graphs: with
 EnumeratedShapes or RangeDim the traced UNet keeps runtime reshapes and CoreML moves the whole
@@ -22,20 +24,27 @@ On iOS, prefer p6 (6-bit palettized, Apple's ml-stable-diffusion recipe): the AN
 weights directly, so the compiled model is cached, while w8b is expanded to fp16 on the CPU on every
 load (about 105 s and 5.3 GB on an iPhone 16). p6 runs k-means over every large layer, which takes
 a long time and much memory: 20-40 minutes for SD 2.1 on a 16 GB Mac (needs scikit-learn).
+SDXL's UNet is 5.1 GB in fp16 (10.3 GB as traced in fp32); for iOS use mixed and --chunks 2 (two chunks of about
+700 MB, the size of Apple's iOS SDXL chunks). Plain p4 loses fine texture over 20 steps; mixed gives 6 bits to the
+quarter of the weights most sensitive to 4 bits and matches p6 at 75% of its size. The export needs about 30 GB of
+RAM; the sensitivity pass behind mixed takes about 20 minutes on an M3 Ultra and is cached in --sensitivity.
 
 Examples:
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_fp16.mlpackage --compile
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_multi.mlpackage --sizes 512x512,512x768,768x512 --compile
   python convert_unet.py --unet sd21/unet --out sd21_unet_w8b.mlpackage --precision w8b --compile
   python convert_unet.py --unet sd21-base/unet --out sd21base_unet_p6.mlpackage --precision p6 --batch 2 --compile
+  python convert_unet.py --unet sdxl-base/unet --out sdxl_unet_mixed.mlpackage --precision mixed --batch 2 \
+      --attention split_einsum_v2 --sizes 768x768 --chunks 2 --compile
 
 pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 """
 
 import argparse
+import gc
 import json
+import math
 import shutil
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -176,13 +185,121 @@ def max_rel_err(out, reference):
 REWRITE_TOLERANCE = 1e-4
 
 
+def adm_dim(cfg):
+    """Values of SDXL's vector conditioning y (2816 for SDXL base), or 0 for UNets without it."""
+    if cfg.class_embed_type is not None or cfg.addition_embed_type not in (None, "text_time"):
+        raise SystemExit(f"error: unsupported UNet conditioning (class_embed_type={cfg.class_embed_type}, "
+                         f"addition_embed_type={cfg.addition_embed_type}); SD 1.x/2.x and SDXL are supported")
+    return cfg.projection_class_embeddings_input_dim if cfg.addition_embed_type == "text_time" else 0
+
+
+def use_embedded_time_ids(unet):
+    """Makes the UNet take SDXL's size and crop ids already embedded, as sd.cpp's y carries them."""
+    if adm_dim(unet.config):
+        unet.add_time_proj = torch.nn.Identity()
+
+
 class UNetWrapper(torch.nn.Module):
     def __init__(self, unet):
         super().__init__()
         self.unet = unet
+        self.adm  = adm_dim(unet.config)
 
-    def forward(self, sample, timestep, encoder_hidden_states):
-        return self.unet(sample, timestep, encoder_hidden_states, return_dict=False)[0]
+    def forward(self, sample, timestep, encoder_hidden_states, y=None):
+        added = None
+        if y is not None:
+            # With add_time_proj replaced by Identity (use_embedded_time_ids), diffusers concatenates
+            # text_embeds and time_ids back into y unchanged, so where y is split does not matter.
+            split = self.adm - self.unet.config.addition_time_embed_dim
+            added = {"text_embeds": y[:, :split], "time_ids": y[:, split:]}
+        return self.unet(sample, timestep, encoder_hidden_states, added_cond_kwargs=added, return_dict=False)[0]
+
+
+def sdxl_example(unet, batch, width, height):
+    """Random pooled text embeddings with real size/crop ids: the y sd.cpp passes, and the unmodified UNet's
+    added_cond_kwargs for the same values (the reference)."""
+    cfg        = unet.config
+    n_ids      = 6  # original size, crop, target size; any count works for the check, as y is not split by it
+    text_dim   = cfg.projection_class_embeddings_input_dim - n_ids * cfg.addition_time_embed_dim
+    text       = torch.randn(batch, text_dim)
+    time_ids   = torch.tensor([[height, width, 0, 0, height, width]] * batch, dtype=torch.float32)
+    with torch.no_grad():
+        embedded = unet.add_time_proj(time_ids.flatten()).reshape(batch, -1)
+    return torch.cat([text, embedded], dim=1), {"text_embeds": text, "time_ids": time_ids}
+
+
+# Weights palettized by every p4/p6/mixed export: smaller ones stay fp16 (coremltools' weight_threshold).
+PALETTE_THRESHOLD = 2048
+
+
+def palettize_tensor(w, nbits, iters=10):
+    """w with its values replaced by the nearest of 2**nbits k-means centroids: the effect of coremltools' kmeans
+    palettization (1-D Lloyd iterations from quantile seeds), fast enough to try on every layer."""
+    flat      = w.detach().flatten().float()
+    k         = 2 ** nbits
+    ordered   = flat.sort().values
+    centroids = ordered[torch.arange(k) * (flat.numel() - 1) // (k - 1)]  # integer math: float32 indices overflow
+    for _ in range(iters):
+        idx       = torch.bucketize(flat, (centroids[1:] + centroids[:-1]) / 2)
+        sums      = torch.zeros(k).scatter_add_(0, idx, flat)
+        counts    = torch.bincount(idx, minlength=k)
+        centroids = torch.where(counts > 0, sums / counts.clamp(min=1), centroids)
+    idx = torch.bucketize(flat, (centroids[1:] + centroids[:-1]) / 2)
+    return centroids[idx].reshape(w.shape).to(w.dtype)
+
+
+def psnr(out, reference):
+    mse = float(((out - reference) ** 2).mean())
+    return 10 * math.log10(float(reference.abs().max()) ** 2 / max(mse, 1e-20))
+
+
+def layer_sensitivity(unet, example, added, low_bits, cache_path):
+    """Output PSNR of the UNet with one layer's weights palettized to low_bits, against fp32, for every weight that
+    gets palettized. The UNet runs once per layer (about 800 for SDXL), so results go to cache_path as they come
+    and a rerun only computes the missing layers."""
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    if cache.get("low_bits", low_bits) != low_bits:
+        raise SystemExit(f"error: {cache_path} was measured at {cache['low_bits']} bits, not {low_bits}")
+    results = cache.get("psnr", {})
+    params  = [(n, p) for n, p in unet.named_parameters() if p.numel() >= PALETTE_THRESHOLD and n not in results]
+    with torch.no_grad():
+        reference = unet(*example, added_cond_kwargs=added, return_dict=False)[0]
+        t0        = time.time()
+        for i, (name, param) in enumerate(params):
+            saved = param.data.clone()
+            param.data.copy_(palettize_tensor(saved, low_bits))
+            results[name] = psnr(unet(*example, added_cond_kwargs=added, return_dict=False)[0], reference)
+            param.data.copy_(saved)
+            if (i + 1) % 25 == 0 or i + 1 == len(params):
+                cache_path.write_text(json.dumps({"low_bits": low_bits, "psnr": results}, indent=1))
+                left = (time.time() - t0) / (i + 1) * (len(params) - i - 1)
+                print(f"sensitivity: {i + 1}/{len(params)} layers, about {left / 60:.0f} min left", flush=True)
+    return results
+
+
+def mixed_bits(unet, sensitivity, target_bits, low_bits, high_bits):
+    """Bits per weight averaging at most target_bits: low_bits everywhere, then high_bits for the layers whose
+    low_bits palette hurts the output most (lowest PSNR first), as long as the average stays within the target."""
+    # Weights only: coremltools folds 1-D parameters (norm biases and scales) into other ops, so they have no
+    # constant of their own to palettize.
+    sizes  = {n: p.numel() for n, p in unet.named_parameters() if n in sensitivity and p.dim() >= 2}
+    bits   = {n: low_bits for n in sizes}
+    budget = (target_bits - low_bits) * sum(sizes.values())
+    for name in sorted(sizes, key=sensitivity.get):
+        cost = (high_bits - low_bits) * sizes[name]
+        if cost <= budget:
+            bits[name] = high_bits
+            budget    -= cost
+    average = sum(bits[n] * sizes[n] for n in sizes) / sum(sizes.values())
+    upgraded = sum(b == high_bits for b in bits.values())
+    print(f"mixed: {upgraded} of {len(bits)} layers at {high_bits} bits, the rest at {low_bits}; "
+          f"average {average:.2f} bits")
+    return bits
+
+
+def mil_weight_name(param_name):
+    """The name coremltools gives a traced UNetWrapper parameter's fp16 weight constant."""
+    return "unet_" + param_name.replace(".", "_") + "_to_fp16"
 
 
 def parse_size(text):
@@ -234,20 +351,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--unet", required=True, help="diffusers UNet folder (the pipeline's unet/ directory)")
     parser.add_argument("--out", required=True, help="output .mlpackage path")
-    parser.add_argument("--precision", choices=["fp16", "w8", "w8b", "p6"], default="fp16",
+    parser.add_argument("--precision", choices=["fp16", "w8", "w8b", "p6", "p4", "mixed"], default="fp16",
                         help="weights: fp16, int8 with one scale per output channel (w8), int8 with one scale per "
-                             "block of 32 weights (w8b, iOS 18+), or a 6-bit k-means palette per layer (p6, for "
-                             "large UNets on iOS); compute is fp16 in all cases")
+                             "block of 32 weights (w8b, iOS 18+), a 6-bit (p6) or 4-bit (p4) k-means palette per "
+                             "layer, or mixed: 4-bit palettes with 6 bits for the layers most sensitive to 4 bits, "
+                             "averaging --mixed-bits (large UNets on iOS: p6 for SD 2.x, mixed for SDXL); compute "
+                             "is fp16 in all cases")
+    parser.add_argument("--mixed-bits", type=float, default=4.5,
+                        help="average bits per palettized weight for --precision mixed (between 4 and 6)")
+    parser.add_argument("--sensitivity",
+                        help="JSON cache of the per-layer sensitivity --precision mixed measures (default: OUT with "
+                             "_sensitivity.json); reused by later exports of the same UNet")
     parser.add_argument("--attention", choices=["standard", "split_einsum_v2", "ane"], default="standard",
                         help="standard diffusers attention; split_einsum_v2: per-head attention with chunked queries; "
                              "ane: the same attention with the whole transformer block kept channels-first ([B, C, 1, S], "
                              "Linear as 1x1 conv), as Apple lays it out for the ANE (fastest for SD 2.x)")
     parser.add_argument("--query-chunk", type=int, default=512, help="query tokens per chunk for split_einsum_v2")
     parser.add_argument("--palette-mode", choices=["kmeans", "uniform"], default="kmeans",
-                        help="how p6 picks the 64 palette values: kmeans (accurate, slow) or uniform (fast; for "
+                        help="how p6/p4 pick the palette values: kmeans (accurate, slow) or uniform (fast; for "
                              "speed experiments, same file format and run time)")
     parser.add_argument("--kmeans-workers", type=int, default=2,
-                        help="parallel k-means workers for p6; each one adds memory, keep it low on a 16 GB Mac")
+                        help="parallel k-means workers for p6/p4; each one adds memory, keep it low on a 16 GB Mac")
     parser.add_argument("--batch", type=int, default=1, help="UNet batch: 1, or 2 for batched CFG")
     parser.add_argument("--sizes", default="512x512",
                         help="comma-separated image sizes as WIDTHxHEIGHT, only ones the model was trained at "
@@ -261,15 +385,23 @@ def main():
     parser.add_argument("--target", choices=["iOS17", "iOS18"],
                         help="op set (default: iOS18 for w8b, which needs it, else iOS17). A multifunction model built "
                              "with iOS18 fails to load on the ANE (macOS 27.2); iOS17 runs at the same speed")
+    parser.add_argument("--chunks", type=int, choices=[1, 2], default=1,
+                        help="2 splits the model into two chunks of about equal size (coremltools bisect_model), "
+                             "written to the folder OUT without .mlpackage; pass that folder to --coreml-unet. "
+                             "Large UNets (SDXL) need this to compile for the ANE on iOS")
     parser.add_argument("--compile", action="store_true", help="also write a compiled .mlmodelc next to the package")
     parser.add_argument("--keep-silu", action="store_true", help="keep the native silu op (inaccurate on the ANE)")
     args = parser.parse_args()
 
     sizes = [parse_size(s) for s in args.sizes.split(",")]
+    if args.chunks > 1 and len(sizes) > 1:
+        raise SystemExit("error: --chunks needs a single --sizes entry")
     if args.target is None:
         args.target = "iOS18" if args.precision == "w8b" else "iOS17"
     if args.precision == "w8b" and args.target != "iOS18":
         raise SystemExit("error: --precision w8b needs --target iOS18 (per-block quantization is an iOS 18 op)")
+    if args.precision == "mixed" and not 4 <= args.mixed_bits <= 6:
+        raise SystemExit("error: --mixed-bits must be between 4 and 6")
     if args.precision == "w8b" and len(sizes) > 1:
         print("warning: w8b needs the iOS 18 op set, and multifunction models built with it failed to load on the ANE")
     # Some pipelines ship only the fp16 variant (diffusion_pytorch_model.fp16.safetensors); trace in fp32 either way.
@@ -278,6 +410,7 @@ def main():
                                                 variant=None if has_default else "fp16").eval()
     wrapper = UNetWrapper(unet).eval()
     cfg = unet.config
+    adm = adm_dim(cfg)
     check_sizes(cfg, sizes, args.allow_untrained_sizes)
     prediction = prediction_type(args.unet, args.prediction)
     print(f"prediction type: {prediction}")
@@ -285,8 +418,8 @@ def main():
     parts_dir = Path(tempfile.mkdtemp(prefix="unet_parts_")) if multi else None
     checks = []  # (function name or None, inputs, fp32 reference output)
 
-    # References come from the unmodified diffusers UNet (standard attention, x * sigmoid(x)), so the checks
-    # below catch mistakes in the rewrites as well as conversion error.
+    # References come from the unmodified diffusers UNet (standard attention, x * sigmoid(x), SDXL's raw size and
+    # crop ids), so the checks below catch mistakes in the rewrites as well as conversion error.
     examples = {}
     for width, height in sizes:
         shapes = {
@@ -294,26 +427,44 @@ def main():
             "timestep": (args.batch,),
             "encoder_hidden_states": (args.batch, args.context_len, cfg.cross_attention_dim),
         }
-        example = (
+        example = [
             torch.randn(shapes["sample"]),
             torch.full(shapes["timestep"], 999.0),
             torch.randn(shapes["encoder_hidden_states"]),
-        )
+        ]
+        added = None
+        if adm:
+            shapes["y"] = (args.batch, adm)
+            y, added = sdxl_example(unet, args.batch, width, height)
+            example.append(y)
         with torch.no_grad():
-            examples[width, height] = (shapes, example, wrapper(*example).numpy())
+            reference = unet(*example[:3], added_cond_kwargs=added, return_dict=False)[0].numpy()
+        examples[width, height] = (shapes, tuple(example), reference, added)
+
+    bits = None
+    if args.precision == "mixed":
+        # Measured on one item of the unmodified UNet mid-trajectory (t = 500); the rewrites below do not change the
+        # math, and the batch does not change which layers are sensitive.
+        _, example, _, added = examples[sizes[0]]
+        calibration = (example[0][:1], torch.full_like(example[1][:1], 500.0), example[2][:1])
+        added = {k: v[:1] for k, v in added.items()} if added else None
+        cache = Path(args.sensitivity) if args.sensitivity else Path(args.out).with_name(Path(args.out).stem + "_sensitivity.json")
+        sensitivity = layer_sensitivity(unet, calibration, added, 4, cache)
+        bits = mixed_bits(unet, sensitivity, args.mixed_bits, 4, 6)
 
     if not args.keep_silu:
         torch.nn.SiLU.forward = silu_via_tanh
     apply_attention(unet, args.attention, args.query_chunk)
+    use_embedded_time_ids(unet)
 
     for width, height in sizes:
-        shapes, example, reference = examples[width, height]
+        shapes, example, reference, _ = examples[width, height]
         with torch.no_grad():
             traced = torch.jit.trace(wrapper, example, strict=False)
             err = max_rel_err(wrapper(*example).numpy(), reference)
         print(f"{width}x{height}: rewritten UNet vs diffusers (fp32): max relative error {err:.2e}")
         if err > REWRITE_TOLERANCE:
-            raise SystemExit(f"error: the {args.attention} attention / silu rewrite differs from diffusers by {err:.2e} "
+            raise SystemExit(f"error: the {args.attention} attention / silu / time id rewrite differs from diffusers by {err:.2e} "
                              f"(tolerance {REWRITE_TOLERANCE:.0e})")
 
         t0 = time.time()
@@ -324,6 +475,7 @@ def main():
             outputs=[ct.TensorType(name="noise_pred", dtype=np.float32)],
             compute_precision=ct.precision.FLOAT16,
             minimum_deployment_target=getattr(ct.target, args.target),
+            skip_model_load=True,  # loading compiles another full-size temporary copy; the checks use the final model
         )
         if args.precision in ("w8", "w8b"):
             # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
@@ -332,10 +484,23 @@ def main():
                                                                    weight_threshold=2048, **granularity)
             mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
                                                                  ct.optimize.coreml.OptimizationConfig(op_config))
-        elif args.precision == "p6":
-            op_config = ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=6, weight_threshold=2048,
+        elif args.precision in ("p6", "p4"):
+            op_config = ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=int(args.precision[1:]),
+                                                              weight_threshold=PALETTE_THRESHOLD,
                                                               num_kmeans_workers=args.kmeans_workers)
             mlmodel = ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
+        elif args.precision == "mixed":
+            def palette(nbits):
+                return ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=nbits,
+                                                             weight_threshold=PALETTE_THRESHOLD,
+                                                             num_kmeans_workers=args.kmeans_workers)
+            consts  = {op.name for op in mlmodel._mil_program.functions["main"].operations if op.op_type == "const"}
+            by_name = {mil_weight_name(n): palette(b) for n, b in bits.items() if b != 4}
+            missing = sorted(set(by_name) - consts)
+            if missing:
+                raise SystemExit(f"error: {len(missing)} weights not found in the CoreML program, e.g. {missing[0]}")
+            mlmodel = ct.optimize.coreml.palettize_weights(
+                mlmodel, ct.optimize.coreml.OptimizationConfig(global_config=palette(4), op_name_configs=by_name))
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
 
         inputs = {name: tensor.numpy() for name, tensor in zip(shapes, example)}
@@ -347,6 +512,9 @@ def main():
             mlmodel.short_description = f"UNet {Path(args.unet).resolve()} ({args.precision}) for sd-cli --coreml-unet"
             mlmodel.save(args.out)
             checks.append((None, inputs, reference))
+        # coremltools keeps a temporary package per model in memory (several GB for SDXL) until it is released.
+        del mlmodel, traced
+        gc.collect()
 
     if multi:
         desc = ct.utils.MultiFunctionDescriptor()
@@ -362,34 +530,77 @@ def main():
         shutil.rmtree(parts_dir)
         print(f"saved {len(sizes)} functions to {args.out}")
 
-    # The coremltools loader rejects function_name on an .mlpackage, so check the compiled model.
+    # The checks run the compiled model: loading an .mlpackage compiles a new temporary copy for every load
+    # (and the coremltools loader rejects function_name on an .mlpackage).
     out_dir = Path(args.out).resolve().parent
     compiled = out_dir / (Path(args.out).stem + ".mlmodelc")
-    if args.compile or multi:
-        if compiled.exists():
-            shutil.rmtree(compiled)
-        subprocess.run(["xcrun", "coremlcompiler", "compile", args.out, str(out_dir)], check=True,
-                       stdout=subprocess.DEVNULL)
+    if compiled.exists():
+        shutil.rmtree(compiled)
+    ct.utils.compile_model(args.out, str(compiled))  # the CoreML framework's compiler; no Xcode needed
 
     # Check against PyTorch fp32 on this Mac. The ANE runs fp16, so expect small differences.
     for name, inputs, reference in checks:
         for units in (ct.ComputeUnit.CPU_AND_NE, ct.ComputeUnit.CPU_AND_GPU):
-            if name is None:
-                model = ct.models.MLModel(args.out, compute_units=units)
-            else:
-                model = ct.models.CompiledMLModel(str(compiled), compute_units=units, function_name=name)
+            function = {"function_name": name} if name else {}
+            model = ct.models.CompiledMLModel(str(compiled), compute_units=units, **function)
             model.predict(inputs)  # warm-up
             t0 = time.time()
             out = model.predict(inputs)["noise_pred"]
             dt = time.time() - t0
-            cos = float(np.dot(out.ravel(), reference.ravel()) / (np.linalg.norm(out) * np.linalg.norm(reference)))
+            cos = cosine(out, reference)
             print(f"{name or 'model'} {units.name}: {dt * 1000:.1f} ms, "
                   f"max abs err {np.abs(out - reference).max():.4f}, cosine {cos:.6f}")
 
-    if args.compile:
+    if args.chunks > 1:
+        write_chunks(args.out, compiled, args.compile, prediction, checks[0][1:])
+    elif args.compile:
         print(f"compiled to {compiled}")
-    elif multi:
+    else:
         shutil.rmtree(compiled)
+
+
+def cosine(out, reference):
+    return float(np.dot(out.ravel(), reference.ravel()) / (np.linalg.norm(out) * np.linalg.norm(reference)))
+
+
+def write_chunks(package, compiled, compile_chunks, prediction, check):
+    """Splits the checked model into two chunks in the folder named like the package, then removes the whole
+    model: sd.cpp runs the chunks one after the other (see src/coreml_unet.h)."""
+    out_dir = Path(package).with_suffix("")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    # coremltools' own chunk check needs pytest; the check below runs the chunks the way sd.cpp does instead.
+    ct.models.utils.bisect_model(str(package), str(out_dir), check_output_correctness=False)
+    chunks = sorted(out_dir.glob("*.mlpackage"))
+    for chunk in chunks:
+        model = ct.models.MLModel(str(chunk), skip_model_load=True)  # bisect_model drops the metadata
+        model.user_defined_metadata["prediction_type"] = prediction
+        tmp = chunk.with_name(chunk.stem + ".tmp.mlpackage")  # MLModel.save cannot overwrite its own package
+        model.save(str(tmp))
+        shutil.rmtree(chunk)
+        tmp.rename(chunk)
+    shutil.rmtree(package)
+    if compiled.exists():
+        shutil.rmtree(compiled)
+
+    # Compiled once per chunk for the check, which loads them as sd.cpp does; kept only with --compile.
+    inputs, reference = check
+    features = dict(inputs)
+    for chunk in chunks:
+        chunk_compiled = chunk.with_suffix(".mlmodelc")
+        ct.utils.compile_model(str(chunk), str(chunk_compiled))
+        names = [i.name for i in ct.models.MLModel(str(chunk), skip_model_load=True).get_spec().description.input]
+        model = ct.models.CompiledMLModel(str(chunk_compiled), compute_units=ct.ComputeUnit.CPU_AND_NE)
+        features.update(model.predict({name: features[name] for name in names}))
+        del model
+    out = features["noise_pred"]
+    print(f"{len(chunks)} chunks CPU_AND_NE: max abs err {np.abs(out - reference).max():.4f}, "
+          f"cosine {cosine(out, reference):.6f}")
+    if not compile_chunks:
+        for chunk in chunks:
+            shutil.rmtree(chunk.with_suffix(".mlmodelc"))
+    print(f"wrote {len(chunks)} chunks to {out_dir}; pass the folder to --coreml-unet")
 
 
 if __name__ == "__main__":
