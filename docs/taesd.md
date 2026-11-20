@@ -51,3 +51,11 @@ curl -L -o taeqi2_1.safetensors https://huggingface.co/madebyollin/taeqi2_1/reso
 Replace `--vae PATH` with `--taesd taeqi2_1.safetensors` in the [Qwen Image 2.1 examples](qwen_image_2.1.md) to use it for encoding and decoding. For previews only, keep `--vae PATH` and add `--taesd taeqi2_1.safetensors --taesd-preview-only --preview tae`.
 
 `sd-server` accepts the same `--taesd` and `--taesd-preview-only` options; the preview method is selected per request instead of via `--preview`.
+
+### MiniMax-H3 (TAE-H3)
+
+Use the H3-specific `taeh3.safetensors` checkpoint with `--tae PATH` (an alias
+of `--taesd`). It replaces final video decoding unless
+`--taesd-preview-only` is set. The diffusion model and audio VAE are unchanged.
+See the [MiniMax-H3 Strix example](minimax_h3.md#tae-h3-and-easycache) for the
+pinned checkpoint, EasyCache settings and quality/performance comparison.

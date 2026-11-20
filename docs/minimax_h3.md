@@ -106,3 +106,88 @@ frame rate and optional soundtrack; non-24-fps inputs are resampled internally.
 - MiniMax-H3 runs at 24 fps; another requested value is overridden.
 - The default video flow shift is 12. The audio stream is mapped internally to
   its shift of 3, so the regular samplers can operate on the packed AV latent.
+
+## Strix ROCm (gfx1151)
+
+Build with the [ROCm instructions](build.md#build-with-hipblas) and target `gfx1151` for
+Strix Halo. Use the GGML revision pinned by this repository: its HIP backend
+contains the Strix attention precision correction and scale/residual fusion.
+An externally supplied GGML build must contain the same changes.
+
+The attention correction uses FP32 for weighted-value accumulation, rescaling
+and combination on the affected unmasked, head-128 path when F32 precision is
+requested. It preserves the existing Q/K and probability arithmetic. The
+scale/residual fusion preserves the separate FP32 multiply and add roundings
+for the supported H3 layout. Both paths select gfx1151 at runtime and leave
+unsupported configurations on the existing path.
+
+### TAE-H3 and EasyCache
+
+TAE-H3 and EasyCache are optional, existing features. TAE-H3 replaces the video
+decoder with a lightweight approximation; it does not replace the diffusion
+GGUF or the audio VAE. Use the H3 decoder weights, not the SD, Wan or Hunyuan
+TAE weights.
+
+The tested TAE-H3 checkpoint is
+[`taeh3.safetensors` at revision `62f7591`](https://github.com/madebyollin/taehv/blob/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeh3.safetensors)
+(22,709,752 bytes; SHA-256
+`4fd022bfcab08772fe0536b17ea1a3bbb5625be11e397868d1c5d891863d4c13`).
+Save it as `models/taeh3.safetensors` for the example below. `--tae` is an alias
+of `--taesd`; do not use `--taesd-preview-only` when replacing final decoding.
+
+EasyCache reuses model results within the sampling schedule. The tested policy
+uses `threshold=0.20,start=0.20,end=0.80`. A 20-step request still has 20 nominal
+sampling steps, but it may execute fewer model evaluations. The number of
+reuses depends on the input; it is not a fixed-step distillation schedule.
+
+```sh
+./build/bin/sd-cli -M vid_gen \
+  --diffusion-model models/minimax_h3_ref2va_pruned-Q4_K_M.gguf \
+  --llm models/qwen3vl_32b_minimax_h3-Q4_K_M.gguf \
+  --vae models/minimax_h3_video_vae_fp16.safetensors \
+  --audio-vae models/minimax_h3_audio_vae_fp32.safetensors \
+  --tae models/taeh3.safetensors \
+  --backend ROCm0 --params-backend ROCm0 --flash-attn on \
+  --cache-mode easycache \
+  --cache-option "threshold=0.20,start=0.20,end=0.80" \
+  --sampling-method euler --steps 20 --cfg-scale 1 --guidance 7 \
+  --seed 424242 -W 864 -H 480 --video-frames 124 --fps 24 -b 1 \
+  -p "A small orange paper boat floating slowly on calm water at dusk, with a cliff in the background; gentle somber solo piano music, no speech." \
+  -o h3-strix.avi
+```
+
+Use the device name reported by your build if it differs from `ROCm0`.
+For full-VAE decoding, omit `--tae` and retain `--vae`. To disable EasyCache,
+omit `--cache-mode` and `--cache-option`. These options remain opt-in; neither
+approximation is enabled merely by selecting Strix.
+
+### Recorded comparison
+
+One 864x480, 124-frame example on Radeon 8060S/gfx1151 with the prompt and
+seed above produced the following initialization-plus-generation times:
+
+| Configuration | Time | Reduction versus preceding row |
+|---|---:|---:|
+| Corrected attention, full VAE, no cache | 26m57.3s | Reference |
+| Above + TAE-H3 | 26m09.0s | 48.3s (2.99%) |
+| Above + EasyCache | 17m16.4s | 8m52.6s (33.94%) |
+| Above + scale/residual fusion | 16m52.4s | 24.1s (2.32%) |
+
+The total observed reduction is 37.4%. These are historical single clean runs,
+not repeated paired speedup estimates or a promise for other inputs. The
+earlier approximately 28-minute result used incorrect FP16 weighted-value
+accumulation and is excluded from this comparison.
+
+Measurements used a separate quiet harness with profiling, progress logging
+and telemetry disabled; native output export, encoding and validation followed
+the timer. The CLI command above reproduces the generation configuration, not
+that timing harness. The exact model-forward count was not instrumented in the
+corrected clean cached run.
+
+TAE-H3 changes video detail, and EasyCache changes both video and stereo audio.
+For this example, final output versus the corrected full-VAE reference had mean
+frame SSIM 0.8234, LPIPS 0.1519, and left/right audio RMSE 0.01861/0.01908.
+The scale/residual fusion alone preserved all 124 native RGB frames and both
+audio channels byte-for-byte versus TAE-H3 + EasyCache. Compare final video and
+listen to both channels for the intended workload before choosing the faster
+configuration; these measurements do not qualify every prompt or seed.
