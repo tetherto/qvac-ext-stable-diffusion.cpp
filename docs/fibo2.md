@@ -46,6 +46,8 @@ Edit Turbo is distilled for reference-image editing in 4 steps with CFG 1.
 
 The BF16 files accept the same options. Use dimensions divisible by 16. Repeat `-r` to use multiple reference images; instructions can refer to `<image_1>`, `<image_2>`, etc. See [Image Editing](./edit.md) for reference-image preprocessing options. Separate GGUF text encoders need their vision projector passed with `--llm_vision` for editing.
 
+C API callers can detect Fibo reference editing with `sd_ctx_uses_reference_images()` and pass ordered inputs through `ref_images` and `ref_images_count`.
+
 The automatic `fibo2` reference preset combines `resize_single_ref_to_target=true`, `vae_size_buckets=true`, `vae_center_crop=true`, and `vlm_use_vae_input=true`. A single reference is scaled to cover the output dimensions and center-cropped. Multiple references use dimensions divisible by 16, chosen within ±10% of one megapixel to minimize cropping for each image's aspect ratio; `vae_input_max_pixels` overrides that target area. The VAE and vision encoder receive the same crops, with smaller copies used by the vision encoder. These are generic reference-image options and can be overridden individually: for example, `--ref-image-args vae_center_crop=false` uses direct resizing, while `resize_before_vae=false` skips this automatic crop and resize step entirely.
 
 The vision encoder defaults to `vlm_resize_mode=longest_side,vlm_max_size=768`. Override these with `--ref-image-args`, for example `vlm_max_size=512`, or use `vlm_resize_mode=none` to skip size-based scaling. Vision inputs are still aligned to the encoder's patch grid.
