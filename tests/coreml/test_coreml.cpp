@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "ggml_tensor_utils.h"
 #include "src/coreml_tae.h"
 #include "src/coreml_unet.h"
 #include "stable-diffusion.h"
@@ -44,6 +45,7 @@ bool log_has(const char* text) {
 }
 
 constexpr int64_t C = 4, H = 8, W = 8, T = 5, D = 6;
+constexpr int64_t A = 7, P = 3, K = 2;  // y values; text_embeds and time_ids values (see make_fixtures.py)
 
 std::vector<float> ramp(size_t n, float scale, float offset) {
     std::vector<float> v(n);
@@ -96,7 +98,7 @@ void test_unet_variants(const std::string& dir) {
             continue;
         }
         std::vector<float> out(x.size(), NAN);
-        CHECK(unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, out.data()));
+        CHECK(unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, nullptr, 0, out.data()));
         float err = max_abs_diff(out, expected);
         printf("  %s: max abs error %.2e\n", name, err);
         CHECK(err < tol);
@@ -114,11 +116,11 @@ void test_unet_shape_rejection(const std::string& dir) {
     std::vector<float> x(C * 16 * 16), ctx(T * D), out(C * 16 * 16), t = {1.0f};
     const int64_t big_x[4]     = {1, C, 16, 16};
     const int64_t ctx_shape[3] = {1, T, D};
-    CHECK(!unet->predict(x.data(), big_x, t.data(), ctx.data(), ctx_shape, out.data()));
+    CHECK(!unet->predict(x.data(), big_x, t.data(), ctx.data(), ctx_shape, nullptr, 0, out.data()));
     const int64_t x_shape[4]  = {1, C, H, W};
     const int64_t long_ctx[3] = {1, T + 1, D};
     std::vector<float> long_data((T + 1) * D);
-    CHECK(!unet->predict(x.data(), x_shape, t.data(), long_data.data(), long_ctx, out.data()));
+    CHECK(!unet->predict(x.data(), x_shape, t.data(), long_data.data(), long_ctx, nullptr, 0, out.data()));
 }
 
 void test_prediction_metadata(const std::string& dir) {
@@ -154,20 +156,132 @@ void test_cfg_batch(const std::string& dir) {
 
     for (auto* unet : {batched.get(), single.get()}) {
         std::vector<float> out(xs.size(), NAN);
-        CHECK(unet->run(xs.data(), x2_shape, &t, 1, ctx.data(), ctx2_shape, out.data()));
+        CHECK(unet->run(xs.data(), x2_shape, &t, 1, ctx.data(), ctx2_shape, nullptr, 0, 0, out.data()));
         float err = max_abs_diff(out, expected);
         printf("  batch-%lld model, cond + uncond in one call: max abs error %.2e\n", (long long)unet->batch_size(), err);
         CHECK(err < 1e-4f);
     }
 
     std::vector<float> out(x.size(), NAN);
-    CHECK(batched->run(x.data(), x1_shape, &t, 1, cond.data(), ctx1_shape, out.data()));
+    CHECK(batched->run(x.data(), x1_shape, &t, 1, cond.data(), ctx1_shape, nullptr, 0, 0, out.data()));
     CHECK(max_abs_diff(out, reference_unet(x, {t}, cond, 1)) < 1e-4f);
 
     // Mismatched batches are rejected.
-    CHECK(!batched->run(xs.data(), x2_shape, &t, 1, cond.data(), ctx1_shape, out.data()));
+    CHECK(!batched->run(xs.data(), x2_shape, &t, 1, cond.data(), ctx1_shape, nullptr, 0, 0, out.data()));
     const float ts3[3] = {t, t, t};
-    CHECK(!batched->run(xs.data(), x2_shape, ts3, 3, ctx.data(), ctx2_shape, out.data()));
+    CHECK(!batched->run(xs.data(), x2_shape, ts3, 3, ctx.data(), ctx2_shape, nullptr, 0, 0, out.data()));
+}
+
+// What the SDXL-style fixtures add to reference_unet for one item: sum_a v[a] * 0.02 * (a + 1) over y or
+// text_embeds, plus sum_k ids[k] * 0.001 * (k + 1) over time_ids.
+float vector_term(const float* v, int64_t n, const std::vector<float>& ids = {}) {
+    double s = 0;
+    for (int64_t a = 0; a < n; a++) {
+        s += v[a] * 0.02 * (a + 1);
+    }
+    for (size_t k = 0; k < ids.size(); k++) {
+        s += ids[k] * 0.001 * (k + 1);
+    }
+    return (float)s;
+}
+
+void test_unet_vector_conditioning(const std::string& dir) {
+    const int64_t x_shape[4]   = {1, C, H, W};
+    const int64_t ctx_shape[3] = {1, T, D};
+    auto x                     = ramp(C * H * W, 2.0f, -1.0f);
+    auto ctx                   = ramp(T * D, 1.0f, -0.5f);
+    std::vector<float> t       = {999.0f};
+
+    // A model with a y input takes y as is.
+    auto unet = CoreMLUNet::load(dir + "/unet_y_b1.mlpackage");
+    CHECK(unet != nullptr);
+    if (unet) {
+        CHECK(unet->y_dim() == A);
+        auto y        = ramp(A, 1.0f, -0.4f);
+        auto expected = reference_unet(x, t, ctx, 1);
+        for (float& v : expected) {
+            v += vector_term(y.data(), A);
+        }
+        std::vector<float> out(x.size(), NAN);
+        CHECK(unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, y.data(), A, out.data()));
+        float err = max_abs_diff(out, expected);
+        printf("  y input: max abs error %.2e\n", err);
+        CHECK(err < 1e-4f);
+        CHECK(!unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, nullptr, 0, out.data()));
+        CHECK(!unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, y.data(), A - 1, out.data()));
+    }
+
+    // Apple's SDXL layout: y is split into text_embeds and the raw time_ids, which the runtime recovers from the
+    // embeddings sd.cpp's SDXL conditioner writes (sizes 768x1024 and crop 0, 0 here).
+    auto apple = CoreMLUNet::load(dir + "/unet_text_time_b2.mlpackage");
+    CHECK(apple != nullptr);
+    if (apple) {
+        const int64_t y_dim = P + 256 * K;
+        CHECK(apple->y_dim() == y_dim);
+        CHECK(apple->batch_size() == 2);
+        const std::vector<float> ids = {768.0f, 1024.0f};
+        auto y                       = ramp(P, 1.0f, -0.2f);
+        auto embedded                = timestep_embedding(ids, 256);
+        y.insert(y.end(), embedded.begin(), embedded.end());
+
+        // A single item with one y row: the runtime duplicates both for the batch-2 model.
+        auto expected = reference_unet(x, t, ctx, 1);
+        for (float& v : expected) {
+            v += vector_term(y.data(), P, ids);
+        }
+        std::vector<float> out(x.size(), NAN);
+        CHECK(apple->run(x.data(), x_shape, t.data(), 1, ctx.data(), ctx_shape, y.data(), 1, y_dim, out.data()));
+        float err = max_abs_diff(out, expected);
+        printf("  text_embeds + time_ids (fp16, channels-first context): max abs error %.2e\n", err);
+        CHECK(err < 2e-2f);
+
+        // cond + uncond with different y rows.
+        const int64_t x2_shape[4]   = {2, C, H, W};
+        const int64_t ctx2_shape[3] = {2, T, D};
+        std::vector<float> xs(x), ctxs(ctx), ys(y);
+        xs.insert(xs.end(), x.begin(), x.end());
+        ctxs.insert(ctxs.end(), ctx.begin(), ctx.end());
+        ys.insert(ys.end(), y.begin(), y.end());
+        std::fill(ys.begin() + y_dim, ys.begin() + y_dim + P, 0.0f);
+        auto expected2 = reference_unet(xs, {t[0], t[0]}, ctxs, 2);
+        for (int64_t b = 0; b < 2; b++) {
+            for (int64_t i = 0; i < C * H * W; i++) {
+                expected2[b * C * H * W + i] += vector_term(ys.data() + b * y_dim, P, ids);
+            }
+        }
+        std::vector<float> out2(xs.size(), NAN);
+        CHECK(apple->run(xs.data(), x2_shape, t.data(), 1, ctxs.data(), ctx2_shape, ys.data(), 2, y_dim, out2.data()));
+        CHECK(max_abs_diff(out2, expected2) < 2e-2f);
+    }
+
+    // A model without vector conditioning rejects y.
+    auto plain = CoreMLUNet::load(dir + "/unet_b1.mlpackage");
+    if (plain) {
+        CHECK(plain->y_dim() == 0);
+        auto y = ramp(A, 1.0f, 0.0f);
+        std::vector<float> out(x.size());
+        CHECK(!plain->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, y.data(), A, out.data()));
+    }
+}
+
+// A folder of chunks runs them in order; the second chunk takes the first's output and encoder_hidden_states.
+void test_unet_chunks(const std::string& dir) {
+    auto unet = CoreMLUNet::load(dir + "/unet_chunks");
+    CHECK(unet != nullptr);
+    if (unet) {
+        const int64_t x_shape[4]   = {1, C, H, W};
+        const int64_t ctx_shape[3] = {1, T, D};
+        auto x                     = ramp(C * H * W, 2.0f, -1.0f);
+        auto ctx                   = ramp(T * D, 1.0f, -0.5f);
+        std::vector<float> t       = {250.0f};
+        std::vector<float> out(x.size(), NAN);
+        CHECK(unet->predict(x.data(), x_shape, t.data(), ctx.data(), ctx_shape, nullptr, 0, out.data()));
+        float err = max_abs_diff(out, reference_unet(x, t, ctx, 1));
+        printf("  2 chunks: max abs error %.2e\n", err);
+        CHECK(err < 1e-4f);
+    }
+    // A folder that is neither a model nor holds chunks.
+    CHECK(CoreMLUNet::load(dir) == nullptr);
 }
 
 void test_tae(const std::string& dir) {
@@ -327,6 +441,8 @@ int main(int argc, char** argv) {
         {"unet shape rejection", [&] { test_unet_shape_rejection(dir); }},
         {"prediction metadata", [&] { test_prediction_metadata(dir); }},
         {"batched cfg", [&] { test_cfg_batch(dir); }},
+        {"vector conditioning (SDXL)", [&] { test_unet_vector_conditioning(dir); }},
+        {"chunks", [&] { test_unet_chunks(dir); }},
         {"tae", [&] { test_tae(dir); }},
     };
     for (auto& [name, fn] : tests) {

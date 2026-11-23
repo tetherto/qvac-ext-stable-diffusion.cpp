@@ -17,7 +17,6 @@ pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
 
 import argparse
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -92,8 +91,7 @@ def main():
         compiled = out_dir / (Path(args.out).stem + ".mlmodelc")
         if compiled.exists():
             shutil.rmtree(compiled)
-        subprocess.run(["xcrun", "coremlcompiler", "compile", args.out, str(out_dir)], check=True,
-                       stdout=subprocess.DEVNULL)
+        ct.utils.compile_model(args.out, str(compiled))  # the CoreML framework's compiler; no Xcode needed
         print(f"compiled to {compiled}")
 
 

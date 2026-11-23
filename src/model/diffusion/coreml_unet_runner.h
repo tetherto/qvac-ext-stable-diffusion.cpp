@@ -10,7 +10,7 @@
 #include "coreml_unet.h"
 #endif
 
-// SD 1.x/2.x UNet on a CoreML model (sd_ctx_params_t::coreml_unet_path, --coreml-unet; see docs/coreml.md).
+// SD 1.x/2.x/SDXL UNet on a CoreML model (sd_ctx_params_t::coreml_unet_path, --coreml-unet; see docs/coreml.md).
 // The native runner is kept for its config; with a sidecar its weights are not registered, so they are
 // never loaded. Batched CFG (batch 2) works with models exported for batch 1 or 2.
 struct CoreMLUNetRunner : public UNetModelRunner {
@@ -80,11 +80,18 @@ struct CoreMLUNetRunner : public UNetModelRunner {
         if (!coreml) {
             return {};
         }
-        // The CoreML graph is fixed: no LoRA, circular padding, ControlNet, IP-Adapter or extra conditioning.
+        // The CoreML graph is fixed: no LoRA, circular padding, ControlNet, IP-Adapter or c_concat.
         if (weight_adapter || circular_x_enabled || circular_y_enabled ||
-            (params.c_concat && !params.c_concat->empty()) || (params.y && !params.y->empty()) ||
+            (params.c_concat && !params.c_concat->empty()) ||
             (extra && ((extra->controls && !extra->controls->empty()) || (extra->ip_context && !extra->ip_context->empty())))) {
-            LOG_ERROR("coreml unet: LoRA, circular padding, ControlNet, IP-Adapter, c_concat and y are not supported");
+            LOG_ERROR("coreml unet: LoRA, circular padding, ControlNet, IP-Adapter and c_concat are not supported");
+            return {};
+        }
+        // y is SDXL's vector conditioning, [A] or [A, N] in ggml order.
+        const bool has_y = params.y && !params.y->empty();
+        if (has_y != (coreml->y_dim() > 0) || (has_y && params.y->shape()[0] != coreml->y_dim())) {
+            LOG_ERROR("coreml unet: the model takes %lld values of vector conditioning (y), the pipeline gives %lld",
+                      (long long)coreml->y_dim(), has_y ? (long long)params.y->shape()[0] : 0LL);
             return {};
         }
         if (!params.x || params.x->dim() < 3 || params.x->dim() > 4 || !params.timesteps || params.timesteps->empty() ||
@@ -102,7 +109,9 @@ struct CoreMLUNetRunner : public UNetModelRunner {
             return output;
         }
         if (!coreml->run(params.x->data(), x_shape, params.timesteps->data(), params.timesteps->numel(),
-                         params.context->data(), ctx_shape, output.data())) {
+                         params.context->data(), ctx_shape,
+                         has_y ? params.y->data() : nullptr, has_y ? params.y->numel() / coreml->y_dim() : 0, coreml->y_dim(),
+                         output.data())) {
             return {};
         }
         return output;

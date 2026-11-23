@@ -494,7 +494,7 @@ ArgOptions SDContextParams::get_options() {
          &taesd_path},
         {"",
          "--coreml-unet",
-         "path to the UNet as a CoreML model (.mlmodelc), run on the Apple Neural Engine (SD 1.x/2.x; SD_COREML builds)",
+         "path to the UNet as a CoreML model (.mlmodelc) or a folder of UNet chunks, run on the Apple Neural Engine (SD 1.x/2.x, SDXL; SD_COREML builds)",
          0,
          &coreml_unet_path},
         {"",

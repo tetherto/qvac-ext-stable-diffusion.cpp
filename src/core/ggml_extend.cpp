@@ -142,10 +142,26 @@ ggml_tensor* ggml_ext_silu_act(ggml_context* ctx, ggml_tensor* x, bool gate_firs
     return gate_first ? ggml_swiglu(ctx, x) : ggml_swiglu_swapped(ctx, x);
 }
 
+// ggml's Metal group_norm kernel normalizes only the first item of a batch (it ignores ne[3]), which breaks
+// batched UNet passes such as batched CFG. Groups are runs of whole channels, so folding the batch into the
+// channels gives the same groups on every backend.
+static ggml_tensor* ggml_ext_group_norm_batched(ggml_context* ctx, ggml_tensor* x, int num_groups, float eps) {
+    if (x->ne[3] <= 1 || x->ne[2] % num_groups != 0) {
+        return ggml_group_norm(ctx, x, num_groups, eps);
+    }
+    if (!ggml_is_contiguous(x)) {
+        x = ggml_cont(ctx, x);
+    }
+    const int64_t n = x->ne[3];
+    auto folded     = ggml_reshape_4d(ctx, x, x->ne[0], x->ne[1], x->ne[2] * n, 1);
+    folded          = ggml_group_norm(ctx, folded, num_groups * static_cast<int>(n), eps);
+    return ggml_reshape_4d(ctx, folded, x->ne[0], x->ne[1], x->ne[2], n);
+}
+
 ggml_tensor* ggml_ext_group_norm_32(ggml_context* ctx,
                                     ggml_tensor* a) {
     const float eps = 1e-6f;  // default eps parameter
-    return ggml_group_norm(ctx, a, 32, eps);
+    return ggml_ext_group_norm_batched(ctx, a, 32, eps);
 }
 
 static bool ggml_ext_is_padded_1d(const ggml_tensor* x) {
@@ -840,7 +856,7 @@ ggml_tensor* ggml_ext_group_norm(ggml_context* ctx,
         b = ggml_reshape_4d(ctx, b, 1, 1, b->ne[0], 1);
     }
 
-    x = ggml_group_norm(ctx, x, num_groups, eps);
+    x = ggml_ext_group_norm_batched(ctx, x, num_groups, eps);
     if (w != nullptr && b != nullptr) {
         x = ggml_mul_inplace(ctx, x, w);
         x = ggml_add_inplace(ctx, x, b);
