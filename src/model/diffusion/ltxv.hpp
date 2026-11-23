@@ -520,6 +520,36 @@ namespace LTXV {
         return build_rope_matrix_from_frequencies(freqs, dim);
     }
 
+    __STATIC_INLINE__ ggml_tensor* apply_rope(GGMLRunnerContext* runner_ctx,
+                                              ggml_tensor* x,
+                                              ggml_tensor* pe,
+                                              bool rope_interleaved) {
+#ifdef SD_GGML_HAS_ROPE_FLUX
+        auto ctx     = runner_ctx->ggml_ctx;
+        auto backend = runner_ctx->backend;
+        if (backend != nullptr && !sd_backend_is_cpu(backend) && pe != nullptr &&
+            x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 && ggml_is_contiguous(x) &&
+            x->ne[0] % 2 == 0 && pe->ne[0] == 2 && pe->ne[1] == 2 &&
+            pe->ne[2] == x->ne[0] / 2 && pe->ne[3] == x->ne[2]) {
+            auto input = x;
+            if (!rope_interleaved) {
+                input = ggml_reshape_4d(ctx, input, x->ne[0] / 2, 2, x->ne[1], x->ne[2] * x->ne[3]);
+                input = ggml_cont(ctx, ggml_permute(ctx, input, 1, 0, 2, 3));
+                input = ggml_reshape_4d(ctx, input, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+            }
+            auto out = ggml_rope_flux(ctx, input, pe);
+            if (ggml_backend_supports_op(backend, out)) {
+                if (!rope_interleaved) {
+                    out = ggml_reshape_4d(ctx, out, 2, x->ne[0] / 2, x->ne[2], x->ne[1] * x->ne[3]);
+                    out = ggml_cont(ctx, ggml_permute(ctx, out, 1, 0, 2, 3));
+                }
+                return ggml_reshape_3d(ctx, out, x->ne[0], x->ne[2], x->ne[1] * x->ne[3]);
+            }
+        }
+#endif
+        return Rope::apply_rope(runner_ctx, x, pe, rope_interleaved);
+    }
+
     __STATIC_INLINE__ ggml_tensor* apply_hidden_rope(GGMLRunnerContext* runner_ctx,
                                                      ggml_tensor* x,
                                                      ggml_tensor* pe,
@@ -531,11 +561,11 @@ namespace LTXV {
         auto x4 = ggml_reshape_4d(ctx, x, dim_head, heads, x->ne[1], x->ne[2]);
         if (pe != nullptr && pe->ne[3] == x->ne[1] * heads) {
             auto x_flat   = ggml_reshape_4d(ctx, x4, dim_head, 1, x->ne[1] * heads, x->ne[2]);
-            auto out_flat = Rope::apply_rope(runner_ctx, x_flat, pe, rope_interleaved);
+            auto out_flat = apply_rope(runner_ctx, x_flat, pe, rope_interleaved);
             auto out4     = ggml_reshape_4d(ctx, out_flat, dim_head, heads, x->ne[1], x->ne[2]);
             return ggml_reshape_3d(ctx, out4, heads * dim_head, x->ne[1], x->ne[2]);
         }
-        return Rope::apply_rope(runner_ctx, x4, pe, rope_interleaved);
+        return apply_rope(runner_ctx, x4, pe, rope_interleaved);
     }
 
     struct TimestepEmbedder : public GGMLBlock {
@@ -766,7 +796,6 @@ namespace LTXV {
                 gates               = ggml_reshape_4d(ctx->ggml_ctx, gates, 1, heads, gate_logits->ne[1], gate_logits->ne[2]);
 
                 auto out4 = ggml_reshape_4d(ctx->ggml_ctx, out, dim_head, heads, out->ne[1], out->ne[2]);
-                gates     = ggml_repeat(ctx->ggml_ctx, gates, out4);
                 out4      = ggml_mul(ctx->ggml_ctx, out4, gates);
                 out       = ggml_reshape_3d(ctx->ggml_ctx, out4, heads * dim_head, out4->ne[2], out4->ne[3]);
             }
@@ -817,9 +846,9 @@ namespace LTXV {
             int64_t coeff = cross_attention_adaln ? 9 : 6;
             auto t        = ggml_reshape_3d(ctx->ggml_ctx, timestep, dim, coeff, batch);
             auto s        = ggml_reshape_3d(ctx->ggml_ctx, table, dim, coeff, 1);
-            auto e        = ggml_new_tensor_3d(ctx->ggml_ctx, timestep->type, dim, coeff, batch);
-            s             = ggml_repeat(ctx->ggml_ctx, s, e);
-            t             = ggml_repeat(ctx->ggml_ctx, t, e);
+            if (!ggml_are_same_shape(s, t)) {
+                s = ggml_repeat(ctx->ggml_ctx, s, t);
+            }
             auto out      = ggml_add(ctx->ggml_ctx, s, t);
             return ggml_ext_chunk(ctx->ggml_ctx, out, static_cast<int>(coeff), 1);
         }
@@ -831,9 +860,9 @@ namespace LTXV {
 
             auto t   = ggml_reshape_3d(ctx->ggml_ctx, prompt_timestep, dim, 2, batch);
             auto s   = ggml_reshape_3d(ctx->ggml_ctx, table, dim, 2, 1);
-            auto e   = ggml_new_tensor_3d(ctx->ggml_ctx, prompt_timestep->type, dim, 2, batch);
-            s        = ggml_repeat(ctx->ggml_ctx, s, e);
-            t        = ggml_repeat(ctx->ggml_ctx, t, e);
+            if (!ggml_are_same_shape(s, t)) {
+                s = ggml_repeat(ctx->ggml_ctx, s, t);
+            }
             auto out = ggml_add(ctx->ggml_ctx, s, t);
             return ggml_ext_chunk(ctx->ggml_ctx, out, 2, 1);
         }
@@ -977,7 +1006,9 @@ namespace LTXV {
 
             auto regs = ggml_reshape_3d(ctx->ggml_ctx, params["learnable_registers"], hidden_size, num_learnable_registers, 1);
             auto temp = ggml_new_tensor_3d(ctx->ggml_ctx, regs->type, regs->ne[0], regs->ne[1], hidden_states->ne[2]);
-            regs      = ggml_repeat(ctx->ggml_ctx, regs, temp);
+            if (!ggml_are_same_shape(regs, temp)) {
+                regs = ggml_repeat(ctx->ggml_ctx, regs, temp);
+            }
 
             auto regs_full = regs;
             for (int64_t i = 1; i < duplications; i++) {
@@ -1208,9 +1239,9 @@ namespace LTXV {
             }
             auto t      = ggml_reshape_3d(ctx->ggml_ctx, timestep, dim, coeff, timestep->ne[1]);
             auto s      = ggml_reshape_3d(ctx->ggml_ctx, table, dim, coeff, 1);
-            auto e      = ggml_new_tensor_3d(ctx->ggml_ctx, timestep->type, dim, coeff, timestep->ne[1]);
-            t           = ggml_repeat(ctx->ggml_ctx, t, e);
-            s           = ggml_repeat(ctx->ggml_ctx, s, e);
+            if (!ggml_are_same_shape(s, t)) {
+                s = ggml_repeat(ctx->ggml_ctx, s, t);
+            }
             auto out    = ggml_add(ctx->ggml_ctx, s, t);
             auto chunks = ggml_ext_chunk(ctx->ggml_ctx, out, static_cast<int>(coeff), 1);
             return std::vector<ggml_tensor*>(chunks.begin() + start, chunks.begin() + start + count);
@@ -1665,7 +1696,10 @@ namespace LTXV {
                                                          int64_t dim) {
             auto temp = ggml_new_tensor_3d(ctx->ggml_ctx, embedded_timestep->type, dim, 2, embedded_timestep->ne[1]);
             auto t    = ggml_repeat(ctx->ggml_ctx, ggml_reshape_3d(ctx->ggml_ctx, embedded_timestep, dim, 1, embedded_timestep->ne[1]), temp);
-            auto s    = ggml_repeat(ctx->ggml_ctx, ggml_reshape_3d(ctx->ggml_ctx, table, dim, 2, 1), temp);
+            auto s    = ggml_reshape_3d(ctx->ggml_ctx, table, dim, 2, 1);
+            if (!ggml_are_same_shape(s, temp)) {
+                s = ggml_repeat(ctx->ggml_ctx, s, temp);
+            }
             auto out  = ggml_add(ctx->ggml_ctx, s, t);
             return ggml_ext_chunk(ctx->ggml_ctx, out, 2, 1);
         }
