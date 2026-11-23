@@ -69,6 +69,12 @@ For MiniMax-H3 on Strix, see the [TAE-H3 and EasyCache example](minimax_h3.md#ta
 It records an explicit `threshold=0.20,start=0.20,end=0.80` policy and the
 resulting video/audio differences; reuse counts and quality depend on the input.
 
+For MiniMax-H3 on Apple Silicon (Metal), see the
+[Apple Silicon (Metal) comparison](minimax_h3.md#apple-silicon-metal).
+It records `threshold=0.30,start=0.15,end=0.85` as the faster policy and
+retains `threshold=0.20,start=0.20,end=0.80` as a more conservative option,
+with measured frame SSIM, LPIPS and audio RMSE for both.
+
 ### Cache-DIT (DiT Models)
 
 For DiT models like FLUX and QWEN, use block-level caching modes.
