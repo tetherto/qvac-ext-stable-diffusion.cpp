@@ -12,6 +12,7 @@
 #include "core/layer_split_partition.h"
 #include "core/segment_graph_bindings.h"
 #include "core/segment_weight_pipeline.h"
+#include "core/view_pinning.h"
 
 using namespace sd;
 
@@ -217,6 +218,7 @@ void GGMLRunner::pin_multi_device_nodes(ggml_backend_sched_t sched, ggml_cgraph*
     if (sched == nullptr || gf == nullptr) {
         return;
     }
+    PinnedNodeBackends pinned_nodes;
     ggml_backend_t current = runtime_backend;
     const int n_nodes      = ggml_graph_n_nodes(gf);
     for (int i = 0; i < n_nodes; i++) {
@@ -237,8 +239,10 @@ void GGMLRunner::pin_multi_device_nodes(ggml_backend_sched_t sched, ggml_cgraph*
             node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE) {
             continue;
         }
-        if (ggml_backend_supports_op(current, node)) {
-            ggml_backend_sched_set_tensor_backend(sched, node, current);
+        ggml_backend_t target = select_pin_backend(node, current, workspace_.cpu_backend(), pinned_nodes);
+        if (ggml_backend_supports_op(target, node)) {
+            ggml_backend_sched_set_tensor_backend(sched, node, target);
+            pinned_nodes[node] = target;
         }
     }
 }

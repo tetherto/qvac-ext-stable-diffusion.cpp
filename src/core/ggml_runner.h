@@ -304,7 +304,8 @@ protected:
 
     // Weightless ops have no scheduler anchor, so pin them to the most recent
     // weight device. Views must stay unpinned or cross-device copies can be
-    // skipped for their consumers.
+    // skipped for their consumers. In-place ops write into the buffer of the
+    // node they modify, so they are pinned to the backend that node runs on.
     void pin_multi_device_nodes(ggml_backend_sched_t sched, ggml_cgraph* gf, ggml_cgraph* original_graph = nullptr);
 
     bool is_multi_device() const {
