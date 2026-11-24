@@ -2,6 +2,7 @@
 #define __SD_CORE_GGML_EXTEND_H__
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "ggml-backend.h"
@@ -242,12 +243,22 @@ ggml_tensor* ggml_ext_layer_norm(ggml_context* ctx,
                                  ggml_tensor* b,
                                  float eps = EPS);
 
+using ggml_ext_op_support_t = std::function<bool(const ggml_tensor*)>;
+
+ggml_ext_op_support_t ggml_ext_backend_op_support(ggml_backend_t backend);
+
+ggml_tensor* ggml_ext_group_norm_as_row_norm(ggml_context* ctx,
+                                             ggml_tensor* x,
+                                             int num_groups,
+                                             float eps);
+
 ggml_tensor* ggml_ext_group_norm(ggml_context* ctx,
                                  ggml_tensor* x,
                                  ggml_tensor* w,
                                  ggml_tensor* b,
-                                 int num_groups = 32,
-                                 float eps      = 1e-6f);
+                                 int num_groups                        = 32,
+                                 float eps                             = 1e-6f,
+                                 const ggml_ext_op_support_t& supports = nullptr);
 
 ggml_tensor* ggml_ext_timestep_embedding(
     ggml_context* ctx,

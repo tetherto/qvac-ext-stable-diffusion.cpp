@@ -164,6 +164,41 @@ ggml_tensor* ggml_ext_group_norm_32(ggml_context* ctx,
     return ggml_ext_group_norm_batched(ctx, a, 32, eps);
 }
 
+ggml_ext_op_support_t ggml_ext_backend_op_support(ggml_backend_t backend) {
+    if (backend == nullptr) {
+        return nullptr;
+    }
+    return [backend](const ggml_tensor* node) { return ggml_backend_supports_op(backend, node); };
+}
+
+ggml_tensor* ggml_ext_group_norm_as_row_norm(ggml_context* ctx, ggml_tensor* x, int num_groups, float eps) {
+    if (!ggml_is_contiguous(x)) {
+        x = ggml_cont(ctx, x);
+    }
+    const int64_t group_count = num_groups * x->ne[3];
+    const int64_t group_size  = x->ne[0] * x->ne[1] * x->ne[2] / num_groups;
+    auto rows                 = ggml_reshape_2d(ctx, x, group_size, group_count);
+    rows                      = ggml_norm(ctx, rows, eps);
+    return ggml_reshape_4d(ctx, rows, x->ne[0], x->ne[1], x->ne[2], x->ne[3]);
+}
+
+static const ggml_tensor* ggml_ext_find_reshaped_node(const ggml_tensor* tensor) {
+    return tensor->op == GGML_OP_RESHAPE ? tensor->src[0] : tensor;
+}
+
+static ggml_tensor* ggml_ext_group_norm_supported(ggml_context* ctx,
+                                                  ggml_tensor* x,
+                                                  int num_groups,
+                                                  float eps,
+                                                  const ggml_ext_op_support_t& supports) {
+    ggml_tensor* group_norm = ggml_ext_group_norm_batched(ctx, x, num_groups, eps);
+    if (!supports || x->ne[2] % num_groups != 0 || supports(ggml_ext_find_reshaped_node(group_norm))) {
+        return group_norm;
+    }
+    ggml_tensor* row_norm = ggml_ext_group_norm_as_row_norm(ctx, x, num_groups, eps);
+    return supports(ggml_ext_find_reshaped_node(row_norm)) ? row_norm : group_norm;
+}
+
 static bool ggml_ext_is_padded_1d(const ggml_tensor* x) {
     return x->nb[0] == ggml_type_size(x->type) &&
            x->nb[2] == x->nb[1] * x->ne[1] &&
@@ -850,13 +885,14 @@ ggml_tensor* ggml_ext_group_norm(ggml_context* ctx,
                                  ggml_tensor* w,
                                  ggml_tensor* b,
                                  int num_groups,
-                                 float eps) {
+                                 float eps,
+                                 const ggml_ext_op_support_t& supports) {
     if (ggml_n_dims(x) >= 3 && w != nullptr && b != nullptr) {
         w = ggml_reshape_4d(ctx, w, 1, 1, w->ne[0], 1);
         b = ggml_reshape_4d(ctx, b, 1, 1, b->ne[0], 1);
     }
 
-    x = ggml_ext_group_norm_batched(ctx, x, num_groups, eps);
+    x = ggml_ext_group_norm_supported(ctx, x, num_groups, eps, supports);
     if (w != nullptr && b != nullptr) {
         x = ggml_mul_inplace(ctx, x, w);
         x = ggml_add_inplace(ctx, x, b);

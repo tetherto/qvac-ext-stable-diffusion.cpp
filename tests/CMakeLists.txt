@@ -89,6 +89,10 @@ target_include_directories(test-h3-localops PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-h3-localops PRIVATE stable-diffusion)
 add_test(NAME test-h3-localops COMMAND test-h3-localops)
 
+add_executable(test-group-norm-row-norm test-group-norm-row-norm.cpp)
+target_link_libraries(test-group-norm-row-norm PRIVATE stable-diffusion)
+add_test(NAME test-group-norm-row-norm COMMAND test-group-norm-row-norm)
+
 # CoreML sidecars. Needs fixtures from tests/coreml/make_fixtures.py (coremltools), so it is not an add_test:
 #   python tests/coreml/make_fixtures.py build/coreml-fixtures && build/bin/test-coreml build/coreml-fixtures
 if(SD_COREML AND NOT SD_BUILD_SHARED_LIBS)
