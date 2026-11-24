@@ -37,6 +37,10 @@ file(STRINGS "${sd_ggml_public_include}/ggml.h" sd_ggml_rope_flux_decl REGEX "gg
 if(sd_ggml_rope_flux_decl)
     target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_ROPE_FLUX=1)
 endif()
+file(STRINGS "${sd_ggml_public_include}/ggml.h" sd_ggml_rope_flux_ext_decl REGEX "ggml_rope_flux_ext")
+if(sd_ggml_rope_flux_ext_decl)
+    target_compile_definitions(${SD_LIB} PUBLIC SD_GGML_HAS_ROPE_FLUX_EXT=1)
+endif()
 
 # Probe the selected source headers; QVAC and Leejet carry different extensions.
 function(sd_check_ggml_feature feature header symbol)

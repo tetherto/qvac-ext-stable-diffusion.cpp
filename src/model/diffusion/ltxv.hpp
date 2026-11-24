@@ -531,6 +531,14 @@ namespace LTXV {
             x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 && ggml_is_contiguous(x) &&
             x->ne[0] % 2 == 0 && pe->ne[0] == 2 && pe->ne[1] == 2 &&
             pe->ne[2] == x->ne[0] / 2 && pe->ne[3] == x->ne[2]) {
+#ifdef SD_GGML_HAS_ROPE_FLUX_EXT
+            if (!rope_interleaved && sd_backend_is(backend, "CUDA")) {
+                auto out = ggml_rope_flux_ext(ctx, x, pe, true);
+                if (ggml_backend_supports_op(backend, out)) {
+                    return ggml_reshape_3d(ctx, out, x->ne[0], x->ne[2], x->ne[1] * x->ne[3]);
+                }
+            }
+#endif
             auto input = x;
             if (!rope_interleaved) {
                 input = ggml_reshape_4d(ctx, input, x->ne[0] / 2, 2, x->ne[1], x->ne[2] * x->ne[3]);
