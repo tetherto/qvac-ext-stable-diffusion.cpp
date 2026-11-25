@@ -56,6 +56,7 @@ engine/core pair with fixed seeds and CPU RNG. It writes images, verbose logs,
 pixel hashes and differences. Exact parity and repeatability are required for
 exit0; nonzero differences are evidence to investigate, not proof of quality
 regression. Timing includes startup and is not a performance acceptance gate.
+Use `--backend mtl0` for Metal model runs; its GGML registry is named `MTL`.
 Use normal freshly installed preflight output trees, not `--installed-prefix`
 trees, for this command.
 

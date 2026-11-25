@@ -301,7 +301,7 @@ static int run_test(const char* registry_name, const char* operation) {
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::fprintf(stderr, "usage: %s CPU|CUDA|Vulkan|Metal rope|pad|im2col3d\n", argv[0]);
+        std::fprintf(stderr, "usage: %s CPU|CUDA|Vulkan|MTL rope|pad|im2col3d\n", argv[0]);
         return 1;
     }
     return run_test(argv[1], argv[2]);

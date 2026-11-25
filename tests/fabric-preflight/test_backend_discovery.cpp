@@ -9,7 +9,7 @@ static bool has_backend(const char* name) {
 
 int main(int argc, char** argv) {
     if (argc != 3) {
-        std::fprintf(stderr, "usage: test_backend_discovery MODULE_DIRECTORY CPU|CUDA|Metal\n");
+        std::fprintf(stderr, "usage: test_backend_discovery MODULE_DIRECTORY CPU|CUDA|MTL\n");
         return 1;
     }
     ggml_backend_load_all_from_path(argv[1]);

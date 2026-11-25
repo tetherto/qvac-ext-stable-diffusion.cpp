@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument("--fabric", required=True, type=Path)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--backend", choices=["cpu", "cuda0", "metal"], required=True)
+    parser.add_argument("--backend", choices=["cpu", "cuda0", "mtl0"], required=True)
     return parser.parse_args()
 
 

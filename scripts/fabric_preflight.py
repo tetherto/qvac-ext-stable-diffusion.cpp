@@ -30,6 +30,7 @@ def revision(source):
 class Preflight:
     def __init__(self, args):
         self.args = args
+        self.registry = "MTL" if args.backend == "Metal" else args.backend
         self.engine = Path(__file__).resolve().parents[1]
         self.source = args.ggml_source.resolve()
         self.output = args.output.resolve()
@@ -91,7 +92,7 @@ class Preflight:
                                ["-DCMAKE_PREFIX_PATH=" + str(self.prefix)])
                 and self.build("probes-build", build, ["all"])):
             return
-        self.run("discovery", [build / "test_backend_discovery", self.prefix / "lib", self.args.backend])
+        self.run("discovery", [build / "test_backend_discovery", self.prefix / "lib", self.registry])
         if self.args.backend == "CUDA":
             self.run("cpu-with-gpu-hidden", [build / "test_backend_discovery", self.prefix / "lib", "CPU"],
                      env={**self.env, "CUDA_VISIBLE_DEVICES": "-1"})
@@ -99,7 +100,7 @@ class Preflight:
 
     def run_operations(self, build):
         for operation in OPERATIONS:
-            self.run("op-" + operation, [build / "test_diffusion_ops", self.args.backend, operation],
+            self.run("op-" + operation, [build / "test_diffusion_ops", self.registry, operation],
                      cwd=self.prefix / "lib")
 
     def check_engine(self):
