@@ -178,9 +178,16 @@ Use `--params-backend diffusion=disk` instead when reducing system RAM residency
 
 ## FLUX.2-klein 4B Core ML validation
 
+To run FLUX.2-klein 4B on the Apple Neural Engine, use the chunked FP16 export
+and `--coreml-diffusion` described in [CoreML sidecars](coreml.md#flux2-klein-4b):
+on an M2 MacBook Air it takes a 512x512 image from 45.4 s to 12.8 s. This section
+covers the capture and check tools it relies on, and the earlier complete-model
+FP32 export, which runs on the GPU (`SD_COREML_COMPUTE_UNITS=all`).
+
 The engine has an optional Core ML denoiser runtime on macOS. It accepts a
-compiled `.mlmodelc` sidecar through `SDCPP_FLUX2_COREML_MODEL`. The sidecar
-must contain the complete FLUX.2-klein denoiser. Without the variable, the
+compiled `.mlmodelc`, or a folder of `chunk<k>.mlmodelc` files run in order,
+through `--coreml-diffusion` (`coreml_diffusion_path`), or through
+`SDCPP_FLUX2_COREML_MODEL` when that is not given. Without either, the
 existing GGML path remains in use.
 
 Build the runtime alongside Metal:
@@ -190,10 +197,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSD_METAL=ON -DSD_COREML=ON
 cmake --build build --config Release -j 8
 ```
 
-The current sidecar interface requires fixed-shape, contiguous float32 Core ML
+The current sidecar interface requires fixed-shape float32 Core ML
 multiarrays named `latent`, `timesteps`, and `context`. It may additionally
-accept `pooled` and `guidance` when present. Its float32 output must be named
-`output` and match the latent shape. Core ML dimensions reverse GGML's `ne`
+accept `pooled` and `guidance` when present. Its output must be named
+`output` and match the latent shape. In a folder of chunks, any chunk may take
+these inputs, and every other input must be an earlier chunk's output. Core ML dimensions reverse GGML's `ne`
 order; for example, GGML `[W,H,C,N]` maps to Core ML `[N,C,H,W]`. The runtime
 supports text-to-image without reference latents, skipped layers, or LoRA.
 Invalid sidecars and unsupported inputs fail instead of falling back to GGML.
@@ -284,7 +292,7 @@ python3 script/export_flux2_klein_coreml.py check \
 On the 16 GiB M4, this captured second call returned 0 finite values out of
 524,288 in the official FP16 PyTorch model. The FP16 Core ML conversion also
 returned 0 finite values on the same call. The failure therefore precedes
-Core ML conversion; the current FP16 export is unsuitable for multi-step image
+Core ML conversion; a plain FP16 export is unsuitable for multi-step image
 generation. Do not treat its first-call parity result or measured runtime as
 a working speedup. A BF16 or numerically stable mixed-precision export is
 needed before further end-to-end benchmarking. The same second call returned
@@ -326,7 +334,9 @@ comparison passes. It uses paired cosine and sine values for RoPE so no
 intermediate tensor exceeds Core ML's rank-5 limit, and retains fractional
 timesteps in float32 through their sinusoidal embedding. Older traces must be
 regenerated. Conversion preserves the traced model's explicit float32 math.
-The exporter remains experimental until the multi-step failure is resolved.
+`--fp16-rescale 8` resolves the multi-step failure exactly: it divides what
+writes the residual streams by 8, which every LayerNorm read of them undoes. The
+`chunk` mode uses it by default ([CoreML sidecars](coreml.md#flux2-klein-4b)).
 
 ```sh
 python3 script/export_flux2_klein_coreml.py trace \

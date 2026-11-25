@@ -241,7 +241,7 @@ namespace sd::model_builders {
         if (strlen(SAFE_STR(sd_ctx_params->coreml_tae_decoder_path)) > 0) {
             auto coreml_tae = std::dynamic_pointer_cast<CoreMLTinyImageAutoEncoder>(result.vae);
             if (!coreml_tae) {
-                LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL model");
+                LOG_ERROR("coreml_tae_decoder_path needs the image tiny autoencoder: SDXS, or --taesd with an SD/SDXL or FLUX.2 model");
                 return false;
             }
             if (!coreml_tae->is_coreml_ready()) {

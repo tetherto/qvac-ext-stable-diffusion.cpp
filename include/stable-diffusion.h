@@ -283,8 +283,10 @@ typedef struct {
     // fraction of reported free memory, execute only that graph on CPU.
     bool vae_auto_cpu_fallback;
     float vae_auto_cpu_fallback_memory_ratio;
-    const char* coreml_unet_path;         // UNet as a CoreML model (.mlmodelc/.mlpackage) or a folder of chunks; needs SD_COREML
+    const char* coreml_unet_path;         // deprecated alias of coreml_diffusion_path, used when that is empty
     const char* coreml_tae_decoder_path;  // tiny autoencoder decoder as a CoreML model; needs SD_COREML
+    const char* coreml_diffusion_path;    // diffusion model as a CoreML model (.mlmodelc/.mlpackage) or a folder of
+                                          // chunks: the SD 1.x/2.x/SDXL UNet or the FLUX.2-klein denoiser; needs SD_COREML
 } sd_ctx_params_t;
 
 typedef struct {

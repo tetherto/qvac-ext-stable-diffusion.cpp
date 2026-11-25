@@ -22,7 +22,8 @@ static bool build_flux2(const sd::model_builders::Context& ctx, const TokenizerC
                                                                         "model.diffusion_model",
                                                                         version,
                                                                         weight_manager,
-                                                                        sd_ctx_params->model_args);
+                                                                        sd_ctx_params->model_args,
+                                                                        sd_ctx_params->coreml_diffusion_path);
     return true;
 }
 

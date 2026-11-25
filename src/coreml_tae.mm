@@ -15,6 +15,8 @@ public:
     std::vector<int64_t> latent_shape;
     std::vector<int64_t> image_shape;
 
+    int64_t scale() const override { return image_shape[2] / latent_shape[2]; }
+
     bool decode(const float* latent, const int64_t shape[4], float* image, const int64_t out_shape[4]) override {
         @autoreleasepool {
             if (!std::equal(latent_shape.begin(), latent_shape.end(), shape)) {
@@ -93,11 +95,11 @@ std::unique_ptr<CoreMLTAEDecoder> CoreMLTAEDecoder::load(const std::string& path
             return nullptr;
         }
         const std::vector<int64_t>& z = impl->latent_shape;
-        const std::vector<int64_t> expected = {z[0], 3, 8 * z[2], 8 * z[3]};
-        if (impl->image_shape != expected) {
-            LOG_ERROR("coreml tae: %s maps latent %s to image %s, expected %s",
-                      path.c_str(), shape_str(z.data(), 4).c_str(), shape_str(impl->image_shape.data(), 4).c_str(),
-                      shape_str(expected.data(), 4).c_str());
+        const int64_t s               = z[2] > 0 ? impl->image_shape[2] / z[2] : 0;
+        const std::vector<int64_t> expected = {z[0], 3, s * z[2], s * z[3]};
+        if ((s != 8 && s != 16) || impl->image_shape != expected) {
+            LOG_ERROR("coreml tae: %s maps latent %s to image %s, expected 8x or 16x the latent size with 3 channels",
+                      path.c_str(), shape_str(z.data(), 4).c_str(), shape_str(impl->image_shape.data(), 4).c_str());
             return nullptr;
         }
         LOG_INFO("coreml tae: %s ready in %.2f s, compute units %s, latent %s, image %s",

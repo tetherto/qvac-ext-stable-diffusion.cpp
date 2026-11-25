@@ -93,12 +93,14 @@ struct FluxCoreMLRunner : public Flux::FluxRunner {
                      const std::string prefix                     = "",
                      SDVersion version                            = VERSION_FLUX,
                      std::shared_ptr<RunnerWeightManager> manager = nullptr,
-                     const char* model_args                       = nullptr)
+                     const char* model_args                       = nullptr,
+                     const char* coreml_path                      = nullptr)
         : Flux::FluxRunner(backend, tensors, prefix, version, manager, model_args) {
-        const char* path = std::getenv("SDCPP_FLUX2_COREML_MODEL");
+        // coreml_diffusion_path (--coreml-diffusion); SDCPP_FLUX2_COREML_MODEL is the older way to pass it.
+        const char* path = coreml_path && coreml_path[0] != '\0' ? coreml_path : std::getenv("SDCPP_FLUX2_COREML_MODEL");
         coreml_requested = path && path[0] != '\0';
         if (coreml_requested && version != VERSION_FLUX2_KLEIN) {
-            LOG_ERROR("SDCPP_FLUX2_COREML_MODEL only supports FLUX.2-klein");
+            LOG_ERROR("the Core ML FLUX denoiser (coreml_diffusion_path) only supports FLUX.2-klein");
         }
 #ifdef SD_USE_COREML
         else if (coreml_requested) {
@@ -111,7 +113,7 @@ struct FluxCoreMLRunner : public Flux::FluxRunner {
         }
 #else
         else if (coreml_requested) {
-            LOG_ERROR("SDCPP_FLUX2_COREML_MODEL requires a build with SD_COREML=ON");
+            LOG_ERROR("coreml_diffusion_path requires a build with SD_COREML=ON");
         }
 #endif
     }

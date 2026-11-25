@@ -1,13 +1,15 @@
 #ifndef __COREML_UTILS_H__
 #define __COREML_UTILS_H__
 
-// Helpers shared by the CoreML sidecars (coreml_unet.mm, coreml_tae.mm). Objective-C++ only.
+// Helpers shared by the CoreML sidecars (coreml_unet.mm, coreml_tae.mm, flux_coreml.mm). Objective-C++ only.
 
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -182,6 +184,41 @@ inline bool copy_output(MLMultiArray* result, int64_t n, float* out, const char*
         LOG_ERROR("%s: unsupported output data type", tag);
     }
     return ok;
+}
+
+// The chunks in `dir`: files named <prefix>chunk<k>.mlmodelc or .mlpackage (any case), k = 1, 2, ...
+// An .mlmodelc is preferred over an .mlpackage of the same chunk. Empty if `dir` holds no chunks.
+inline std::vector<std::string> find_chunks(const std::string& dir, const char* tag) {
+    NSArray<NSString*>* entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@(dir.c_str()) error:nil];
+    const std::regex pattern("^(.*)chunk([0-9]+)\\.(mlmodelc|mlpackage)$", std::regex::icase);
+    std::map<int, std::string> chunks;
+    std::string prefix;
+    for (NSString* entry in entries) {
+        std::smatch m;
+        std::string file = entry.UTF8String;
+        if (!std::regex_match(file, m, pattern)) {
+            continue;
+        }
+        if (!prefix.empty() && m[1].str() != prefix) {
+            LOG_ERROR("%s: %s holds chunks of more than one model (%schunk*, %schunk*)",
+                      tag, dir.c_str(), prefix.c_str(), m[1].str().c_str());
+            return {};
+        }
+        prefix          = m[1].str();
+        std::string& to = chunks[std::stoi(m[2].str())];
+        if (to.empty() || m[3].str() == "mlmodelc") {
+            to = dir + "/" + file;
+        }
+    }
+    std::vector<std::string> paths;
+    for (auto& [index, path] : chunks) {
+        if (index != (int)paths.size() + 1) {
+            LOG_ERROR("%s: %s has no chunk %zu", tag, dir.c_str(), paths.size() + 1);
+            return {};
+        }
+        paths.push_back(path);
+    }
+    return paths;
 }
 
 }  // namespace sd_coreml

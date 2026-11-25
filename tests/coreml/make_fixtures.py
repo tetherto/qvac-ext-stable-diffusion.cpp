@@ -7,7 +7,10 @@ They have the I/O of the real sidecars but a few ops each, with outputs test_cor
          or text_embeds (P values) followed by time_ids (K values); time_ids use V[k] = 0.001 * (k + 1)
          unet_chunks/ computes the same as unet_b1 in two chunks: unet_chunk1 returns 0.5 * sample + 0.001 * timestep,
          unet_chunk2 takes that and encoder_hidden_states
-  tae:   image = nearest 8x upsampling of latent channels 0..2
+  flux:  output = 0.5 * latent + sum_{t,d} context[0, 0, t, d] * W[t, d] + 0.001 * timesteps (FLUX.2 sidecar I/O:
+         latent [1, C, H, W], timesteps [1, 1, 1, 1], context [1, 1, T, D]); flux_chunks/ computes it in two chunks
+         that pass an fp16 tensor between them
+  tae:   image = nearest 8x upsampling of latent channels 0..2 (tae_x16: 16x, the scale of TAEF2)
 
   python tests/coreml/make_fixtures.py OUT_DIR
 
@@ -95,6 +98,43 @@ def unet_chunks():
                        minimum_deployment_target=ct.target.iOS17) for p in (chunk1, chunk2)]
 
 
+def flux_body(latent, timesteps, context):
+    c = mb.reduce_sum(x=mb.mul(x=context, y=weights(False)[None]), axes=[1, 2, 3], keep_dims=True)
+    return mb.add(x=mb.add(x=mb.mul(x=latent, y=np.float32(0.5)), y=c), y=mb.mul(x=timesteps, y=np.float32(0.001)),
+                  name="output")
+
+
+FLUX_SPECS = {"latent": (1, C, H, W), "timesteps": (1, 1, 1, 1), "context": (1, 1, T, D)}
+
+
+def flux():
+    @mb.program(input_specs=[mb.TensorSpec(s, types.fp32) for s in FLUX_SPECS.values()], opset_version=ct.target.iOS17)
+    def prog(latent, timesteps, context):
+        return flux_body(latent, timesteps, context)
+
+    return ct.convert(prog, convert_to="mlprogram", compute_precision=ct.precision.FLOAT32,
+                      minimum_deployment_target=ct.target.iOS17)
+
+
+def flux_chunks():
+    """flux() in two chunks, like the exported denoiser: chunk2 takes chunk1's fp16 output and an engine input."""
+
+    @mb.program(input_specs=[mb.TensorSpec(FLUX_SPECS["latent"], types.fp32),
+                             mb.TensorSpec(FLUX_SPECS["timesteps"], types.fp32)], opset_version=ct.target.iOS17)
+    def chunk1(latent, timesteps):
+        h = mb.add(x=mb.mul(x=latent, y=np.float32(0.5)), y=mb.mul(x=timesteps, y=np.float32(0.001)))
+        return mb.cast(x=h, dtype="fp16", name="hidden")
+
+    @mb.program(input_specs=[mb.TensorSpec(FLUX_SPECS["latent"], types.fp16),
+                             mb.TensorSpec(FLUX_SPECS["context"], types.fp32)], opset_version=ct.target.iOS17)
+    def chunk2(hidden, context):
+        c = mb.reduce_sum(x=mb.mul(x=context, y=weights(False)[None]), axes=[1, 2, 3], keep_dims=True)
+        return mb.add(x=mb.cast(x=hidden, dtype="fp32"), y=c, name="output")
+
+    return [ct.convert(p, convert_to="mlprogram", compute_precision=ct.precision.FLOAT32,
+                       minimum_deployment_target=ct.target.iOS17) for p in (chunk1, chunk2)]
+
+
 def tae(scale):
     @mb.program(input_specs=[mb.TensorSpec((1, C, H, W), types.fp32)], opset_version=ct.target.iOS17)
     def prog(latent):
@@ -116,10 +156,14 @@ def main():
         "unet_y_b1.mlpackage": unet(1, vector="y"),
         "unet_text_time_b2.mlpackage": unet(2, dtype=types.fp16, channels_first=True, vector="text_time"),
         "tae.mlpackage": tae(8),
-        "tae_wrong_scale.mlpackage": tae(4),  # [1, 4, 8, 8] -> [1, 3, 32, 32]: not a tiny decoder's 8x
+        "tae_x16.mlpackage": tae(16),
+        "tae_wrong_scale.mlpackage": tae(4),  # [1, 4, 8, 8] -> [1, 3, 32, 32]: neither 8x nor 16x
     }
     for i, model in enumerate(unet_chunks()):
         fixtures[f"unet_chunks/unet_chunk{i + 1}.mlpackage"] = model
+    fixtures["flux.mlpackage"] = flux()
+    for i, model in enumerate(flux_chunks()):
+        fixtures[f"flux_chunks/chunk{i + 1}.mlpackage"] = model
     for name, model in fixtures.items():
         (out / name).parent.mkdir(parents=True, exist_ok=True)
         model.save(str(out / name))

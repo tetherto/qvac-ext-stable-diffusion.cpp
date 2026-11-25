@@ -1,6 +1,6 @@
-## Running the UNet and the tiny decoder on the Apple Neural Engine (CoreML sidecars)
+## Running the diffusion model and the tiny decoder on the Apple Neural Engine (CoreML sidecars)
 
-On Apple devices, two parts of the pipeline can run as CoreML models on the Neural Engine (ANE): the UNet of SD 1.x/2.x and SDXL models (`--coreml-unet`), and the tiny autoencoder's decoder used by SDXS and `--taesd` (`--coreml-tae`). The text encoder, tokenizer and scheduler stay on ggml (Metal/CPU). The ggml UNet weights are not loaded when the UNet runs on CoreML.
+On Apple devices, two parts of the pipeline can run as CoreML models on the Neural Engine (ANE): the diffusion model (`--coreml-diffusion`), which is the UNet of SD 1.x/2.x and SDXL models or the [FLUX.2-klein 4B](#flux2-klein-4b) denoiser, and the tiny autoencoder's decoder used by SDXS and `--taesd` (`--coreml-tae`), including TAEF2 for FLUX.2. The text encoder, tokenizer and scheduler stay on ggml (Metal/CPU). The ggml diffusion weights are not loaded when the diffusion model runs on CoreML. `--coreml-unet` is an alias of `--coreml-diffusion`.
 
 SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR). On an M2, running the tiny decoder on the ANE as well takes a whole image from 1,728 ms (all ggml Metal) to about 95 ms. [examples/ios-bench](../examples/ios-bench/README.md) reproduces this comparison on macOS and iOS.
 
@@ -11,7 +11,7 @@ cmake -B build -DSD_METAL=ON -DSD_COREML=ON
 cmake --build build --config Release
 ```
 
-`SD_COREML` needs an Apple platform. It is the same option that builds the Core ML FLUX.2 denoiser (see [performance](./performance.md)); for SD 1.x/2.x and SDXL it adds the `--coreml-unet` and `--coreml-tae` options to `sd-cli` (`coreml_unet_path` and `coreml_tae_decoder_path` in `sd_ctx_params_t`). The UNet runs through `CoreMLUNetRunner` (`src/model/diffusion/coreml_unet_runner.h`) and the decoder through `CoreMLTinyImageAutoEncoder` (`src/model/vae/coreml_tae_runner.h`).
+`SD_COREML` needs an Apple platform. It adds the `--coreml-diffusion` and `--coreml-tae` options to `sd-cli` (`coreml_diffusion_path` and `coreml_tae_decoder_path` in `sd_ctx_params_t`; `coreml_unet_path` is a deprecated alias of `coreml_diffusion_path`, used when that is empty). The UNet runs through `CoreMLUNetRunner` (`src/model/diffusion/coreml_unet_runner.h`), the FLUX.2 denoiser through `FluxCoreMLRunner` (`src/model/diffusion/flux_coreml_runner.h`) and the decoder through `CoreMLTinyImageAutoEncoder` (`src/model/vae/coreml_tae_runner.h`).
 
 ### Regenerate the artifacts
 
@@ -27,13 +27,13 @@ python script/coreml/export_artifacts.py --out artifacts --skip-existing        
 | Model | Artifact | Used as |
 | --- | --- | --- |
 | SDXS-512-DreamShaper | `sdxs-f16.gguf` (sd-cli -M convert) | `-m` |
-| | `sdxs_unet_fp16.mlmodelc` | `--coreml-unet` |
+| | `sdxs_unet_fp16.mlmodelc` | `--coreml-diffusion` |
 | | `sdxs_tae_decoder.mlmodelc` | `--coreml-tae` |
-| SD 2.1-base | `sd21base-Q8_0.gguf` (sd-cli -M convert; the ggml UNet is only used without `--coreml-unet`) | `-m` |
-| | `sd21base_unet_p6.mlmodelc` (6-bit palette, batch 2, split-einsum attention) | `--coreml-unet`, with `--prediction eps` |
+| SD 2.1-base | `sd21base-Q8_0.gguf` (sd-cli -M convert; the ggml UNet is only used without `--coreml-diffusion`) | `-m` |
+| | `sd21base_unet_p6.mlmodelc` (6-bit palette, batch 2, split-einsum attention) | `--coreml-diffusion`, with `--prediction eps` |
 | | `taesd.safetensors`, `taesd_decoder.mlmodelc` | `--taesd`, `--coreml-tae` |
 | SDXL 1.0 base (`--models sdxl`, not in the default set) | `sd_xl_base_1.0.safetensors` (the checkpoint itself; its UNet is not loaded) | `-m` |
-| | `sdxl_unet_mixed/` (two chunks, 4/6-bit mixed palette, batch 2, split-einsum attention, 768x768) | `--coreml-unet` |
+| | `sdxl_unet_mixed/` (two chunks, 4/6-bit mixed palette, batch 2, split-einsum attention, 768x768) | `--coreml-diffusion` |
 | | `taesdxl.safetensors`, `taesdxl_decoder_768.mlmodelc` | `--taesd`, `--coreml-tae` |
 
 On this branch, `sd-cli -M convert` reads only `text_encoder/` from a diffusers folder, so the GGUF files come out without a UNet or VAE. Pass `--sd-cli` an `sd-cli` built from `master` until that is fixed.
@@ -81,16 +81,24 @@ python script/coreml/convert_tae_decoder.py --vae sdxs-512-dreamshaper/vae --out
 
 The ggml decoder is unusually slow on Metal for so small a model (1.2M parameters, about 1.1 s at 512x512), so the decoder sidecar saves more time per image than the UNet one: it takes about 10-20 ms on an M2.
 
+For FLUX.2, pass [madebyollin/taef2](https://huggingface.co/madebyollin/taef2)'s `taef2.safetensors` itself; `--vae` also takes a `.safetensors` file in the original taesd key layout:
+
+```bash
+python script/coreml/convert_tae_decoder.py --vae taef2.safetensors --size 512x512 --out taef2_decoder_512.mlpackage --compile
+```
+
+TAEF2 decodes 32-channel latents, while FLUX.2 hands the decoder its 128-channel latent with 2x2 patches folded into channels, so the exported graph starts with the same unpatchify as sd.cpp's decoder and returns 16 image pixels per latent pixel. On an M2 it decodes a 512x512 image in 11 ms on the ANE (67 dB against PyTorch fp32, 58 dB against the ggml TAEF2); the full FLUX.2 VAE takes 4.6 s on Metal.
+
 ### Run
 
 ```bash
-sd-cli -m sdxs-f16.gguf --coreml-unet sdxs_unet_fp16.mlmodelc --coreml-tae sdxs_tae_decoder.mlmodelc \
+sd-cli -m sdxs-f16.gguf --coreml-diffusion sdxs_unet_fp16.mlmodelc --coreml-tae sdxs_tae_decoder.mlmodelc \
        -p "portrait of a lovely cat" --cfg-scale 1 --steps 1
 ```
 
-The two options are independent. `-m` still has to point at the full model: the text encoder and VAE come from it, and the UNet tensors in it are skipped. `--coreml-tae` needs the image tiny autoencoder (SDXS, or `--taesd` with an SD or SDXL model); with `--vae-tiling` the decoder falls back to ggml, because the CoreML decoder has one fixed latent shape. `SD_COREML_COMPUTE_UNITS` picks where CoreML runs: `cpu_ne` (default), `all`, `cpu_gpu` or `cpu`.
+The two options are independent. `-m` still has to point at the full model: the text encoder and VAE come from it, and the UNet tensors in it are skipped. `--coreml-tae` needs the image tiny autoencoder (SDXS, or `--taesd` with an SD, SDXL or FLUX.2 model); with `--vae-tiling` the decoder falls back to ggml, because the CoreML decoder has one fixed latent shape. `SD_COREML_COMPUTE_UNITS` picks where CoreML runs: `cpu_ne` (default), `all`, `cpu_gpu` or `cpu`.
 
-The sidecars run fixed graphs, so some options are rejected instead of being silently ignored. With `--coreml-unet`, a generation with circular padding (`--circular`, `--circularx`, `--circulary`) or any LoRA fails with an error, as with the Core ML FLUX.2 denoiser. With `--coreml-tae`, circular padding, tiling and encoding use the ggml tiny decoder, which stays loaded.
+The sidecars run fixed graphs, so some options are rejected instead of being silently ignored. With `--coreml-diffusion`, a generation with circular padding (`--circular`, `--circularx`, `--circulary`) or any LoRA fails with an error; the FLUX.2 denoiser also rejects reference images. With `--coreml-tae`, circular padding, tiling and encoding use the ggml tiny decoder, which stays loaded.
 
 CFG with a scale above 1 uses the pipeline's batched CFG (`--batched-cfg`, on by default): a UNet exported with `--batch 2` takes both passes in one call, and a batch-1 UNet runs them one after the other.
 
@@ -98,7 +106,7 @@ The first load on a device compiles each model for the ANE (about 10 s for the S
 
 ### Apple's pre-converted UNets
 
-The UNets Apple publishes on Hugging Face ([apple/coreml-stable-diffusion-2-1-base-palettized](https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized) and the other `apple/coreml-stable-diffusion-*` repos) work as `--coreml-unet`. Use the `split_einsum_v2/compiled/Unet.mlmodelc` variant, which is made for the ANE. These models take float16 inputs, the text context as `[N, D, 1, T]`, and a batch of 2: CFG's conditional and unconditional passes run in one call. sd.cpp handles all three; the batch of 2 needs a CFG scale above 1 and no ControlNet, image CFG, skip layers or step caching. They do not record their prediction type, so pass `--prediction eps` for SD 2.1-base. The text encoder still comes from the `-m` model; SD 2.1 and SD 2.1-base share the same OpenCLIP text encoder.
+The UNets Apple publishes on Hugging Face ([apple/coreml-stable-diffusion-2-1-base-palettized](https://huggingface.co/apple/coreml-stable-diffusion-2-1-base-palettized) and the other `apple/coreml-stable-diffusion-*` repos) work as `--coreml-diffusion`. Use the `split_einsum_v2/compiled/Unet.mlmodelc` variant, which is made for the ANE. These models take float16 inputs, the text context as `[N, D, 1, T]`, and a batch of 2: CFG's conditional and unconditional passes run in one call. sd.cpp handles all three; the batch of 2 needs a CFG scale above 1 and no ControlNet, image CFG, skip layers or step caching. They do not record their prediction type, so pass `--prediction eps` for SD 2.1-base. The text encoder still comes from the `-m` model; SD 2.1 and SD 2.1-base share the same OpenCLIP text encoder.
 
 Apple's 6-bit palettized SD 2.1-base UNet (637 MB) is the one to use on iPhone. The ANE reads palettized weights directly, so the compiled model is cached after the first load. The per-block int8 export (`w8b`) is expanded to fp16 on the CPU on every load instead: on an iPhone 16 that took about 105 s and 5.3 GB each time, and the app ran out of memory. On an M2, 512x512, 20 Euler steps, CFG 7, with TAESD on CoreML: 6.3 s per image, 0.25 s cached load, 0.9 GB peak footprint.
 
@@ -129,12 +137,12 @@ The artifacts below use `split_einsum_v2`. For SDXS the attention form makes no 
 
 The SDXL UNet also takes `y`, the 2816-value vector conditioning (pooled CLIP-G embedding followed by the embedded image size and crop) that sd.cpp's SDXL conditioner builds. `convert_unet.py` exports SDXL UNets with a `y` input, so the model applies `add_embedding` to exactly what the ggml UNet would get; the export checks this against diffusers given the raw size and crop ids (3e-7 max relative error in fp32). Apple's SDXL models, which take `text_embeds` and the raw `time_ids` instead, also work: the runtime recovers the ids from `y`.
 
-SDXL's UNet is 5.1 GB in fp16, so for iOS it is palettized and split in two. `--chunks 2` splits the converted model with coremltools' `bisect_model` into a folder of `*_chunk1`/`*_chunk2` models; `--coreml-unet` takes that folder (or any folder of `*chunk<N>.mlmodelc` files, such as Apple's `UnetChunk1/2.mlmodelc`) and runs the chunks in order, each taking its inputs from the UNet inputs and earlier chunks' outputs.
+SDXL's UNet is 5.1 GB in fp16, so for iOS it is palettized and split in two. `--chunks 2` splits the converted model with coremltools' `bisect_model` into a folder of `*_chunk1`/`*_chunk2` models; `--coreml-diffusion` takes that folder (or any folder of `*chunk<N>.mlmodelc` files, such as Apple's `UnetChunk1/2.mlmodelc`) and runs the chunks in order, each taking its inputs from the UNet inputs and earlier chunks' outputs.
 
 ```bash
 python script/coreml/convert_unet.py --unet sdxl-base/unet --out sdxl_unet_mixed.mlpackage --precision mixed \
        --batch 2 --attention split_einsum_v2 --sizes 768x768 --chunks 2 --compile
-sd-cli -m sd_xl_base_1.0.safetensors --coreml-unet sdxl_unet_mixed --taesd taesdxl.safetensors \
+sd-cli -m sd_xl_base_1.0.safetensors --coreml-diffusion sdxl_unet_mixed --taesd taesdxl.safetensors \
        --coreml-tae taesdxl_decoder_768.mlmodelc -W 768 -H 768 --steps 20 --cfg-scale 7 -p "a red apple on a wooden table"
 ```
 
@@ -163,6 +171,46 @@ Apple's [coreml-stable-diffusion-xl-base-ios](https://huggingface.co/apple/corem
 
 The Metal numbers above come from an sd-cli built from the 2026-03-01 branch, measured before batched CFG gave flat images on Metal (fixed since); this branch's Metal image matches it at 38.6 dB.
 
+### FLUX.2-klein 4B
+
+The FLUX.2-klein 4B denoiser runs on the ANE as five chunks of 8-bit palettized weights (3.9 GB). On a MacBook Air with an M2 and 16 GB (512x512, 4 steps, CFG 1, the mean of 3 images after a warm-up), with the TAEF2 decoder sidecar:
+
+| | ggml Metal (Q8_0, full VAE) | CoreML denoiser + TAEF2 sidecar |
+| --- | --- | --- |
+| Per image | 45.4 s | 12.8 s |
+| Denoising, 4 steps | 37.6 s | 7.5 s |
+| Per step, steps 2-4 | 7.4 s (5.2 s on a cool machine) | 1.9 s |
+| Decode | 5.5 s | 0.04 s |
+| Peak memory | 7.6 GB | 2.6 GB |
+
+The images show the same picture as Metal's (22 dB PSNR), and repeated runs give identical images. Metal slows down as the fanless Air heats up; the ANE does not. The Qwen3 text encoder stays on ggml in both.
+
+Export each chunk in its own process from the official checkpoint ([black-forest-labs/FLUX.2-klein-4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)) and the official [flux2](https://github.com/black-forest-labs/flux2) source. The fixture is one captured ggml call (`SDCPP_FLUX_CAPTURE_DIR`, see [performance](./performance.md)); it fixes the image size and the number of text tokens (512 at 512x512):
+
+```bash
+pip install -r script/requirements-flux2-coreml.txt
+for k in 1 2 3 4 5; do
+  python script/export_flux2_klein_coreml.py chunk --source flux2-official --weights flux-2-klein-4b.safetensors \
+      --fixture fixture-512/call-1 --chunk $k --output klein4b_512
+done
+python script/compare_flux_coreml_fixture.py --model klein4b_512 --compute-units cpu_ne \
+    --fixture fixture-512/call-1 --output parity.json --max-nrmse 0.1
+sd-cli --diffusion-model flux-2-klein-4b-Q8_0.gguf --vae flux2-vae.safetensors --llm Qwen3-4B-Q4_K_M.gguf \
+       --coreml-diffusion klein4b_512 --taesd taef2.safetensors --coreml-tae taef2_decoder_512.mlmodelc \
+       -W 512 -H 512 --steps 4 --cfg-scale 1 -p "a lovely cat sitting on a wooden bench in a sunny garden"
+```
+
+Each chunk loads only the weights it uses; converting one peaks at 9-12 GB of memory and takes about 3 minutes on an M2. `--diffusion-model` is still needed for the model's metadata, but its weights are not loaded. The first load on a device compiles the chunks for the ANE (one to two minutes on an M2); later loads take about 2 s. Text-to-image only: reference images, LoRAs and other sizes fail with an error.
+
+What the export does, and why:
+
+- **FP16 overflow.** Double block 4's text MLP writes values of about 100,000 into the text tokens' residual stream, past FP16's 65,504, so FP16 images break from the second step on. Every read of a residual stream goes through a LayerNorm without affine parameters, so dividing what writes the streams by 8 (`--fp16-rescale 8`, the default) changes nothing in FP32 and keeps FP16 finite.
+- **Program size.** The ANE runs a program of at most about 1 GB of stored weights on an M2 (about 2 GB on an M3); a larger one runs entirely on the CPU, with no error. Palettized weights count at their compressed size. The default cuts (`--cuts 3,6,13,20`) give chunks of 0.63-0.85 GB at 8 bits.
+- **Attention on the M2.** One attention op over all 24 heads of the 1,536-token sequence returns wrong values on an M2's ANE (and differs from run to run); the M3 computes it correctly. The export computes attention per head, which is correct on both and faster.
+- **Precision.** 8-bit palettes keep the picture; 6-bit ones (`--palette-bits 6`, 2.8 GB) change details over the 4 steps, and fp16 weights (`--palette-bits 0`) exceed the M2's program size at these cuts. The sinusoidal timestep embedding stays FP32 on the CPU.
+
+`SDCPP_FLUX2_COREML_MODEL` still selects the denoiser when `--coreml-diffusion` is not given. Set `SD_COREML_COMPUTE_UNITS=all` for the older FP32 export described in [performance](./performance.md).
+
 ### Supported sizes
 
 Every input shape of the CoreML model is fixed at export time (batch 1, 77 prompt tokens, one image size). Prompts longer than 77 tokens, ControlNet and models that take `c_concat` (inpainting, Instruct-Pix2Pix) fail with an error.
@@ -185,13 +233,14 @@ Known issue: loading several functions of a multifunction model in one process h
 
 ### Tests
 
-`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, and the mixed-bit selection.
+`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, decoder output checks at 8x and 16x (TAEF2), and the FLUX.2 sidecar as one model and as two chunks passing an fp16 tensor. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, and the mixed-bit selection.
 
 ```bash
 python tests/coreml/make_fixtures.py build/coreml-fixtures
 build/bin/test-coreml build/coreml-fixtures
 SD_TEST_SDXS_DIR=artifacts build/bin/test-coreml build/coreml-fixtures
 python -m unittest script/coreml/test_convert_unet.py
+(cd script && python -m unittest test_export_flux2_klein_coreml test_compare_flux_coreml_fixture)
 ```
 
 ### Notes on accuracy

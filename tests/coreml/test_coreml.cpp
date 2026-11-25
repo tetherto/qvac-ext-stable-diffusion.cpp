@@ -1,12 +1,13 @@
 // Tests for the CoreML sidecars (SD_COREML builds).
 //
-// Unit tests run the tiny models from tests/coreml/make_fixtures.py through CoreMLUNet, CoreMLUNetModel and
-// CoreMLTAEDecoder. Pipeline tests run only when SD_TEST_SDXS_DIR points at the SDXS artifacts from
+// Unit tests run the tiny models from tests/coreml/make_fixtures.py through CoreMLUNet, CoreMLUNetModel,
+// CoreMLTAEDecoder and the FLUX.2 sidecar (flux_coreml_*). Pipeline tests run only when SD_TEST_SDXS_DIR points at the SDXS artifacts from
 // script/coreml/export_artifacts.py (sdxs-f16.gguf, sdxs_unet_fp16.mlmodelc, sdxs_tae_decoder.mlmodelc).
 //
 //   python tests/coreml/make_fixtures.py build/coreml-fixtures
 //   build/bin/test-coreml build/coreml-fixtures
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include "ggml_tensor_utils.h"
 #include "src/coreml_tae.h"
 #include "src/coreml_unet.h"
+#include "src/flux_coreml.h"
 #include "stable-diffusion.h"
 
 namespace {
@@ -292,6 +294,7 @@ void test_tae(const std::string& dir) {
         const int64_t image_shape[4]  = {1, 3, 8 * H, 8 * W};
         auto latent                   = ramp(C * H * W, 1.0f, 0.0f);
         std::vector<float> image(3 * 64 * H * W, NAN);
+        CHECK(tae->scale() == 8);
         CHECK(tae->decode(latent.data(), latent_shape, image.data(), image_shape));
         bool exact = true;
         for (int64_t c = 0; c < 3; c++) {
@@ -313,8 +316,75 @@ void test_tae(const std::string& dir) {
         CHECK(!tae->decode(big_latent.data(), other_latent, image.data(), image_shape));
     }
 
-    // A model whose output is not [N, 3, 8h, 8w] is rejected at load.
+    // TAEF2 decoders produce 16 image pixels per latent pixel.
+    auto tae16 = CoreMLTAEDecoder::load(dir + "/tae_x16.mlpackage");
+    CHECK(tae16 != nullptr);
+    if (tae16) {
+        CHECK(tae16->scale() == 16);
+        const int64_t latent_shape[4] = {1, C, H, W};
+        const int64_t image_shape[4]  = {1, 3, 16 * H, 16 * W};
+        auto latent                   = ramp(C * H * W, 1.0f, 0.0f);
+        std::vector<float> image(3 * 256 * H * W, NAN);
+        CHECK(tae16->decode(latent.data(), latent_shape, image.data(), image_shape));
+        bool exact = true;
+        for (int64_t c = 0; c < 3; c++) {
+            for (int64_t y = 0; y < 16 * H; y++) {
+                for (int64_t x = 0; x < 16 * W; x++) {
+                    exact &= image[(c * 16 * H + y) * 16 * W + x] == latent[(c * H + y / 16) * W + x / 16];
+                }
+            }
+        }
+        CHECK(exact);
+        const int64_t x8_image[4] = {1, 3, 8 * H, 8 * W};
+        CHECK(!tae16->decode(latent.data(), latent_shape, image.data(), x8_image));
+    }
+
+    // A model whose output is not [N, 3, 8h, 8w] or [N, 3, 16h, 16w] is rejected at load.
     CHECK(CoreMLTAEDecoder::load(dir + "/tae_wrong_scale.mlpackage") == nullptr);
+}
+
+// The FLUX.2 sidecar as one model and as two chunks passing an fp16 tensor: both compute
+// 0.5 * latent + sum(context * W) + 0.001 * timesteps (see make_fixtures.py).
+void test_flux(const std::string& dir) {
+    auto latent  = ramp(C * H * W, 1.0f, -0.5f);
+    auto context = ramp(T * D, 0.5f, 0.0f);
+    const std::vector<float> timestep = {0.75f};
+    float bias                         = 0.001f * timestep[0];
+    for (int64_t t = 0; t < T; t++) {
+        for (int64_t d = 0; d < D; d++) {
+            bias += context[t * D + d] * (0.1f * (t + 1) + 0.01f * (d + 1));
+        }
+    }
+    // ggml order (ne): latent [W, H, C, 1], timesteps [1, 1, 1, 1], context [D, T, 1, 1].
+    const FluxCoreMLTensor x{latent.data(), {W, H, C, 1}};
+    const FluxCoreMLTensor ts{timestep.data(), {1, 1, 1, 1}};
+    const FluxCoreMLTensor ctx{context.data(), {D, T, 1, 1}};
+    for (const char* name : {"flux.mlpackage", "flux_chunks"}) {
+        std::string error;
+        FluxCoreMLModel* model = flux_coreml_open((dir + "/" + name).c_str(), &error);
+        CHECK(model != nullptr);
+        if (!model) {
+            fprintf(stderr, "  %s: %s\n", name, error.c_str());
+            continue;
+        }
+        std::vector<float> out(latent.size(), NAN);
+        const bool ok = flux_coreml_predict(model, x, ts, ctx, nullptr, nullptr, out.data(), &error);
+        CHECK(ok);
+        if (!ok) {
+            fprintf(stderr, "  %s: %s\n", name, error.c_str());
+        }
+        float err = 0.0f;
+        for (size_t i = 0; i < out.size(); i++) {
+            const float e = std::fabs(out[i] - (0.5f * latent[i] + bias));
+            err           = std::isnan(e) ? INFINITY : std::max(err, e);
+        }
+        printf("  %s: max abs error %.2e\n", name, err);
+        CHECK(err < 2e-3f);  // the chunks pass the hidden state in fp16
+        flux_coreml_close(model);
+    }
+    // A folder that holds no chunks.
+    std::string error;
+    CHECK(flux_coreml_open((dir + "/unet_chunks").c_str(), &error) == nullptr);
 }
 
 // ---- pipeline tests with the real SDXS artifacts ----
@@ -444,6 +514,7 @@ int main(int argc, char** argv) {
         {"vector conditioning (SDXL)", [&] { test_unet_vector_conditioning(dir); }},
         {"chunks", [&] { test_unet_chunks(dir); }},
         {"tae", [&] { test_tae(dir); }},
+        {"flux", [&] { test_flux(dir); }},
     };
     for (auto& [name, fn] : tests) {
         printf("%s\n", name);

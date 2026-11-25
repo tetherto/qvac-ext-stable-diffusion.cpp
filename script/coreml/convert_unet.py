@@ -1,4 +1,4 @@
-"""Export a diffusers SD 1.x/2.x or SDXL UNet to CoreML for sd-cli --coreml-unet.
+"""Export a diffusers SD 1.x/2.x or SDXL UNet to CoreML for sd-cli --coreml-diffusion.
 
 The model takes float32 inputs and returns float32, with the names the runtime expects:
   sample [N, 4, H/8, W/8], timestep [N], encoder_hidden_states [N, T, D] -> noise_pred [N, 4, H/8, W/8]
@@ -387,7 +387,7 @@ def main():
                              "with iOS18 fails to load on the ANE (macOS 27.2); iOS17 runs at the same speed")
     parser.add_argument("--chunks", type=int, choices=[1, 2], default=1,
                         help="2 splits the model into two chunks of about equal size (coremltools bisect_model), "
-                             "written to the folder OUT without .mlpackage; pass that folder to --coreml-unet. "
+                             "written to the folder OUT without .mlpackage; pass that folder to --coreml-diffusion. "
                              "Large UNets (SDXL) need this to compile for the ANE on iOS")
     parser.add_argument("--compile", action="store_true", help="also write a compiled .mlmodelc next to the package")
     parser.add_argument("--keep-silu", action="store_true", help="keep the native silu op (inaccurate on the ANE)")
@@ -509,7 +509,7 @@ def main():
             mlmodel.save(str(parts_dir / f"{function_name(width, height)}.mlpackage"))
             checks.append((function_name(width, height), inputs, reference))
         else:
-            mlmodel.short_description = f"UNet {Path(args.unet).resolve()} ({args.precision}) for sd-cli --coreml-unet"
+            mlmodel.short_description = f"UNet {Path(args.unet).resolve()} ({args.precision}) for sd-cli --coreml-diffusion"
             mlmodel.save(args.out)
             checks.append((None, inputs, reference))
         # coremltools keeps a temporary package per model in memory (several GB for SDXL) until it is released.
@@ -600,7 +600,7 @@ def write_chunks(package, compiled, compile_chunks, prediction, check):
     if not compile_chunks:
         for chunk in chunks:
             shutil.rmtree(chunk.with_suffix(".mlmodelc"))
-    print(f"wrote {len(chunks)} chunks to {out_dir}; pass the folder to --coreml-unet")
+    print(f"wrote {len(chunks)} chunks to {out_dir}; pass the folder to --coreml-diffusion")
 
 
 if __name__ == "__main__":
