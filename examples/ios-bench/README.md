@@ -15,6 +15,15 @@ sd-bench bench stable-diffusion-v2-1-Q8_0.gguf sd21_unet_w8b.mlmodelc sd21_ane t
          --taesd taesd.safetensors --steps 20 --cfg 7 --sampler euler
 ```
 
+For FLUX.2-klein 4B, whose model comes in separate files, pass `-` as the model and the files as options. The CoreML denoiser is a folder of chunks ([docs/coreml.md](../../docs/coreml.md#flux2-klein-4b)); `--diffusion-model` still has to be given for the model's metadata, but its weights are not loaded when the denoiser runs on CoreML:
+
+```
+sd-bench bench - klein4b_512 flux_ane taef2_decoder_512.mlmodelc --diffusion-model flux-2-klein-4b-Q4_0.gguf \
+         --vae flux2-vae.safetensors --llm Qwen3-4B-Q4_K_M.gguf --taesd taef2.safetensors --steps 4 --cfg 1 --sampler euler
+sd-bench bench - - flux_metal --diffusion-model flux-2-klein-4b-Q4_0.gguf --vae flux2-vae.safetensors \
+         --llm Qwen3-4B-Q4_K_M.gguf --steps 4 --cfg 1 --sampler euler --mmap
+```
+
 ### macOS
 
 ```bash
