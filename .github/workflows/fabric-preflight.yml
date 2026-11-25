@@ -24,14 +24,14 @@ jobs:
             backend: CPU
             mode: package
             repository: tetherto/qvac-fabric-llm.cpp
-            revision: de7039df4085563b93e66a2e072b9c52035b8a85
+            revision: 0b17212ea76e9541eca5929062c692322af1a53f
             source: dependency/ggml
           - name: cpu-fabric
             runner: ubuntu-22.04
             backend: CPU
             mode: diagnostic
             repository: tetherto/qvac-fabric-llm.cpp
-            revision: de7039df4085563b93e66a2e072b9c52035b8a85
+            revision: 0b17212ea76e9541eca5929062c692322af1a53f
             source: dependency/ggml
           - name: cpu-control
             runner: ubuntu-22.04
@@ -45,7 +45,7 @@ jobs:
             backend: CUDA
             mode: diagnostic
             repository: tetherto/qvac-fabric-llm.cpp
-            revision: de7039df4085563b93e66a2e072b9c52035b8a85
+            revision: 0b17212ea76e9541eca5929062c692322af1a53f
             source: dependency/ggml
           - name: cuda-control
             runner: qvac-ubuntu2204-x64-gpu
@@ -59,7 +59,7 @@ jobs:
             backend: Metal
             mode: diagnostic
             repository: tetherto/qvac-fabric-llm.cpp
-            revision: de7039df4085563b93e66a2e072b9c52035b8a85
+            revision: 0b17212ea76e9541eca5929062c692322af1a53f
             source: dependency/ggml
           - name: metal-control
             runner: qvac-macos26-arm64-gpu

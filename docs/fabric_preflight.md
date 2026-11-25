@@ -64,8 +64,9 @@ trees, for this command.
 
 - The engine includes `ggml/src/ggml-impl.h` and constructs a private graph view.
   The clean package build fails; removing the include alone is insufficient.
-- Fabric rejects strided CUDA IM2COL3D in its support check. The control accepts
-  the tested layouts. Keep this failure visible until a focused fix is validated.
+- Baseline Fabric rejects strided CUDA IM2COL3D. The workflow now tests the
+  candidate fix from [Fabric PR594](https://github.com/tetherto/qvac-fabric-llm.cpp/pull/594).
+  Keep the strict check enabled to confirm the candidate restores GPU execution.
 - Local SD2.1 CPU comparisons are exact; CUDA outputs differ reproducibly.
   Stage-level numerical investigation is still needed before accepting parity.
 - Full FLUX/video/ConvRot model fixtures and Android/Windows-native/HIP/Vulkan
