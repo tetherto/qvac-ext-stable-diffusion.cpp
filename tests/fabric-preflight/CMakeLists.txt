@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.21)
+project(diffusion-preflight LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(ggml CONFIG REQUIRED)
+add_executable(test_diffusion_ops test_diffusion_ops.cpp)
+target_link_libraries(test_diffusion_ops PRIVATE ggml::ggml)
+add_executable(test_backend_discovery test_backend_discovery.cpp)
+target_link_libraries(test_backend_discovery PRIVATE ggml::ggml)
