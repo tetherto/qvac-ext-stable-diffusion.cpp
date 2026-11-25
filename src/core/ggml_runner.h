@@ -306,6 +306,8 @@ protected:
     // weight device. Views must stay unpinned or cross-device copies can be
     // skipped for their consumers. In-place ops write into the buffer of the
     // node they modify, so they are pinned to the backend that node runs on.
+    // A node its device rejects is assigned to the CPU fallback before an
+    // in-place op relies on it; a node allocated elsewhere stays with the scheduler.
     void pin_multi_device_nodes(ggml_backend_sched_t sched, ggml_cgraph* gf, ggml_cgraph* original_graph = nullptr);
 
     bool is_multi_device() const {
