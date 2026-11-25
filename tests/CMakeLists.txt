@@ -93,6 +93,10 @@ add_executable(test-group-norm-row-norm test-group-norm-row-norm.cpp)
 target_link_libraries(test-group-norm-row-norm PRIVATE stable-diffusion)
 add_test(NAME test-group-norm-row-norm COMMAND test-group-norm-row-norm)
 
+add_executable(test-conv-subsample test-conv-subsample.cpp)
+target_link_libraries(test-conv-subsample PRIVATE stable-diffusion)
+add_test(NAME test-conv-subsample COMMAND test-conv-subsample)
+
 # CoreML sidecars. Needs fixtures from tests/coreml/make_fixtures.py (coremltools), so it is not an add_test:
 #   python tests/coreml/make_fixtures.py build/coreml-fixtures && build/bin/test-coreml build/coreml-fixtures
 if(SD_COREML AND NOT SD_BUILD_SHARED_LIBS)

@@ -447,6 +447,65 @@ ggml_tensor* ggml_ext_conv_1d(ggml_context* ctx,
     return result;
 }
 
+struct ggml_ext_conv_2d_geometry {
+    int s0;
+    int s1;
+    int p0;
+    int p1;
+    int d0;
+    int d1;
+};
+
+static const int GGML_EXT_UNIT_STRIDE       = 1;
+static const int GGML_EXT_POINTWISE_KERNEL  = 1;
+static const int GGML_EXT_NO_PADDING        = 0;
+static const float GGML_EXT_NO_POOL_PADDING = 0.f;
+
+static bool ggml_ext_conv_2d_is_strided(int s0, int s1) {
+    return s0 > GGML_EXT_UNIT_STRIDE || s1 > GGML_EXT_UNIT_STRIDE;
+}
+
+ggml_tensor* ggml_ext_conv_2d_direct_subsampled(ggml_context* ctx, ggml_tensor* w, ggml_tensor* x, int s0, int s1, int p0, int p1, int d0, int d1) {
+    ggml_tensor* dense = ggml_conv_2d_direct(ctx, w, x, GGML_EXT_UNIT_STRIDE, GGML_EXT_UNIT_STRIDE, p0, p1, d0, d1);
+    return ggml_pool_2d(ctx, dense, GGML_OP_POOL_AVG, GGML_EXT_POINTWISE_KERNEL, GGML_EXT_POINTWISE_KERNEL, s0, s1,
+                        GGML_EXT_NO_POOL_PADDING, GGML_EXT_NO_POOL_PADDING);
+}
+
+bool ggml_ext_conv_2d_is_pointwise(const ggml_tensor* w, int s0, int s1, int p0, int p1) {
+    return w->ne[0] == GGML_EXT_POINTWISE_KERNEL && w->ne[1] == GGML_EXT_POINTWISE_KERNEL &&
+           !ggml_ext_conv_2d_is_strided(s0, s1) && p0 == GGML_EXT_NO_PADDING && p1 == GGML_EXT_NO_PADDING;
+}
+
+ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b) {
+    const int64_t width        = x->ne[0];
+    const int64_t height       = x->ne[1];
+    const int64_t batch        = x->ne[3];
+    const int64_t in_channels  = w->ne[2];
+    const int64_t out_channels = w->ne[3];
+    ggml_tensor* tokens        = ggml_cont(ctx, ggml_permute(ctx, x, 1, 2, 0, 3));
+    tokens                     = ggml_reshape_2d(ctx, tokens, in_channels, width * height * batch);
+    ggml_tensor* projected     = ggml_mul_mat(ctx, ggml_reshape_2d(ctx, w, in_channels, out_channels), tokens);
+    if (b != nullptr) {
+        projected = ggml_add_inplace(ctx, projected, b);
+    }
+    projected = ggml_reshape_3d(ctx, projected, out_channels, width * height, batch);
+    projected = ggml_cont(ctx, ggml_permute(ctx, projected, 1, 0, 2, 3));
+    return ggml_reshape_4d(ctx, projected, width, height, out_channels, batch);
+}
+
+static ggml_tensor* ggml_ext_conv_2d_direct_supported(ggml_context* ctx,
+                                                      ggml_tensor* w,
+                                                      ggml_tensor* x,
+                                                      const ggml_ext_conv_2d_geometry& geometry,
+                                                      const ggml_ext_op_support_t& supports) {
+    ggml_tensor* strided = ggml_conv_2d_direct(ctx, w, x, geometry.s0, geometry.s1, geometry.p0, geometry.p1, geometry.d0, geometry.d1);
+    if (!supports || !ggml_ext_conv_2d_is_strided(geometry.s0, geometry.s1) || supports(strided)) {
+        return strided;
+    }
+    ggml_tensor* subsampled = ggml_ext_conv_2d_direct_subsampled(ctx, w, x, geometry.s0, geometry.s1, geometry.p0, geometry.p1, geometry.d0, geometry.d1);
+    return supports(subsampled) && supports(subsampled->src[0]) ? subsampled : strided;
+}
+
 ggml_tensor* ggml_ext_conv_2d(ggml_context* ctx,
                               ggml_tensor* x,
                               ggml_tensor* w,
@@ -460,7 +519,8 @@ ggml_tensor* ggml_ext_conv_2d(ggml_context* ctx,
                               bool direct,
                               bool circular_x,
                               bool circular_y,
-                              float scale) {
+                              float scale,
+                              const ggml_ext_op_support_t& supports) {
     if (scale != 1.f) {
         x = ggml_ext_scale(ctx, x, scale);
     }
@@ -475,7 +535,7 @@ ggml_tensor* ggml_ext_conv_2d(ggml_context* ctx,
     }
 
     if (direct) {
-        x = ggml_conv_2d_direct(ctx, w, x, s0, s1, p0, p1, d0, d1);
+        x = ggml_ext_conv_2d_direct_supported(ctx, w, x, {s0, s1, p0, p1, d0, d1}, supports);
     } else {
         x = ggml_conv_2d(ctx, w, x, s0, s1, p0, p1, d0, d1);
     }

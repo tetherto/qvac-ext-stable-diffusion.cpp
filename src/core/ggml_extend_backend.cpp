@@ -441,6 +441,12 @@ static ggml_backend_t init_named_backend(const std::string& name) {
     return ggml_backend_init_by_name(resolved.c_str(), nullptr);
 }
 
+static const char* const HEXAGON_DEVICE_NAME = "HTP";
+
+bool sd_backend_prefers_linear_pointwise_conv(ggml_backend_t backend) {
+    return sd_backend_is(backend, HEXAGON_DEVICE_NAME);
+}
+
 bool sd_backend_is_cpu(ggml_backend_t backend) {
     if (backend == nullptr) {
         return false;

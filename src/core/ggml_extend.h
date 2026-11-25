@@ -127,6 +127,8 @@ ggml_tensor* ggml_ext_conv_1d(ggml_context* ctx,
                               int64_t groups      = 1,
                               bool force_prec_f32 = false);
 
+using ggml_ext_op_support_t = std::function<bool(const ggml_tensor*)>;
+
 // w: [OC，IC, KH, KW]
 // x: [N, IC, IH, IW]
 // b: [OC,]
@@ -144,7 +146,14 @@ ggml_tensor* ggml_ext_conv_2d(ggml_context* ctx,
                               bool direct     = false,
                               bool circular_x = false,
                               bool circular_y = false,
-                              float scale     = 1.f);
+                              float scale     = 1.f,
+                              const ggml_ext_op_support_t& supports = nullptr);
+
+bool ggml_ext_conv_2d_is_pointwise(const ggml_tensor* w, int s0, int s1, int p0, int p1);
+
+ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b);
+
+ggml_tensor* ggml_ext_conv_2d_direct_subsampled(ggml_context* ctx, ggml_tensor* w, ggml_tensor* x, int s0, int s1, int p0, int p1, int d0, int d1);
 
 // w: [OC，IC, KD, 1 * 1]
 // x: [N, IC, IH, IW]
@@ -243,7 +252,6 @@ ggml_tensor* ggml_ext_layer_norm(ggml_context* ctx,
                                  ggml_tensor* b,
                                  float eps = EPS);
 
-using ggml_ext_op_support_t = std::function<bool(const ggml_tensor*)>;
 
 ggml_ext_op_support_t ggml_ext_backend_op_support(ggml_backend_t backend);
 
