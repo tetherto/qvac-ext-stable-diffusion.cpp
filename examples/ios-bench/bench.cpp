@@ -1,11 +1,12 @@
-// Metal vs CoreML benchmark: loads the model once, then generates 1 warm-up and up to 3 timed 512x512
-// images (seed 42). Stage times come from sd.cpp's own log lines. Defaults fit SDXS (1 step, CFG 1).
+// Metal vs CoreML benchmark: loads the model once, then generates 1 warm-up and up to 3 timed images
+// (512x512 unless --size is given, seed 42). Stage times come from sd.cpp's own log lines. Defaults fit SDXS (1 step, CFG 1).
 // usage: sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc] [options]
 //   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar. The optional
 //   tae_decoder.mlmodelc runs the tiny decoder with its CoreML sidecar too.
 // options: --steps N  --cfg F  --sampler NAME  --taesd FILE (ggml TAESD, for models without a built-in
 //   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)  --mmap (map the model file instead of
 //   reading it into memory; on iOS the mapped pages do not count against the app's memory limit)
+//   --size WxH (image size; a CoreML UNet only runs the size it was exported for, such as 768x768 for SDXL)
 //   --prediction eps|v (for a CoreML UNet that does not record it, such as Apple's exports)
 #include <algorithm>
 #include <chrono>
@@ -67,6 +68,8 @@ int sd_bench_main(int argc, const char* argv[]) {
     int images          = 3;
     bool mmap           = false;
     const char* pred    = "";
+    int width           = 512;
+    int height          = 512;
     for (int i = *tae ? 6 : 5; i < argc; i += 2) {
         if (strcmp(argv[i], "--mmap") == 0) {
             mmap = true;
@@ -84,6 +87,11 @@ int sd_bench_main(int argc, const char* argv[]) {
             taesd = argv[i + 1];
         } else if (strcmp(argv[i], "--prediction") == 0) {
             pred = argv[i + 1];
+        } else if (strcmp(argv[i], "--size") == 0) {
+            if (sscanf(argv[i + 1], "%dx%d", &width, &height) != 2) {
+                fprintf(stderr, "--size expects WxH, got %s\n", argv[i + 1]);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--images") == 0) {
             images = atoi(argv[i + 1]);
         } else {
@@ -124,15 +132,15 @@ int sd_bench_main(int argc, const char* argv[]) {
         fprintf(stdout, "[bench] new_sd_ctx failed\n");
         return 1;
     }
-    fprintf(stdout, "[bench] unet=%s decoder=%s steps=%d cfg=%.1f load=%.2f s\n", *coreml ? "coreml" : "metal",
-            *tae ? "coreml" : (*taesd ? "taesd-metal" : "metal"), steps, cfg, load_s);
+    fprintf(stdout, "[bench] unet=%s decoder=%s size=%dx%d steps=%d cfg=%.1f load=%.2f s\n", *coreml ? "coreml" : "metal",
+            *tae ? "coreml" : (*taesd ? "taesd-metal" : "metal"), width, height, steps, cfg, load_s);
 
     for (const auto& job : jobs) {
         sd_img_gen_params_t params;
         sd_img_gen_params_init(&params);
         params.prompt                         = job.prompt;
-        params.width                          = 512;
-        params.height                         = 512;
+        params.width                          = width;
+        params.height                         = height;
         params.seed                           = 42;
         params.batch_count                    = 1;
         params.sample_params.sample_steps     = steps;
