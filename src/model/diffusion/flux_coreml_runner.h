@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
 
 #include "model/diffusion/flux.hpp"
 #ifdef SD_USE_COREML
@@ -84,6 +85,11 @@ inline bool capture_flux_call(const char* directory, const DiffusionParams& para
 // sidecar is selected, its weights are excluded from model-manager registration.
 struct FluxCoreMLRunner : public Flux::FluxRunner {
     bool coreml_requested = false;
+    // SD_COREML_LOAD_ON_DEMAND=1: open the CoreML model when denoising starts and close it when the generation
+    // ends, so it is never resident together with the text encoder. iOS counts Neural Engine weights against
+    // the app's memory limit, which the 8-bit FLUX.2-klein chunks (about 4 GB) and Qwen3 (2.4 GB) exceed together.
+    bool load_on_demand = false;
+    std::string coreml_path;
 #ifdef SD_USE_COREML
     FluxCoreMLModel* coreml = nullptr;
 #endif
@@ -94,22 +100,28 @@ struct FluxCoreMLRunner : public Flux::FluxRunner {
                      SDVersion version                            = VERSION_FLUX,
                      std::shared_ptr<RunnerWeightManager> manager = nullptr,
                      const char* model_args                       = nullptr,
-                     const char* coreml_path                      = nullptr)
+                     const char* coreml_model_path                = nullptr)
         : Flux::FluxRunner(backend, tensors, prefix, version, manager, model_args) {
         // coreml_diffusion_path (--coreml-diffusion); SDCPP_FLUX2_COREML_MODEL is the older way to pass it.
-        const char* path = coreml_path && coreml_path[0] != '\0' ? coreml_path : std::getenv("SDCPP_FLUX2_COREML_MODEL");
+        const char* path = coreml_model_path && coreml_model_path[0] != '\0' ? coreml_model_path
+                                                                            : std::getenv("SDCPP_FLUX2_COREML_MODEL");
         coreml_requested = path && path[0] != '\0';
         if (coreml_requested && version != VERSION_FLUX2_KLEIN) {
             LOG_ERROR("the Core ML FLUX denoiser (coreml_diffusion_path) only supports FLUX.2-klein");
         }
 #ifdef SD_USE_COREML
         else if (coreml_requested) {
-            std::string error;
-            coreml = flux_coreml_open(path, &error);
-            if (!coreml)
-                LOG_ERROR("Core ML FLUX.2 model load failed: %s", error.c_str());
-            else
-                LOG_INFO("Using Core ML FLUX.2 denoiser: %s", path);
+            coreml_path               = path;
+            const char* on_demand_env = std::getenv("SD_COREML_LOAD_ON_DEMAND");
+            load_on_demand            = on_demand_env && std::strcmp(on_demand_env, "1") == 0;
+            if (load_on_demand) {
+                if (std::filesystem::exists(coreml_path))
+                    LOG_INFO("Core ML FLUX.2 denoiser loads on demand: %s", path);
+                else
+                    LOG_ERROR("Core ML FLUX.2 model not found: %s", path);
+            } else {
+                open_coreml();
+            }
         }
 #else
         else if (coreml_requested) {
@@ -124,10 +136,38 @@ struct FluxCoreMLRunner : public Flux::FluxRunner {
 #endif
     }
 
+#ifdef SD_USE_COREML
+    bool open_coreml() {
+        if (coreml)
+            return true;
+        const int64_t start_ms = ggml_time_ms();
+        std::string error;
+        coreml = flux_coreml_open(coreml_path.c_str(), &error);
+        if (!coreml) {
+            LOG_ERROR("Core ML FLUX.2 model load failed: %s", error.c_str());
+            return false;
+        }
+        LOG_INFO("Using Core ML FLUX.2 denoiser: %s (loaded in %.2f s)", coreml_path.c_str(),
+                 (ggml_time_ms() - start_ms) / 1000.0);
+        return true;
+    }
+#endif
+
+    // Closes an on-demand CoreML model at the end of a generation; a no-op otherwise.
+    void release_on_demand() {
+#ifdef SD_USE_COREML
+        if (load_on_demand && coreml) {
+            flux_coreml_close(coreml);
+            coreml = nullptr;
+        }
+#endif
+    }
+
+    bool loads_on_demand() const { return coreml_requested && load_on_demand; }
     bool is_coreml_requested() const { return coreml_requested; }
     bool is_coreml_ready() const {
 #ifdef SD_USE_COREML
-        return coreml_requested && coreml;
+        return coreml_requested && (coreml || (load_on_demand && std::filesystem::exists(coreml_path)));
 #else
         return false;
 #endif
@@ -144,7 +184,9 @@ struct FluxCoreMLRunner : public Flux::FluxRunner {
         if (coreml_requested) {
 #ifdef SD_USE_COREML
             const auto* extra = std::get_if<FluxDiffusionExtra>(&params.extra);
-            if (!coreml || weight_adapter || !params.x || params.x->empty() ||
+            if (load_on_demand && !measure_mode_enabled() && !open_coreml())
+                return {};
+            if ((!coreml && !(load_on_demand && measure_mode_enabled())) || weight_adapter || !params.x || params.x->empty() ||
                 !params.timesteps || !params.context ||
                 (params.c_concat && !params.c_concat->empty()) ||
                 (params.ref_latents && !params.ref_latents->empty()) ||

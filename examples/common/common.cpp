@@ -503,6 +503,11 @@ ArgOptions SDContextParams::get_options() {
          0,
          &coreml_diffusion_path},
         {"",
+         "--coreml-te",
+         "path to FLUX.2-klein's Qwen3 text encoder as a folder of CoreML chunks, run on the Apple Neural Engine; --llm then only provides the tokenizer (SD_COREML builds)",
+         0,
+         &coreml_te_path},
+        {"",
          "--coreml-tae",
          "path to the tiny autoencoder decoder as a CoreML model (.mlmodelc); needs SDXS or --taesd (SD_COREML builds)",
          0,
@@ -1018,6 +1023,7 @@ std::string SDContextParams::to_string() const {
         << "  audio_encoder_path: \"" << audio_encoder_path << "\",\n"
         << "  taesd_path: \"" << taesd_path << "\",\n"
         << "  coreml_diffusion_path: \"" << coreml_diffusion_path << "\",\n"
+        << "  coreml_te_path: \"" << coreml_te_path << "\",\n"
         << "  coreml_tae_decoder_path: \"" << coreml_tae_decoder_path << "\",\n"
         << "  esrgan_path: \"" << esrgan_path << "\",\n"
         << "  control_net_path: \"" << control_net_path << "\",\n"
@@ -1092,6 +1098,7 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t() {
     sd_ctx_params.audio_encoder_path              = audio_encoder_path.c_str();
     sd_ctx_params.taesd_path                      = taesd_path.c_str();
     sd_ctx_params.coreml_diffusion_path           = coreml_diffusion_path.c_str();
+    sd_ctx_params.coreml_te_path                  = coreml_te_path.c_str();
     sd_ctx_params.coreml_tae_decoder_path         = coreml_tae_decoder_path.c_str();
     sd_ctx_params.control_net_path                = control_net_path.c_str();
     sd_ctx_params.ip_adapter_path                 = ip_adapter_path.c_str();

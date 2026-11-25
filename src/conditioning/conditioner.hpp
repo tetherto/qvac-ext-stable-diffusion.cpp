@@ -3,6 +3,9 @@
 
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -12,6 +15,9 @@
 
 #include "core/tensor_ggml.hpp"
 #include "core/util.h"
+#ifdef SD_USE_COREML
+#include "coreml_te.h"
+#endif
 #include "model/diffusion/model.hpp"
 #include "model/te/clip.hpp"
 #include "model/te/llada_image_te.hpp"
@@ -2022,6 +2028,14 @@ struct LLMEmbedder : public Conditioner {
     SDVersion version;
     std::shared_ptr<Tokenizer> tokenizer;
     std::shared_ptr<LLM::LLMRunner> llm;
+    // coreml_te_path (FLUX.2-klein, --coreml-te): the Qwen3 text encoder as CoreML chunks, whose ggml weights are
+    // then not loaded. With SD_COREML_LOAD_ON_DEMAND=1 the chunks are loaded for each encode and released after
+    // it, so they are never resident together with the CoreML denoiser (needed on iOS, about 2 GB less on a Mac).
+    std::string coreml_te_path;
+    bool coreml_te_on_demand = false;
+#ifdef SD_USE_COREML
+    CoreMLTextEncoder* coreml_te = nullptr;
+#endif
     std::shared_ptr<T5Runner> byt5;
 
     LLMEmbedder(ggml_backend_t backend,
@@ -2030,7 +2044,8 @@ struct LLMEmbedder : public Conditioner {
                 const std::string prefix                            = "",
                 bool enable_vision                                  = false,
                 std::shared_ptr<RunnerWeightManager> weight_manager = nullptr,
-                const TokenizerConfig& tokenizers                   = {})
+                const TokenizerConfig& tokenizers                   = {},
+                const char* coreml_te_path                          = nullptr)
         : version(version) {
         if (!tokenizers.has(TokenizerConfig::MAIN)) {
             if (sd_version_is_lens(version)) {
@@ -2106,10 +2121,88 @@ struct LLMEmbedder : public Conditioner {
                 }
             }
         }
+        setup_coreml_text_encoder(coreml_te_path);
+    }
+
+    ~LLMEmbedder() override {
+#ifdef SD_USE_COREML
+        coreml_te_close(coreml_te);
+#endif
+    }
+
+    bool is_coreml_te_requested() const { return !coreml_te_path.empty(); }
+    bool is_coreml_te_ready() const {
+#ifdef SD_USE_COREML
+        return coreml_te != nullptr || (coreml_te_on_demand && std::filesystem::exists(coreml_te_path));
+#else
+        return false;
+#endif
+    }
+
+    void setup_coreml_text_encoder(const char* path) {
+        if (path == nullptr || path[0] == '\0')
+            return;
+        if (version != VERSION_FLUX2_KLEIN) {
+            LOG_ERROR("coreml_te_path only supports FLUX.2-klein");
+            return;
+        }
+#ifdef SD_USE_COREML
+        coreml_te_path            = path;
+        const char* on_demand     = std::getenv("SD_COREML_LOAD_ON_DEMAND");
+        coreml_te_on_demand       = on_demand && std::strcmp(on_demand, "1") == 0;
+        if (!coreml_te_on_demand) {
+            std::string error;
+            coreml_te = coreml_te_open(coreml_te_path, &error);
+            if (!coreml_te)
+                LOG_ERROR("Core ML text encoder load failed: %s", error.c_str());
+        } else {
+            LOG_INFO("Core ML text encoder loads on demand: %s", path);
+        }
+#else
+        LOG_ERROR("coreml_te_path requires a build with SD_COREML=ON");
+#endif
+    }
+
+    // The CoreML text encoder's output for these tokens, in the ggml encoder's [width, tokens] layout.
+    sd::Tensor<float> encode_with_coreml(const std::vector<int>& tokens,
+                                         const std::vector<float>& mask,
+                                         const std::set<int>& out_layers) {
+#ifdef SD_USE_COREML
+        std::string error;
+        if (!coreml_te) {
+            const int64_t start_ms = ggml_time_ms();
+            coreml_te              = coreml_te_open(coreml_te_path, &error);
+            if (!coreml_te) {
+                LOG_ERROR("Core ML text encoder load failed: %s", error.c_str());
+                return {};
+            }
+            LOG_INFO("Core ML text encoder loaded in %.2f s", (ggml_time_ms() - start_ms) / 1000.0);
+        }
+        std::vector<std::string> taps;
+        for (int layer : out_layers)
+            taps.push_back("h_" + std::to_string(layer));
+        std::vector<int32_t> ids(tokens.begin(), tokens.end());
+        std::vector<float> key_mask = mask.empty() ? std::vector<float>(tokens.size(), 1.0f) : mask;
+        std::vector<float> out;
+        int64_t width = 0;
+        const bool ok = coreml_te_encode(coreml_te, ids, key_mask, taps, out, &width, &error);
+        if (coreml_te_on_demand) {
+            coreml_te_close(coreml_te);
+            coreml_te = nullptr;
+        }
+        if (!ok) {
+            LOG_ERROR("%s", error.c_str());
+            return {};
+        }
+        return sd::Tensor<float>({width, static_cast<int64_t>(tokens.size())}, out);
+#else
+        return {};
+#endif
     }
 
     void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
-        llm->get_param_tensors(tensors, "text_encoders.llm");
+        if (coreml_te_path.empty())
+            llm->get_param_tensors(tensors, "text_encoders.llm");
         if (byt5) {
             byt5->get_param_tensors(tensors, "text_encoders.t5xxl.transformer");
         }
@@ -2351,16 +2444,25 @@ struct LLMEmbedder : public Conditioner {
                 }
             }
         }
-        auto hidden_states = llm->compute(n_threads,
-                                          input_ids,
-                                          attention_mask,
-                                          image_embeds,
-                                          out_layers,
-                                          false,
-                                          false,
-                                          deepstack_image_embeds,
-                                          image_grids,
-                                          position_ids);
+        sd::Tensor<float> hidden_states;
+        if (!coreml_te_path.empty()) {
+            if (!image_embeds.empty()) {
+                LOG_ERROR("the Core ML text encoder does not take reference images");
+                return {};
+            }
+            hidden_states = encode_with_coreml(tokens, mask, out_layers);
+        } else {
+            hidden_states = llm->compute(n_threads,
+                                         input_ids,
+                                         attention_mask,
+                                         image_embeds,
+                                         out_layers,
+                                         false,
+                                         false,
+                                         deepstack_image_embeds,
+                                         image_grids,
+                                         position_ids);
+        }
         if (hidden_states.empty()) {
             LOG_ERROR("LLM prompt encoding failed");
             return {};

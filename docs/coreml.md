@@ -209,6 +209,31 @@ What the export does, and why:
 - **Attention on the M2.** One attention op over all 24 heads of the 1,536-token sequence returns wrong values on an M2's ANE (and differs from run to run); the M3 computes it correctly. The export computes attention per head, which is correct on both and faster.
 - **Precision.** 8-bit palettes keep the picture; 6-bit ones (`--palette-bits 6`, 2.8 GB) change details over the 4 steps, and fp16 weights (`--palette-bits 0`) exceed the M2's program size at these cuts. The sinusoidal timestep embedding stays FP32 on the CPU.
 
+#### Text encoder
+
+`--coreml-te` runs FLUX.2-klein's Qwen3-4B text encoder on the Neural Engine as well. sd.cpp still tokenizes the prompt (`--llm` then only provides the tokenizer; its weights are not loaded) and pads it to 512 tokens; the CoreML chunks return the hidden states after layers 9, 18 and 27, the context the denoiser takes. Only those 27 of the 36 layers are exported. On the M2 MacBook Air (512x512, 4 steps, mean of 3 images):
+
+| | Text encoding | Per image | System memory used |
+| --- | --- | --- | --- |
+| ggml Metal (Q8_0 denoiser, Q4_K_M text encoder, full VAE) | 2.5 s | 36.6 s | 7.2 GB |
+| CoreML denoiser and TAEF2, ggml text encoder | 5.5 s | 12.7 s | 5.0 GB |
+| CoreML text encoder too | 0.51 s | 7.6 s | 8.0 GB |
+| CoreML text encoder too, `SD_COREML_LOAD_ON_DEMAND=1` | 0.8 s | 8.1 s | 5.05 GB |
+
+System memory used is the rise in the Mac's wired memory, which holds both Metal's model buffers and the Neural Engine's weights; the process footprint leaves the Neural Engine's weights out. With the text encoder and the denoiser both on the Neural Engine, keeping both loaded costs 3 GB more than loading each when it runs (`SD_COREML_LOAD_ON_DEMAND=1`), which adds about 0.5 s per image once the compiled models are cached. The text encoding in the second row includes rereading the ggml text encoder's weights from disk.
+
+The encoder's output matches PyTorch fp32 as closely as ggml's Q4_K_M text encoder does (normalized RMSE 0.021 against 0.020 on the prompt tokens), so the images keep the same picture with small differences in detail. Export it from the official checkpoint's `text_encoder/` with the same machinery as the denoiser: 8-bit palettes, four chunks of 0.71-0.89 GB (the first one holds the token embedding table, whose lookup runs on the CPU), per-head attention, and RMSNorm computed as LayerNorm of `[x, -x]`: token 0's hidden state reaches about 16,400, and the squares in a plain RMSNorm overflow fp16.
+
+```bash
+pip install -r script/requirements-flux2-coreml.txt transformers==4.51.3
+for k in 1 2 3 4; do
+  python script/export_qwen3_te_coreml.py --model FLUX.2-klein-4B --chunk $k --output qwen3_te_512
+done
+sd-cli ... --coreml-diffusion klein4b_512 --coreml-te qwen3_te_512 --taesd taef2.safetensors --coreml-tae taef2_decoder_512.mlmodelc
+```
+
+`--model` is a folder holding the checkpoint's `text_encoder/`. Each chunk is exported in its own process and peaks at 9-13 GB of memory.
+
 `SDCPP_FLUX2_COREML_MODEL` still selects the denoiser when `--coreml-diffusion` is not given. Set `SD_COREML_COMPUTE_UNITS=all` for the older FP32 export described in [performance](./performance.md).
 
 ### Supported sizes

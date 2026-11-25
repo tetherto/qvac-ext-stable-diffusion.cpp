@@ -287,6 +287,8 @@ typedef struct {
     const char* coreml_tae_decoder_path;  // tiny autoencoder decoder as a CoreML model; needs SD_COREML
     const char* coreml_diffusion_path;    // diffusion model as a CoreML model (.mlmodelc/.mlpackage) or a folder of
                                           // chunks: the SD 1.x/2.x/SDXL UNet or the FLUX.2-klein denoiser; needs SD_COREML
+    const char* coreml_te_path;           // FLUX.2-klein's Qwen3 text encoder as a folder of CoreML chunks; the
+                                          // --llm file then only provides the tokenizer; needs SD_COREML
 } sd_ctx_params_t;
 
 typedef struct {

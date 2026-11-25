@@ -152,7 +152,7 @@ public:
                                 &sd_ctx_params_t::params_backend, &sd_ctx_params_t::split_mode,
                                 &sd_ctx_params_t::rpc_servers, &sd_ctx_params_t::model_args,
                                 &sd_ctx_params_t::coreml_diffusion_path, &sd_ctx_params_t::coreml_unet_path,
-                                &sd_ctx_params_t::coreml_tae_decoder_path}) {
+                                &sd_ctx_params_t::coreml_tae_decoder_path, &sd_ctx_params_t::coreml_te_path}) {
                 strings.emplace_back(SAFE_STR(initial.*member));
                 params.*member = strings.back().c_str();
             }
@@ -226,6 +226,8 @@ public:
     void capture_runner_sources();
 
     void end_runners();
+    // Drops the text encoder's compute-side weights after conditioning when the CoreML denoiser loads on demand.
+    void end_conditioning_run();
 
     bool reset_runners(const RunnerGroups& groups);
 

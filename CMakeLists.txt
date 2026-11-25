@@ -260,7 +260,8 @@ if(SD_COREML)
     enable_language(OBJC OBJCXX)
     list(APPEND SD_LIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/flux_coreml.mm"
                                "${CMAKE_CURRENT_SOURCE_DIR}/src/coreml_unet.mm"
-                               "${CMAKE_CURRENT_SOURCE_DIR}/src/coreml_tae.mm")
+                               "${CMAKE_CURRENT_SOURCE_DIR}/src/coreml_tae.mm"
+                               "${CMAKE_CURRENT_SOURCE_DIR}/src/coreml_te.mm")
 endif()
 
 find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
@@ -397,7 +398,7 @@ target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
 
 if(SD_COREML)
     target_compile_definitions(${SD_LIB} PRIVATE SD_USE_COREML)
-    set_source_files_properties(src/flux_coreml.mm src/coreml_unet.mm src/coreml_tae.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(src/flux_coreml.mm src/coreml_unet.mm src/coreml_tae.mm src/coreml_te.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(${SD_LIB} PRIVATE "-framework CoreML" "-framework Foundation" "-framework Accelerate")
 endif()
 
