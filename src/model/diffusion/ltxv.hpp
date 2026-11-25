@@ -524,9 +524,30 @@ namespace LTXV {
                                               ggml_tensor* x,
                                               ggml_tensor* pe,
                                               bool rope_interleaved) {
-#ifdef SD_GGML_HAS_ROPE_FLUX
         auto ctx     = runner_ctx->ggml_ctx;
         auto backend = runner_ctx->backend;
+        if (sd_backend_is(backend, "MTL")) {
+            if (!rope_interleaved && pe != nullptr && x->type == GGML_TYPE_F32 &&
+                pe->type == GGML_TYPE_F32 && ggml_is_contiguous(x) && x->ne[0] % 2 == 0 &&
+                pe->ne[0] == 2 && pe->ne[1] == 2 && pe->ne[2] == x->ne[0] / 2 && pe->ne[3] == x->ne[2]) {
+                auto input  = ggml_permute(ctx, x, 0, 2, 1, 3);
+                auto x_0    = ggml_view_4d(ctx, input, x->ne[0] / 2, x->ne[2], x->ne[1], x->ne[3],
+                                           input->nb[1], input->nb[2], input->nb[3], 0);
+                auto x_1    = ggml_view_4d(ctx, input, x->ne[0] / 2, x->ne[2], x->ne[1], x->ne[3],
+                                           input->nb[1], input->nb[2], input->nb[3], (x->ne[0] / 2) * x->nb[0]);
+                auto matrix = ggml_cont(ctx, ggml_permute(ctx, pe, 2, 3, 0, 1));
+                auto cos    = ggml_view_4d(ctx, matrix, x->ne[0] / 2, x->ne[2], 1, 1,
+                                           matrix->nb[1], matrix->nb[2], matrix->nb[3], 0);
+                auto sin    = ggml_view_4d(ctx, matrix, x->ne[0] / 2, x->ne[2], 1, 1,
+                                           matrix->nb[1], matrix->nb[2], matrix->nb[3], matrix->nb[3]);
+                auto part_0 = ggml_sub(ctx, ggml_mul(ctx, x_0, cos), ggml_mul(ctx, x_1, sin));
+                auto part_1 = ggml_add(ctx, ggml_mul(ctx, x_0, sin), ggml_mul(ctx, x_1, cos));
+                auto out    = ggml_concat(ctx, part_0, part_1, 0);
+                return ggml_reshape_3d(ctx, out, x->ne[0], x->ne[2], x->ne[1] * x->ne[3]);
+            }
+            return Rope::apply_rope(runner_ctx, x, pe, rope_interleaved);
+        }
+#ifdef SD_GGML_HAS_ROPE_FLUX
         if (backend != nullptr && !sd_backend_is_cpu(backend) && pe != nullptr &&
             x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 && ggml_is_contiguous(x) &&
             x->ne[0] % 2 == 0 && pe->ne[0] == 2 && pe->ne[1] == 2 &&
