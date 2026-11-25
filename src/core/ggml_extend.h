@@ -151,6 +151,12 @@ ggml_tensor* ggml_ext_conv_2d(ggml_context* ctx,
 
 bool ggml_ext_conv_2d_is_pointwise(const ggml_tensor* w, int s0, int s1, int p0, int p1);
 
+ggml_tensor* ggml_ext_image_to_tokens(ggml_context* ctx, ggml_tensor* x);
+
+ggml_tensor* ggml_ext_tokens_to_image(ggml_context* ctx, ggml_tensor* tokens, int64_t width, int64_t height);
+
+ggml_tensor* ggml_ext_conv_2d_pointwise_tokens(ggml_context* ctx, ggml_tensor* tokens, ggml_tensor* w, ggml_tensor* b);
+
 ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b);
 
 ggml_tensor* ggml_ext_conv_2d_direct_subsampled(ggml_context* ctx, ggml_tensor* w, ggml_tensor* x, int s0, int s1, int p0, int p1, int d0, int d1);

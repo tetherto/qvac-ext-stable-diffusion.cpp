@@ -476,21 +476,24 @@ bool ggml_ext_conv_2d_is_pointwise(const ggml_tensor* w, int s0, int s1, int p0,
            !ggml_ext_conv_2d_is_strided(s0, s1) && p0 == GGML_EXT_NO_PADDING && p1 == GGML_EXT_NO_PADDING;
 }
 
+ggml_tensor* ggml_ext_image_to_tokens(ggml_context* ctx, ggml_tensor* x) {
+    ggml_tensor* tokens = ggml_cont(ctx, ggml_permute(ctx, x, 1, 2, 0, 3));
+    return ggml_reshape_3d(ctx, tokens, x->ne[2], x->ne[0] * x->ne[1], x->ne[3]);
+}
+
+ggml_tensor* ggml_ext_tokens_to_image(ggml_context* ctx, ggml_tensor* tokens, int64_t width, int64_t height) {
+    ggml_tensor* image = ggml_cont(ctx, ggml_permute(ctx, tokens, 1, 0, 2, 3));
+    return ggml_reshape_4d(ctx, image, width, height, tokens->ne[0], tokens->ne[2]);
+}
+
+ggml_tensor* ggml_ext_conv_2d_pointwise_tokens(ggml_context* ctx, ggml_tensor* tokens, ggml_tensor* w, ggml_tensor* b) {
+    ggml_tensor* projected = ggml_mul_mat(ctx, ggml_reshape_2d(ctx, w, w->ne[2], w->ne[3]), tokens);
+    return b != nullptr ? ggml_add_inplace(ctx, projected, b) : projected;
+}
+
 ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b) {
-    const int64_t width        = x->ne[0];
-    const int64_t height       = x->ne[1];
-    const int64_t batch        = x->ne[3];
-    const int64_t in_channels  = w->ne[2];
-    const int64_t out_channels = w->ne[3];
-    ggml_tensor* tokens        = ggml_cont(ctx, ggml_permute(ctx, x, 1, 2, 0, 3));
-    tokens                     = ggml_reshape_2d(ctx, tokens, in_channels, width * height * batch);
-    ggml_tensor* projected     = ggml_mul_mat(ctx, ggml_reshape_2d(ctx, w, in_channels, out_channels), tokens);
-    if (b != nullptr) {
-        projected = ggml_add_inplace(ctx, projected, b);
-    }
-    projected = ggml_reshape_3d(ctx, projected, out_channels, width * height, batch);
-    projected = ggml_cont(ctx, ggml_permute(ctx, projected, 1, 0, 2, 3));
-    return ggml_reshape_4d(ctx, projected, width, height, out_channels, batch);
+    ggml_tensor* tokens = ggml_ext_conv_2d_pointwise_tokens(ctx, ggml_ext_image_to_tokens(ctx, x), w, b);
+    return ggml_ext_tokens_to_image(ctx, tokens, x->ne[0], x->ne[1]);
 }
 
 static ggml_tensor* ggml_ext_conv_2d_direct_supported(ggml_context* ctx,

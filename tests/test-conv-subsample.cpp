@@ -133,6 +133,14 @@ namespace {
         return ggml_ext_conv_2d_pointwise_as_linear(ctx, in.x, in.w, in.b);
     }
 
+    ggml_tensor* build_identity(ggml_context* ctx, const Inputs& in, const Geometry&) {
+        return ggml_cont(ctx, in.x);
+    }
+
+    ggml_tensor* build_token_round_trip(ggml_context* ctx, const Inputs& in, const Geometry& geometry) {
+        return ggml_ext_tokens_to_image(ctx, ggml_ext_image_to_tokens(ctx, in.x), geometry.width, geometry.height);
+    }
+
     ggml_tensor* build_without_strided_conv(ggml_context* ctx, const Inputs& in, const Geometry& geometry) {
         return build_conv(ctx, in, geometry, rejects_strided_conv);
     }
@@ -174,6 +182,14 @@ namespace {
         }
     }
 
+    void test_token_layout_round_trips(ggml_backend_t backend) {
+        for (const Geometry& geometry : POINTWISE) {
+            require_close(compute_conv(backend, geometry, build_identity),
+                          compute_conv(backend, geometry, build_token_round_trip),
+                          "Image to tokens and back must return the image");
+        }
+    }
+
     void test_pointwise_detection(ggml_backend_t backend) {
         Storage storage;
         Inputs pointwise = make_inputs(storage.ctx, POINTWISE[0]);
@@ -212,6 +228,7 @@ int main() {
         test_subsampled_matches_strided(backend.get());
         test_form_selection(backend.get());
         test_linear_matches_pointwise(backend.get());
+        test_token_layout_round_trips(backend.get());
         test_pointwise_detection(backend.get());
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << "\n";
