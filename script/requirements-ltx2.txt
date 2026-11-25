@@ -1,0 +1,5 @@
+# Dependencies for script/convert_ltx2_to_gguf.py (full conversion path only).
+# The --dry-run mode needs none of these (pure stdlib).
+numpy>=1.24
+safetensors>=0.4.0
+gguf>=0.10.0
