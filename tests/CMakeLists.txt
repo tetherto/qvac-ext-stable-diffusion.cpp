@@ -7,6 +7,10 @@ add_executable(test-vae-routing test-vae-routing.cpp)
 target_link_libraries(test-vae-routing PRIVATE stable-diffusion)
 add_test(NAME test-vae-routing COMMAND test-vae-routing)
 
+add_executable(test-graph-signature test-graph-signature.cpp)
+target_link_libraries(test-graph-signature PRIVATE stable-diffusion)
+add_test(NAME test-graph-signature COMMAND test-graph-signature)
+
 add_executable(test-fit-params test-fit-params.cpp)
 target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})

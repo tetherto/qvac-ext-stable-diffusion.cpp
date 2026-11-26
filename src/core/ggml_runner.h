@@ -16,6 +16,7 @@
 #include "core/ggml_extend_backend.h"
 #include "vae_fallback.hpp"
 #include "core/ggml_graph_cut.h"
+#include "core/graph_signature.h"
 #include "core/runner_cache.h"
 #include "core/tensor_ggml.hpp"
 #include "core/util.h"
@@ -160,7 +161,15 @@ private:
     size_t logged_segment_count_     = 0;
     ggml_status last_compute_status_ = GGML_STATUS_SUCCESS;
 
+    struct FullMeasurementCache {
+        sd::GraphSignature signature = 0;
+        ggml_backend_t backend       = nullptr;
+        sd::ComputeWorkspace::Measurement measurement;
+    };
+    FullMeasurementCache full_measurement_cache_;
+
     sd::ComputeWorkspace::Measurement measure(ggml_cgraph* graph, const std::unordered_set<const ggml_tensor*>* external_outputs = nullptr);
+    sd::ComputeWorkspace::Measurement measure_full_graph(ggml_cgraph* graph);
     std::vector<DeviceMemoryRequest> memory_requests(const std::vector<sd::BackendBufferSize>& sizes,
                                                      size_t pending_cache_bytes) const;
     bool fits(const std::vector<DeviceMemoryRequest>& requests,

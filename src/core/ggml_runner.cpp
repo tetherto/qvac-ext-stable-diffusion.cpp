@@ -1158,6 +1158,18 @@ ComputeWorkspace::Measurement GGMLRunner::measure(ggml_cgraph* graph, const std:
     return workspace_.measure(graph, external_backend, assign_nodes);
 }
 
+ComputeWorkspace::Measurement GGMLRunner::measure_full_graph(ggml_cgraph* graph) {
+    if (is_multi_device()) {
+        return measure(graph);
+    }
+    const auto signature = sd::graph_signature(graph, [&](const ggml_tensor* tensor) { return params_tensor_set_.count(tensor) > 0; });
+    auto& cache          = full_measurement_cache_;
+    if (cache.backend != runtime_backend || cache.signature != signature || cache.measurement.buffers.empty()) {
+        cache = {signature, runtime_backend, measure(graph)};
+    }
+    return cache.measurement;
+}
+
 std::vector<DeviceMemoryRequest> GGMLRunner::memory_requests(
     const std::vector<BackendBufferSize>& sizes,
     size_t pending_cache_bytes) const {
@@ -1290,7 +1302,7 @@ std::optional<Tensor<float>> GGMLRunner::execute_graph(ggml_cgraph* graph, int n
     bool segmented = execution_plan != nullptr || (can_segment && !fits(memory_requests({{runtime_backend, 0}}, 0), params));
     ComputeWorkspace::Measurement full_measurement;
     if (!segmented) {
-        full_measurement = measure(graph);
+        full_measurement = measure_full_graph(graph);
         if (full_measurement.buffers.empty()) {
             last_compute_status_ = GGML_STATUS_ALLOC_FAILED;
             return std::nullopt;
