@@ -872,9 +872,9 @@ ggml_tensor* ggml_ext_layer_norm(ggml_context* ctx,
                                  float eps) {
     x = ggml_norm(ctx, x, eps);
     if (w != nullptr) {
-        x = ggml_mul_inplace(ctx, x, w);
+        x = ggml_mul(ctx, x, w);
         if (b != nullptr) {
-            x = ggml_add_inplace(ctx, x, b);
+            x = ggml_add(ctx, x, b);
         }
     }
     return x;
@@ -894,8 +894,8 @@ ggml_tensor* ggml_ext_group_norm(ggml_context* ctx,
 
     x = ggml_ext_group_norm_supported(ctx, x, num_groups, eps, supports);
     if (w != nullptr && b != nullptr) {
-        x = ggml_mul_inplace(ctx, x, w);
-        x = ggml_add_inplace(ctx, x, b);
+        x = ggml_mul(ctx, x, w);
+        x = ggml_add(ctx, x, b);
     }
     return x;
 }

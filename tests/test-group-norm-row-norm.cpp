@@ -169,6 +169,25 @@ namespace {
         require_form(channels, rejects_every_op, GGML_OP_GROUP_NORM, GGML_OP_NORM, "A backend without NORM must keep GROUP_NORM");
         require_form(UNEVEN_CHANNEL, rejects_group_norm, GGML_OP_GROUP_NORM, GGML_OP_NORM, "Groups that split channels must keep GROUP_NORM");
     }
+
+    void require_own_output(ggml_tensor* affine, const char* message) {
+        require(affine->op == GGML_OP_ADD && affine->view_src == nullptr, message);
+        require(affine->src[0]->op == GGML_OP_MUL && affine->src[0]->view_src == nullptr, message);
+    }
+
+    void test_scale_and_shift_are_not_views() {
+        Storage storage;
+        const Shape& shape = SHAPES[0];
+        auto* input        = ggml_new_tensor_4d(storage.ctx, GGML_TYPE_F32, shape.width, shape.height, shape.channels, shape.batch);
+        auto* weight       = ggml_new_tensor_1d(storage.ctx, GGML_TYPE_F32, shape.channels);
+        auto* bias         = ggml_new_tensor_1d(storage.ctx, GGML_TYPE_F32, shape.channels);
+        auto* row_weight   = ggml_new_tensor_1d(storage.ctx, GGML_TYPE_F32, shape.width);
+        auto* row_bias     = ggml_new_tensor_1d(storage.ctx, GGML_TYPE_F32, shape.width);
+        require_own_output(ggml_ext_group_norm(storage.ctx, input, weight, bias, GROUPS, EPSILON, rejects_group_norm),
+                           "Group norm scale and shift must own their output so that a backend can fuse them");
+        require_own_output(ggml_ext_layer_norm(storage.ctx, input, row_weight, row_bias, EPSILON),
+                           "Layer norm scale and shift must own their output so that a backend can fuse them");
+    }
 }
 
 int main() {
@@ -178,6 +197,7 @@ int main() {
         require(backend.get() != nullptr, "CPU backend unavailable");
         test_all_shapes_match(backend.get());
         test_form_selection(backend.get());
+        test_scale_and_shift_are_not_views();
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << "\n";
         return 1;
