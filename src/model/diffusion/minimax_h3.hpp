@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstring>
 #include <set>
 #include <string>
 #include <tuple>
@@ -188,9 +189,27 @@ namespace MiniMaxH3 {
         return ggml_reshape_3d(ctx, x, x->ne[0], x->ne[1], x->ne[2] * x->ne[3]);
     }
 
+    static bool is_metal_backend(GGMLRunnerContext* runner_ctx) {
+        auto backend     = runner_ctx != nullptr ? runner_ctx->backend : nullptr;
+        auto device      = backend != nullptr ? ggml_backend_get_device(backend) : nullptr;
+        auto registry    = device != nullptr ? ggml_backend_dev_backend_reg(device) : nullptr;
+        const char* name = registry != nullptr ? ggml_backend_reg_name(registry) : nullptr;
+        return name != nullptr && std::strcmp(name, "MTL") == 0;
+    }
+
+    static ggml_tensor* prepare_partial_rope(GGMLRunnerContext* runner_ctx,
+                                             ggml_tensor* pe) {
+        if (!is_metal_backend(runner_ctx) || pe == nullptr || pe->type != GGML_TYPE_F32 ||
+            pe->ne[0] != 2 || pe->ne[1] != 2 || pe->ne[2] <= 0 || pe->ne[3] <= 0) {
+            return nullptr;
+        }
+        return ggml_cont(runner_ctx->ggml_ctx, ggml_permute(runner_ctx->ggml_ctx, pe, 2, 3, 0, 1));
+    }
+
     static ggml_tensor* apply_partial_rope(GGMLRunnerContext* runner_ctx,
                                            ggml_tensor* x,
-                                           ggml_tensor* pe) {
+                                           ggml_tensor* pe,
+                                           ggml_tensor* prepared_pe = nullptr) {
         auto ctx        = runner_ctx->ggml_ctx;
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
@@ -202,6 +221,30 @@ namespace MiniMaxH3 {
             }
         }
 #endif
+        if (prepared_pe != nullptr && is_metal_backend(runner_ctx) &&
+            x->type == GGML_TYPE_F32 && pe->type == GGML_TYPE_F32 && prepared_pe->type == GGML_TYPE_F32 &&
+            x->nb[0] == sizeof(float) && x->ne[1] > 0 && x->ne[2] > 0 && x->ne[3] > 0 &&
+            pe->ne[0] == 2 && pe->ne[1] == 2 && rot_dim > 0 && rot_dim <= x->ne[0] && pe->ne[3] == x->ne[2] &&
+            prepared_pe->ne[0] == pe->ne[2] && prepared_pe->ne[1] == pe->ne[3] &&
+            prepared_pe->ne[2] == 2 && prepared_pe->ne[3] == 2 && ggml_is_contiguous(prepared_pe)) {
+            int64_t half = rot_dim / 2;
+            auto view    = [&](int64_t start, int64_t width) {
+                return ggml_view_4d(ctx, x, width, x->ne[2], x->ne[1], x->ne[3],
+                                       x->nb[2], x->nb[1], x->nb[3], start * x->nb[0]);
+            };
+            auto x_0    = view(0, half);
+            auto x_1    = view(half, half);
+            auto cos    = ggml_view_2d(ctx, prepared_pe, half, x->ne[2], prepared_pe->nb[1], 0);
+            auto sin    = ggml_view_2d(ctx, prepared_pe, half, x->ne[2], prepared_pe->nb[1], prepared_pe->nb[3]);
+            auto part_0 = ggml_sub(ctx, ggml_mul(ctx, x_0, cos), ggml_mul(ctx, x_1, sin));
+            auto part_1 = ggml_add(ctx, ggml_mul(ctx, x_0, sin), ggml_mul(ctx, x_1, cos));
+            auto out    = ggml_concat(ctx, part_0, part_1, 0);
+            if (rot_dim < x->ne[0]) {
+                out = ggml_concat(ctx, out, view(rot_dim, x->ne[0] - rot_dim), 0);
+            }
+            // Preserve head/batch strides until CONCAT has materialized the attention layout.
+            return ggml_reshape_3d(ctx, out, out->ne[0], out->ne[1], out->ne[2] * out->ne[3]);
+        }
         auto rotated = Rope::apply_rope(runner_ctx,
                                         ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                         pe,
@@ -240,7 +283,8 @@ namespace MiniMaxH3 {
 
         ggml_tensor* attend(GGMLRunnerContext* ctx,
                             ggml_tensor* projected,
-                            ggml_tensor* pe = nullptr) {
+                            ggml_tensor* pe          = nullptr,
+                            ggml_tensor* prepared_pe = nullptr) {
             auto q_norm      = std::dynamic_pointer_cast<RMSNorm>(blocks["q_norm"]);
             auto k_norm      = std::dynamic_pointer_cast<RMSNorm>(blocks["k_norm"]);
             int64_t sequence = projected->ne[1];
@@ -266,8 +310,8 @@ namespace MiniMaxH3 {
             q      = q_norm->forward(ctx, q);
             k      = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx, q, pe);
-                k = apply_partial_rope(ctx, k, pe);
+                q = apply_partial_rope(ctx, q, pe, prepared_pe);
+                k = apply_partial_rope(ctx, k, pe, prepared_pe);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);
@@ -393,13 +437,16 @@ namespace MiniMaxH3 {
                                                     int64_t hidden_size,
                                                     int expand,
                                                     int modalities,
-                                                    int64_t row) {
+                                                    int64_t row,
+                                                    bool allow_selected_view = false) {
         int64_t timestep_rows = projection->ne[1];
         auto reshaped         = ggml_reshape_2d(ctx,
                                                 projection,
                                                 hidden_size * expand,
                                                 timestep_rows * modalities);
-        auto selected         = ggml_ext_slice(ctx, reshaped, 1, row, row + 1);
+        auto selected         = allow_selected_view
+                                    ? ggml_ext_slice(ctx, reshaped, 1, row, row + 1, false)
+                                    : ggml_ext_slice(ctx, reshaped, 1, row, row + 1);
         return ggml_ext_chunk(ctx, selected, expand, 0);
     }
 
@@ -431,7 +478,8 @@ namespace MiniMaxH3 {
                              ggml_tensor* x,
                              ggml_tensor* t_emb,
                              const std::vector<TokenModulationSpan>& segments,
-                             ggml_tensor* pe) {
+                             ggml_tensor* pe,
+                             ggml_tensor* prepared_pe = nullptr) {
             auto norm1 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm1"]);
             auto norm2 = std::dynamic_pointer_cast<RMSNorm>(blocks["norm2"]);
             auto attn  = std::dynamic_pointer_cast<Attention>(blocks["attn"]);
@@ -441,9 +489,10 @@ namespace MiniMaxH3 {
 
             std::vector<std::vector<ggml_tensor*>> rows;
             std::vector<ggml_tensor*> inputs;
+            bool metal = is_metal_backend(ctx);
             for (const auto& segment : segments) {
                 rows.push_back(modulation_row(ctx->ggml_ctx, mods, config.hidden_size,
-                                              6, 3, segment.modulation_row));
+                                              6, 3, segment.modulation_row, metal));
                 inputs.push_back(ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end, false));
             }
             auto modulate = [&](ggml_tensor* value, const std::vector<ggml_tensor*>& row, int shift, int scale) {
@@ -461,7 +510,7 @@ namespace MiniMaxH3 {
                 }
                 qkv = ggml_concat(ctx->ggml_ctx, qkv, h, 1);
             }
-            auto attended = attn->attend(ctx, qkv, pe);
+            auto attended = attn->attend(ctx, qkv, pe, prepared_pe);
             std::vector<ggml_tensor*> projections;
             for (const auto& segment : segments) {
                 auto part = ggml_ext_slice(ctx->ggml_ctx, attended, 1, segment.start, segment.end, false);
@@ -509,9 +558,13 @@ namespace MiniMaxH3 {
             auto video_out = std::dynamic_pointer_cast<Linear>(blocks["video_out"]);
             auto audio_out = std::dynamic_pointer_cast<Linear>(blocks["audio_out"]);
             auto mods      = adaln->forward(ctx, t_emb);
+            bool metal     = is_metal_backend(ctx);
             auto apply     = [&](const TokenModulationSpan& segment) {
-                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row);
-                auto value = norm->forward(ctx, ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end));
+                auto row   = modulation_row(ctx->ggml_ctx, mods, config.hidden_size, 2, 1, segment.modulation_row, metal);
+                auto slice = metal
+                                 ? ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end, false)
+                                 : ggml_ext_slice(ctx->ggml_ctx, x, 1, segment.start, segment.end);
+                auto value = norm->forward(ctx, slice);
                 return ggml_add(ctx->ggml_ctx,
                                 ggml_add(ctx->ggml_ctx, value, ggml_mul(ctx->ggml_ctx, value, row[1])),
                                 row[0]);
@@ -719,10 +772,11 @@ namespace MiniMaxH3 {
                                         curve_indices,
                                         curve_upper_indices,
                                         curve_fractions);
-            auto pe    = build_rope(ctx, position_ids);
+            auto pe          = build_rope(ctx, position_ids);
+            auto prepared_pe = prepare_partial_rope(ctx, pe);
             for (int64_t i = 0; i < config.num_layers; ++i) {
                 auto block = std::dynamic_pointer_cast<TransformerBlock>(blocks["blocks." + std::to_string(i)]);
-                h          = block->forward(ctx, h, t_emb, segments, pe);
+                h          = block->forward(ctx, h, t_emb, segments, pe, prepared_pe);
                 sd::ggml_graph_cut::mark_graph_cut(h,
                                                    "minimax_h3.blocks." + std::to_string(i),
                                                    "hidden_states");

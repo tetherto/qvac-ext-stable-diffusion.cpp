@@ -191,3 +191,70 @@ The scale/residual fusion alone preserved all 124 native RGB frames and both
 audio channels byte-for-byte versus TAE-H3 + EasyCache. Compare final video and
 listen to both channels for the intended workload before choosing the faster
 configuration; these measurements do not qualify every prompt or seed.
+
+## Apple Silicon (Metal)
+
+EasyCache is a measured accelerator on Apple M-series GPUs for the same
+full-VAE Ref2VA workload. TAE-H3 is an orthogonal option (not used in the
+comparisons here); its lightweight video decoder trades additional quality
+for additional speed. The Metal partial-RoPE fast path for H3 ships in the
+engine; it is backend-gated and leaves other backends unchanged.
+
+The measured EasyCache policy on Metal is
+`threshold=0.30,start=0.15,end=0.85`. The more conservative Strix policy
+`threshold=0.20,start=0.20,end=0.80` also works on Metal and preserves
+more of the no-cache output; the recorded comparison below lists both.
+As with Strix, a 20-step request keeps 20 nominal sampling steps but may
+execute fewer model evaluations.
+
+```sh
+./build/bin/sd-cli -M vid_gen \
+  --diffusion-model models/minimax_h3_ref2va_pruned-Q4_K_M.gguf \
+  --llm models/qwen3vl_32b_minimax_h3-Q4_K_M.gguf \
+  --vae models/minimax_h3_video_vae_fp16.safetensors \
+  --audio-vae models/minimax_h3_audio_vae_fp32.safetensors \
+  --backend MTL0 --params-backend MTL0 --flash-attn on \
+  --cache-mode easycache \
+  --cache-option "threshold=0.30,start=0.15,end=0.85" \
+  --sampling-method euler --steps 20 --cfg-scale 1 --guidance 7 \
+  --seed 424242 -W 864 -H 480 --video-frames 124 --fps 24 -b 1 \
+  -p "A small orange paper boat floating slowly on calm water at dusk, with a cliff in the background; gentle somber solo piano music, no speech." \
+  -o h3-mac.mp4
+```
+
+Use the device name reported by your build if it differs from `MTL0`.
+To run without EasyCache, omit `--cache-mode` and `--cache-option`;
+EasyCache remains opt-in.
+
+### Recorded comparison
+
+One 864x480, 124-frame example on Apple M3 Ultra (60 GPU cores, 96 GB) with
+the prompt and seed above, full video and audio VAE decoding, no TAE,
+produced the following generation times:
+
+| Configuration | Generation | Reduction versus baseline |
+|---|---:|---:|
+| Baseline (no cache) | 23m05.2s | Reference |
+| EasyCache `0.20,0.20,0.80` | 14m53.3s | 8m11.9s (35.52%) |
+| EasyCache `0.30,0.15,0.85` | 12m45.1s | 10m20.1s (44.77%) |
+
+These are historical single clean runs on one host, not repeated paired
+speedup estimates or a guarantee for other inputs. Timers exclude output
+export, encoding and validation; profiling, progress logging and telemetry
+were disabled. The exact model-forward count was not instrumented.
+
+EasyCache changes both video and stereo audio. For this example, final
+output versus the no-cache baseline had:
+
+| Policy | mean frame SSIM | mean LPIPS (AlexNet) | L/R audio RMSE |
+|---|---:|---:|---|
+| `0.20,0.20,0.80` | 0.9942 | 0.0326 | 0.01555 / 0.01577 |
+| `0.30,0.15,0.85` | 0.9900 | 0.0607 | 0.02277 / 0.02327 |
+
+Per-frame LPIPS rises toward the end of the clip under both policies and
+more noticeably under `0.30,0.15,0.85`; isolated audio samples deviate up
+to about 0.22 under that policy against a peak absolute signal near 0.37,
+so headphones are recommended when evaluating audio before shipping. The
+more conservative policy halves the audio deviation. Compare final video
+and listen to both channels for the intended workload before choosing;
+these measurements do not qualify every prompt or seed.
