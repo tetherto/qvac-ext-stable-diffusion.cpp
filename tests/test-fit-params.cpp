@@ -5,7 +5,7 @@
 #include <thread>
 #include <vector>
 
-#include "../ggml/src/ggml-backend-impl.h"
+#include "ggml-backend-impl.h"
 #include "core/fit_params.h"
 #include "core/ggml_extend.hpp"
 

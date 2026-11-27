@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import sys
 
-ENGINE_TESTS = ["test-ltx-rope", "test-vae-routing", "test-fit-params", "test-safetensors-convrot"]
+ENGINE_TESTS = ["test-ltx-rope", "test-vae-routing", "test-fit-params", "test-safetensors-convrot", "test-graph-eval-callback"]
 OPERATIONS = ["rope", "pad", "im2col3d"]
 
 
@@ -106,7 +106,7 @@ class Preflight:
     def check_engine(self):
         build = self.output / "engine-build"
         options = ["-DSD_USE_SYSTEM_GGML=ON", "-Dggml_DIR=" + str(self.prefix / "share/ggml"),
-                   "-DSD_BUILD_TESTS=ON", "-DSD_BUILD_EXAMPLES=ON", "-DSD_WEBP=OFF", "-DSD_WEBM=OFF"]
+                   "-DSD_BUILD_TESTS=ON", "-DSD_TEST_GGML_SOURCE_DIR=" + str(self.source), "-DSD_BUILD_EXAMPLES=ON", "-DSD_WEBP=OFF", "-DSD_WEBM=OFF"]
         if self.args.mode == "diagnostic":
             overlay = self.output / "private-headers"
             overlay.mkdir(exist_ok=True)
@@ -124,6 +124,10 @@ class Preflight:
         self.run("engine-tests", ["ctest", "--test-dir", build, "--output-on-failure", "-R",
                                   "^(" + "|".join(ENGINE_TESTS) + ")$"],
                  env={**self.env, "GGML_BACKEND_PATH": str(self.cpu_module())})
+
+        if self.args.backend != "CPU":
+            self.run("engine-callback-gpu", [build / "bin/test-graph-eval-callback", self.registry],
+                     cwd=self.prefix / "lib")
 
     def cpu_module(self):
         modules = list((self.prefix / "lib").glob("*ggml-cpu.so")) + list((self.prefix / "lib").glob("*ggml-cpu.dylib"))
