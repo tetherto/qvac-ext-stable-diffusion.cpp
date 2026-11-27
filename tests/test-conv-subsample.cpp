@@ -9,7 +9,7 @@
 #include "core/ggml_extend.h"
 #include "core/ggml_extend_backend.h"
 
-namespace {
+namespace conv_subsample_test {
     constexpr size_t CONTEXT_BYTES = 8 * 1024 * 1024;
     constexpr size_t GRAPH_NODES   = 64;
     constexpr float TOLERANCE      = 1e-4f;
@@ -19,7 +19,8 @@ namespace {
     constexpr int64_t CHANNELS_IN  = 5;
     constexpr int64_t CHANNELS_OUT = 7;
     constexpr int UNIT_STRIDE      = 1;
-    constexpr int STRIDE_PARAM     = 0;
+    constexpr int STRIDE_0_PARAM   = 0;
+    constexpr int STRIDE_1_PARAM   = 1;
 
     struct Geometry {
         int64_t width;
@@ -31,7 +32,9 @@ namespace {
         int padding;
     };
 
-    const std::vector<Geometry> STRIDED = {{8, 8, 1, 3, 2, 2, 1}, {9, 6, 2, 3, 2, 2, 0}, {8, 6, 2, 1, 2, 2, 0}, {12, 7, 1, 3, 3, 2, 1}};
+    const std::vector<Geometry> STRIDED   = {{8, 8, 1, 3, 2, 2, 1}, {9, 6, 2, 3, 2, 2, 0}, {8, 6, 2, 1, 2, 2, 0}, {12, 7, 1, 3, 3, 2, 1}, {8, 9, 2, 3, 1, 2, 1}, {9, 8, 1, 3, 2, 1, 0}};
+    const Geometry VERTICAL_STRIDE        = {8, 9, 2, 3, 1, 2, 1};
+    const Geometry SMALLER_THAN_KERNEL    = {2, 2, 1, 3, 2, 2, 0};
     const Geometry DENSE                = {8, 8, 1, 3, 1, 1, 1};
     const std::vector<Geometry> POINTWISE = {{8, 6, 1, 1, 1, 1, 0}, {5, 7, 3, 1, 1, 1, 0}};
 
@@ -61,7 +64,8 @@ namespace {
     }
 
     bool is_strided_conv(const ggml_tensor* node) {
-        return node->op == GGML_OP_CONV_2D && node->op_params[STRIDE_PARAM] > UNIT_STRIDE;
+        return node->op == GGML_OP_CONV_2D &&
+               (node->op_params[STRIDE_0_PARAM] > UNIT_STRIDE || node->op_params[STRIDE_1_PARAM] > UNIT_STRIDE);
     }
 
     bool accepts_every_op(const ggml_tensor*) {
@@ -74,6 +78,14 @@ namespace {
 
     bool rejects_strided_conv(const ggml_tensor* node) {
         return !is_strided_conv(node);
+    }
+
+    bool rejects_mul_mat(const ggml_tensor* node) {
+        return node->op != GGML_OP_MUL_MAT;
+    }
+
+    bool rejects_cont(const ggml_tensor* node) {
+        return node->op != GGML_OP_CONT;
     }
 
     bool rejects_strided_conv_and_pool(const ggml_tensor* node) {
@@ -202,6 +214,21 @@ namespace {
         require(!sd_backend_prefers_linear_pointwise_conv(nullptr), "A null backend keeps pointwise convolutions");
     }
 
+    bool linear_form_is_supported(const ggml_ext_op_support_t& supports) {
+        Storage storage;
+        Inputs in           = make_inputs(storage.ctx, POINTWISE[0]);
+        ggml_tensor* linear = ggml_ext_conv_2d_pointwise_as_linear(storage.ctx, in.x, in.w, in.b);
+        return ggml_ext_ops_supported(linear, in.x, supports);
+    }
+
+    void test_linear_form_needs_every_op() {
+        require(linear_form_is_supported(nullptr), "No support check must accept the linear form");
+        require(linear_form_is_supported(accepts_every_op), "A backend with every op must accept the linear form");
+        require(!linear_form_is_supported(rejects_mul_mat), "A backend without MUL_MAT must keep the pointwise convolution");
+        require(!linear_form_is_supported(rejects_cont), "A backend without CONT must keep the pointwise convolution");
+        require(!linear_form_is_supported(rejects_every_op), "A backend without any op must keep the pointwise convolution");
+    }
+
     bool selects_subsampling(const Geometry& geometry, const ggml_ext_op_support_t& supports) {
         Storage storage;
         Inputs in = make_inputs(storage.ctx, geometry);
@@ -217,23 +244,38 @@ namespace {
         require(!selects_subsampling(strided, rejects_strided_conv_and_pool), "A backend without pooling must keep the strided convolution");
         require(!selects_subsampling(strided, rejects_every_op), "A backend without convolution must keep the strided convolution");
         require(!selects_subsampling(DENSE, rejects_every_op), "A dense convolution must never be subsampled");
+        require(selects_subsampling(VERTICAL_STRIDE, rejects_strided_conv), "A stride in one direction only must be subsampled too");
+    }
+
+    void test_input_smaller_than_kernel_keeps_strided(ggml_backend_t backend) {
+        require(!selects_subsampling(SMALLER_THAN_KERNEL, rejects_strided_conv),
+                "An input smaller than the kernel has no dense output and must keep the strided convolution");
+        require_close(compute_conv(backend, SMALLER_THAN_KERNEL, build_reference),
+                      compute_conv(backend, SMALLER_THAN_KERNEL, build_without_strided_conv),
+                      "An input smaller than the kernel must give the strided result");
+    }
+
+    int run() {
+        ggml_backend_load_all();
+        SDBackendHandle backend(sd_backend_cpu_init());
+        try {
+            require(backend.get() != nullptr, "CPU backend unavailable");
+            test_subsampled_matches_strided(backend.get());
+            test_form_selection(backend.get());
+            test_input_smaller_than_kernel_keeps_strided(backend.get());
+            test_linear_matches_pointwise(backend.get());
+            test_linear_form_needs_every_op();
+            test_token_layout_round_trips(backend.get());
+            test_pointwise_detection(backend.get());
+        } catch (const std::exception& error) {
+            std::cerr << "FAIL " << error.what() << "\n";
+            return 1;
+        }
+        std::cout << "PASS strided convolution falls back to a subsampled dense one only when the backend lacks it\n";
+        return 0;
     }
 }
 
 int main() {
-    ggml_backend_load_all();
-    SDBackendHandle backend(sd_backend_cpu_init());
-    try {
-        require(backend.get() != nullptr, "CPU backend unavailable");
-        test_subsampled_matches_strided(backend.get());
-        test_form_selection(backend.get());
-        test_linear_matches_pointwise(backend.get());
-        test_token_layout_round_trips(backend.get());
-        test_pointwise_detection(backend.get());
-    } catch (const std::exception& error) {
-        std::cerr << "FAIL " << error.what() << "\n";
-        return 1;
-    }
-    std::cout << "PASS strided convolution falls back to a subsampled dense one only when the backend lacks it\n";
-    return 0;
+    return conv_subsample_test::run();
 }

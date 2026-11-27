@@ -97,6 +97,10 @@ add_executable(test-conv-subsample test-conv-subsample.cpp)
 target_link_libraries(test-conv-subsample PRIVATE stable-diffusion)
 add_test(NAME test-conv-subsample COMMAND test-conv-subsample)
 
+add_executable(test-spatial-transformer-tokens test-spatial-transformer-tokens.cpp)
+target_link_libraries(test-spatial-transformer-tokens PRIVATE stable-diffusion)
+add_test(NAME test-spatial-transformer-tokens COMMAND test-spatial-transformer-tokens)
+
 # CoreML sidecars. Needs fixtures from tests/coreml/make_fixtures.py (coremltools), so it is not an add_test:
 #   python tests/coreml/make_fixtures.py build/coreml-fixtures && build/bin/test-coreml build/coreml-fixtures
 if(SD_COREML AND NOT SD_BUILD_SHARED_LIBS)

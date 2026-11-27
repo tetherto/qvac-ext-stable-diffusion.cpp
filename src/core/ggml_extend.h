@@ -159,6 +159,9 @@ ggml_tensor* ggml_ext_conv_2d_pointwise_tokens(ggml_context* ctx, ggml_tensor* t
 
 ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b);
 
+// True when the backend runs every op on the way from input to result. Reshapes, views and permutes are not asked.
+bool ggml_ext_ops_supported(const ggml_tensor* result, const ggml_tensor* input, const ggml_ext_op_support_t& supports);
+
 ggml_tensor* ggml_ext_conv_2d_direct_subsampled(ggml_context* ctx, ggml_tensor* w, ggml_tensor* x, int s0, int s1, int p0, int p1, int d0, int d1);
 
 // w: [OC，IC, KD, 1 * 1]

@@ -447,7 +447,7 @@ ggml_tensor* ggml_ext_conv_1d(ggml_context* ctx,
     return result;
 }
 
-struct ggml_ext_conv_2d_geometry {
+struct Conv2dGeometry {
     int s0;
     int s1;
     int p0;
@@ -496,13 +496,49 @@ ggml_tensor* ggml_ext_conv_2d_pointwise_as_linear(ggml_context* ctx, ggml_tensor
     return ggml_ext_tokens_to_image(ctx, tokens, x->ne[0], x->ne[1]);
 }
 
+static int64_t ggml_ext_conv_2d_dense_extent(int64_t input, int64_t kernel, int padding, int dilation) {
+    return input + 2 * padding - dilation * (kernel - 1);
+}
+
+// A strided convolution truncates its output size towards zero, so it can give one pixel where the dense form has none.
+static bool ggml_ext_conv_2d_has_dense_output(const ggml_tensor* w, const ggml_tensor* x, const Conv2dGeometry& geometry) {
+    return ggml_ext_conv_2d_dense_extent(x->ne[0], w->ne[0], geometry.p0, geometry.d0) > 0 &&
+           ggml_ext_conv_2d_dense_extent(x->ne[1], w->ne[1], geometry.p1, geometry.d1) > 0;
+}
+
+static bool ggml_ext_is_layout_op(ggml_op op) {
+    return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+static bool ggml_ext_sources_supported(const ggml_tensor* result, const ggml_tensor* input, const ggml_ext_op_support_t& supports) {
+    for (const ggml_tensor* source : result->src) {
+        if (source != nullptr && !ggml_ext_ops_supported(source, input, supports)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ggml_ext_ops_supported(const ggml_tensor* result, const ggml_tensor* input, const ggml_ext_op_support_t& supports) {
+    if (!supports || result == input || result->op == GGML_OP_NONE) {
+        return true;
+    }
+    if (!ggml_ext_is_layout_op(result->op) && !supports(result)) {
+        return false;
+    }
+    return ggml_ext_sources_supported(result, input, supports);
+}
+
 static ggml_tensor* ggml_ext_conv_2d_direct_supported(ggml_context* ctx,
                                                       ggml_tensor* w,
                                                       ggml_tensor* x,
-                                                      const ggml_ext_conv_2d_geometry& geometry,
+                                                      const Conv2dGeometry& geometry,
                                                       const ggml_ext_op_support_t& supports) {
     ggml_tensor* strided = ggml_conv_2d_direct(ctx, w, x, geometry.s0, geometry.s1, geometry.p0, geometry.p1, geometry.d0, geometry.d1);
     if (!supports || !ggml_ext_conv_2d_is_strided(geometry.s0, geometry.s1) || supports(strided)) {
+        return strided;
+    }
+    if (!ggml_ext_conv_2d_has_dense_output(w, x, geometry)) {
         return strided;
     }
     ggml_tensor* subsampled = ggml_ext_conv_2d_direct_subsampled(ctx, w, x, geometry.s0, geometry.s1, geometry.p0, geometry.p1, geometry.d0, geometry.d1);
