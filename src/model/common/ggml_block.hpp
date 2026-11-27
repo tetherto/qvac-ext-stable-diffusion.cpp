@@ -995,7 +995,7 @@ public:
                 b = ctx->weight_adapter->patch_weight(ctx->ggml_ctx, ctx->backend, b, prefix + "bias");
             }
         }
-        return ggml_ext_group_norm(ctx->ggml_ctx, x, w, b, num_groups, eps);
+        return ggml_ext_group_norm(ctx->ggml_ctx, x, w, b, num_groups, eps, ggml_ext_backend_op_support(ctx->backend));
     }
 };
 
