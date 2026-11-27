@@ -174,8 +174,8 @@ The Metal numbers above come from an sd-cli built from the 2026-03-01 branch, me
 
 ```bash
 python script/coreml/export_artifacts.py --out artifacts --models sdturbo --sd-cli build/bin/sd-cli
-sd-cli -m sdturbo-Q8_0.gguf --coreml-unet sdturbo_unet_p8.mlmodelc --taesd taesd.safetensors \
-       --coreml-tae taesd_decoder.mlmodelc --cfg-scale 1 --steps 4 -p "portrait of a lovely cat"
+build/bin/sd-cli -m artifacts/sdturbo-Q8_0.gguf --coreml-unet artifacts/sdturbo_unet_p8.mlmodelc \
+       --taesd artifacts/taesd.safetensors --coreml-tae artifacts/taesd_decoder.mlmodelc --cfg-scale 1 --steps 4 -p "portrait of a lovely cat"
 ```
 
 Measured with `sd-bench` on a Mac mini (M4, 16 GB, macOS 15.3) and a Mac Studio (M3 Ultra, 60-core GPU, macOS 26.7): 512x512, CFG 1, TAESD as the decoder, mean of 3 warm images. It has not been measured on an iPhone yet.
@@ -249,7 +249,7 @@ Known issue: loading several functions of a multifunction model in one process h
 
 ### Tests
 
-`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, the mixed-bit selection, and the warning for exports whose output is not finite. `test_export_artifacts.py` checks the commands `export_artifacts.py` plans for SD-Turbo, without downloading anything.
+`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, the mixed-bit selection, that `p8` stores 8-bit palettes, and the warning for exports whose output is not finite. `test_export_artifacts.py` checks the commands `export_artifacts.py` plans by default and for SD-Turbo, without downloading anything, and with `sd-cli` built (`build/bin/sd-cli` or `SD_CLI`) that the GGUF step keeps the UNet, the VAE and the text encoder of a small random pipeline.
 
 ```bash
 python tests/coreml/make_fixtures.py build/coreml-fixtures

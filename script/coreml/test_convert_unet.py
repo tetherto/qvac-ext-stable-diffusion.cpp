@@ -3,13 +3,15 @@
 Small random UNets and attention layers, float32 on the CPU, no model download; about 10 s:
   python -m unittest script/coreml/test_convert_unet.py
 
-pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
+pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4 scikit-learn==1.5.2
 """
 
 import sys
 import unittest
 from pathlib import Path
 
+import coremltools as ct
+import numpy as np
 import torch
 from diffusers import UNet2DConditionModel
 from diffusers.models.attention_processor import Attention, AttnProcessor2_0
@@ -55,6 +57,26 @@ def tiny_sdxl_unet():
         projection_class_embeddings_input_dim=16 + 6 * 8,
         norm_num_groups=8,
     ).eval()
+
+
+PALETTIZED_OP = "constexpr_lut_to_dense"
+CONV_SHAPE = (1, 48, 8, 8)
+
+
+def converted_conv():
+    """One 3x3 convolution whose weight is large enough to be palettized, as an fp16 CoreML program."""
+    torch.manual_seed(4)
+    conv = torch.nn.Conv2d(CONV_SHAPE[1], 64, 3).eval()
+    assert conv.weight.numel() >= convert_unet.PALETTE_THRESHOLD
+    traced = torch.jit.trace(conv, torch.zeros(CONV_SHAPE))
+    return ct.convert(traced, convert_to="mlprogram", inputs=[ct.TensorType(name="x", shape=CONV_SHAPE, dtype=np.float32)],
+                      compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.iOS17,
+                      skip_model_load=True)
+
+
+def palette_sizes(mlmodel):
+    operations = mlmodel._mil_program.functions["main"].operations
+    return [op.lut.val.size for op in operations if op.op_type == PALETTIZED_OP]
 
 
 def rel_err(a, b):
@@ -147,6 +169,14 @@ class UNetParity(unittest.TestCase):
         self.assertLessEqual(average, 4.5)
         self.assertGreater(average, 4.0)
         self.assertEqual(bits[names[0]], 6)
+
+    def test_p8_palettizes_large_weights_to_eight_bits(self):
+        self.assertEqual(palette_sizes(converted_conv()), [])
+        compressed = convert_unet.compress_weights(converted_conv(), "p8", "kmeans", 1)
+        self.assertEqual(palette_sizes(compressed), [2 ** 8])
+
+    def test_fp16_leaves_weights_uncompressed(self):
+        self.assertEqual(palette_sizes(convert_unet.compress_weights(converted_conv(), "fp16", "kmeans", 1)), [])
 
     def test_non_finite_output_names_the_compute_units_to_avoid(self):
         finite = torch.zeros(1, 4, 8, 8).numpy()

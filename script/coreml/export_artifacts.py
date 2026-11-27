@@ -28,7 +28,8 @@ directory and sd-cli. Steps run one at a time (the 6-bit SD 2.1 export alone nee
     run it on a Mac with 32 GB or more. Its per-layer sensitivity pass takes about 20 minutes on an M3 Ultra.
 
 The GGUF steps need an sd-cli whose `-M convert` reads a whole diffusers folder. On the 2026-11-01 branch it
-reads only text_encoder/ (610 tensors for SDXS, no UNet or VAE); build sd-cli from master for --sd-cli.
+does for SD-Turbo (1,306 tensors: UNet, VAE and text encoder), but for SDXS it reads only text_encoder/
+(610 tensors, no UNet or VAE); build sd-cli from master for --sd-cli when exporting SDXS.
 
 Run on a Mac with the CoreML toolchain:
   pip install torch==2.5.1 diffusers==0.31.0 transformers==4.46.3 coremltools==8.3.0 numpy==1.26.4 scikit-learn==1.5.2 huggingface_hub
@@ -77,6 +78,9 @@ SOURCES = {
 }
 
 
+DEFAULT_MODELS = ("sdxs", "sd21base")
+KNOWN_MODELS = (*DEFAULT_MODELS, "sdturbo", "sdxl")
+TAESD_MODELS = {"sd21base", "sdturbo"}
 SKIP_EXISTING = False
 
 
@@ -170,7 +174,6 @@ def export_taesd(out, sources, dry_run):
 def export_sd21base(out, sources, sd_cli, dry_run, kmeans_workers):
     src = download("sd21base", sources, dry_run)
     export_q8_gguf(src, sources / "sd21base-diffusers", out / "sd21base-Q8_0.gguf", sd_cli, dry_run)
-    export_taesd(out, sources, dry_run)
     if not exists(out / "sd21base_unet_p6.mlmodelc"):
         convert("convert_unet.py", ["--unet", src / "unet", "--out", out / "sd21base_unet_p6.mlpackage", "--precision",
                                     "p6", "--batch", "2", "--attention", "split_einsum_v2", "--kmeans-workers",
@@ -181,7 +184,6 @@ def export_sd21base(out, sources, sd_cli, dry_run, kmeans_workers):
 def export_sdturbo(out, sources, sd_cli, dry_run, kmeans_workers):
     src = download("sdturbo", sources, dry_run)
     export_q8_gguf(src, sources / "sdturbo-diffusers", out / "sdturbo-Q8_0.gguf", sd_cli, dry_run)
-    export_taesd(out, sources, dry_run)
     # Batch 1: SD-Turbo runs without CFG. docs/coreml.md has the measurements behind both exports.
     if not exists(out / "sdturbo_unet_p8.mlmodelc"):
         convert("convert_unet.py", ["--unet", src / "unet", "--out", out / "sdturbo_unet_p8.mlpackage", "--precision",
@@ -218,7 +220,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="directory for the artifacts")
     parser.add_argument("--sources", help="directory for downloaded sources (default: <out>/sources)")
-    parser.add_argument("--models", default="sdxs,sd21base", help="comma-separated: sdxs, sd21base, sdturbo, sdxl")
+    parser.add_argument("--models", default=",".join(DEFAULT_MODELS),
+                        help="comma-separated: " + ", ".join(KNOWN_MODELS))
     parser.add_argument("--sd-cli", default="build/bin/sd-cli", help="sd-cli, used to convert the models to GGUF")
     parser.add_argument("--skip-existing", action="store_true", help="skip artifacts that already exist in --out")
     parser.add_argument("--kmeans-workers", type=int, default=2, help="k-means workers for the palettized exports")
@@ -230,7 +233,7 @@ def main():
     out = Path(args.out).resolve()
     sources = Path(args.sources).resolve() if args.sources else out / "sources"
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    unknown = set(models) - {"sdxs", "sd21base", "sdturbo", "sdxl"}
+    unknown = set(models) - set(KNOWN_MODELS)
     if unknown:
         raise SystemExit(f"error: unknown models {sorted(unknown)}")
     if not args.dry_run:
@@ -240,6 +243,8 @@ def main():
 
     if "sdxs" in models:
         export_sdxs(out, sources, Path(args.sd_cli).resolve(), args.dry_run)
+    if TAESD_MODELS & set(models):
+        export_taesd(out, sources, args.dry_run)
     if "sd21base" in models:
         export_sd21base(out, sources, Path(args.sd_cli).resolve(), args.dry_run, args.kmeans_workers)
     if "sdturbo" in models:

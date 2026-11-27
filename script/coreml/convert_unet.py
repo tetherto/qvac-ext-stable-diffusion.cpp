@@ -306,6 +306,54 @@ def mil_weight_name(param_name):
 
 
 # SD_COREML_COMPUTE_UNITS values (docs/coreml.md) for the compute units every export is checked on.
+LINEAR_QUANTIZE_THRESHOLD = 2048
+LINEAR_BLOCK_SIZE = 32
+MIXED_LOW_BITS = 4
+
+
+def linear_quantize(mlmodel, precision):
+    # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
+    granularity = ({"granularity": "per_block", "block_size": LINEAR_BLOCK_SIZE} if precision == "w8b"
+                   else {"granularity": "per_channel"})
+    op_config = ct.optimize.coreml.OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
+                                                           weight_threshold=LINEAR_QUANTIZE_THRESHOLD, **granularity)
+    return ct.optimize.coreml.linear_quantize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
+
+
+def palette_config(nbits, palette_mode, kmeans_workers):
+    return ct.optimize.coreml.OpPalettizerConfig(mode=palette_mode, nbits=nbits, weight_threshold=PALETTE_THRESHOLD,
+                                                 num_kmeans_workers=kmeans_workers)
+
+
+def palettize_uniformly(mlmodel, nbits, palette_mode, kmeans_workers):
+    config = palette_config(nbits, palette_mode, kmeans_workers)
+    return ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(config))
+
+
+def palettize_mixed(mlmodel, bits, palette_mode, kmeans_workers):
+    consts  = {op.name for op in mlmodel._mil_program.functions["main"].operations if op.op_type == "const"}
+    by_name = {mil_weight_name(n): palette_config(b, palette_mode, kmeans_workers)
+               for n, b in bits.items() if b != MIXED_LOW_BITS}
+    missing = sorted(set(by_name) - consts)
+    if missing:
+        raise SystemExit(f"error: {len(missing)} weights not found in the CoreML program, e.g. {missing[0]}")
+    return ct.optimize.coreml.palettize_weights(
+        mlmodel, ct.optimize.coreml.OptimizationConfig(
+            global_config=palette_config(MIXED_LOW_BITS, palette_mode, kmeans_workers), op_name_configs=by_name))
+
+
+def compress_weights(mlmodel, precision, palette_mode, kmeans_workers, bits=None):
+    """Applies --precision to a converted fp16 model: w8/w8b quantize linearly, p8/p6/p4 palettize every weight
+    to that many bits, mixed palettizes each weight to its entry in bits. fp16 is returned unchanged."""
+    if precision in ("w8", "w8b"):
+        return linear_quantize(mlmodel, precision)
+    if precision in ("p8", "p6", "p4"):
+        return palettize_uniformly(mlmodel, int(precision[1:]), palette_mode, kmeans_workers)
+    if precision == "mixed":
+        return palettize_mixed(mlmodel, bits, palette_mode, kmeans_workers)
+    return mlmodel
+
+
 COMPUTE_UNITS_ENV = {"CPU_AND_NE": "cpu_ne", "CPU_AND_GPU": "cpu_gpu"}
 
 
@@ -494,30 +542,7 @@ def main():
             minimum_deployment_target=getattr(ct.target, args.target),
             skip_model_load=True,  # loading compiles another full-size temporary copy; the checks use the final model
         )
-        if args.precision in ("w8", "w8b"):
-            # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
-            granularity = {"granularity": "per_block", "block_size": 32} if args.precision == "w8b" else {"granularity": "per_channel"}
-            op_config = ct.optimize.coreml.OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
-                                                                   weight_threshold=2048, **granularity)
-            mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
-                                                                 ct.optimize.coreml.OptimizationConfig(op_config))
-        elif args.precision in ("p8", "p6", "p4"):
-            op_config = ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=int(args.precision[1:]),
-                                                              weight_threshold=PALETTE_THRESHOLD,
-                                                              num_kmeans_workers=args.kmeans_workers)
-            mlmodel = ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
-        elif args.precision == "mixed":
-            def palette(nbits):
-                return ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=nbits,
-                                                             weight_threshold=PALETTE_THRESHOLD,
-                                                             num_kmeans_workers=args.kmeans_workers)
-            consts  = {op.name for op in mlmodel._mil_program.functions["main"].operations if op.op_type == "const"}
-            by_name = {mil_weight_name(n): palette(b) for n, b in bits.items() if b != 4}
-            missing = sorted(set(by_name) - consts)
-            if missing:
-                raise SystemExit(f"error: {len(missing)} weights not found in the CoreML program, e.g. {missing[0]}")
-            mlmodel = ct.optimize.coreml.palettize_weights(
-                mlmodel, ct.optimize.coreml.OptimizationConfig(global_config=palette(4), op_name_configs=by_name))
+        mlmodel = compress_weights(mlmodel, args.precision, args.palette_mode, args.kmeans_workers, bits)
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
 
         inputs = {name: tensor.numpy() for name, tensor in zip(shapes, example)}
