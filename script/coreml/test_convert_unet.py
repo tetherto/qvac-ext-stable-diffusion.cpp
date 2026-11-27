@@ -148,6 +148,13 @@ class UNetParity(unittest.TestCase):
         self.assertGreater(average, 4.0)
         self.assertEqual(bits[names[0]], 6)
 
+    def test_non_finite_output_names_the_compute_units_to_avoid(self):
+        finite = torch.zeros(1, 4, 8, 8).numpy()
+        broken = torch.full((1, 4, 8, 8), float("nan")).numpy()
+        self.assertIsNone(convert_unet.unusable_units_warning("CPU_AND_GPU", finite))
+        self.assertIn("SD_COREML_COMPUTE_UNITS=cpu_gpu", convert_unet.unusable_units_warning("CPU_AND_GPU", broken))
+        self.assertIn("SD_COREML_COMPUTE_UNITS=cpu_ne", convert_unet.unusable_units_warning("CPU_AND_NE", broken))
+
     def test_silu_rewrite(self):
         x = torch.linspace(-20, 20, 4001)
         self.assertLess(rel_err(convert_unet.silu_via_tanh(None, x), torch.nn.functional.silu(x)), 1e-6)

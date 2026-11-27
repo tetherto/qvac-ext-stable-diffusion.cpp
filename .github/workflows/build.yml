@@ -410,7 +410,7 @@ jobs:
           build/bin/test-coreml build/coreml-fixtures
 
       - name: Converter parity tests
-        run: venv/bin/python -m unittest script/coreml/test_convert_unet.py
+        run: venv/bin/python -m unittest script/coreml/test_convert_unet.py script/coreml/test_export_artifacts.py
 
   windows-latest-cmake:
     runs-on: windows-2022

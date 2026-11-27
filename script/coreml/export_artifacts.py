@@ -12,6 +12,12 @@ directory and sd-cli. Steps run one at a time (the 6-bit SD 2.1 export alone nee
     sd21base_unet_p6.mlmodelc      UNet on CoreML, 6-bit palette, batch 2, split-einsum attention  --coreml-unet
     taesd.safetensors              TAESD weights (sd.cpp still loads them)     --taesd
     taesd_decoder.mlmodelc         TAESD decoder on CoreML                     --coreml-tae
+  sdturbo     SD-Turbo, 512x512, 1-4 steps, no CFG; not in the default --models
+    sdturbo-Q8_0.gguf              text encoder + UNet + VAE for sd.cpp (sd-cli -M convert); -m
+    sdturbo_unet_p8.mlmodelc       UNet on CoreML for the ANE: 8-bit palette, batch 1, standard attention  --coreml-unet
+    sdturbo_unet_fp16.mlmodelc     UNet on CoreML for the GPU (SD_COREML_COMPUTE_UNITS=cpu_gpu): fp16, batch 1,
+                                   standard attention                        --coreml-unet
+    taesd.safetensors, taesd_decoder.mlmodelc   as for sd21base                 --taesd, --coreml-tae
   sdxl        SDXL 1.0 base, 768x768, 20 steps, CFG > 1 (batched); not in the default --models
     sd_xl_base_1.0.safetensors     text encoders + VAE for sd.cpp (its UNet is not loaded); -m
     sdxl_unet_mixed/               UNet on CoreML, 4/6-bit mixed palette (4.5 bits on average), batch 2,
@@ -32,6 +38,8 @@ Run on a Mac with the CoreML toolchain:
 Measured with these artifacts (512x512, warm, mean of 3 images; see docs/coreml.md):
   SDXS on iPhone 16, UNet + decoder on the ANE: 105 ms per image (ggml Metal: 1,758 ms).
   SD 2.1-base on an M2, UNet + decoder on the ANE: 7.5 s per image at 20 steps (ggml Metal, SD 2.1: 60 s).
+  SD-Turbo on an M4, 4 steps, UNet + decoder on the ANE: 775 ms per image (ggml Metal: 2,873 ms).
+  SD-Turbo on an M3 Ultra, 4 steps, UNet on the GPU, decoder on CoreML: 272 ms per image (ggml Metal: 1,138 ms).
   SDXL on an M2 Air at 768x768, UNet + decoder on the ANE: 26 s per image at 20 steps (ggml Metal, Q8_0: 162-232 s).
 """
 
@@ -45,15 +53,19 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 # Pinned sources. Licenses: SDXS and SD 2.1-base are OpenRAIL++, TAESD is MIT.
+SD2_FP16_PIPELINE = ["model_index.json", "scheduler/*", "tokenizer/*", "unet/config.json",
+                     "unet/diffusion_pytorch_model.fp16.safetensors", "text_encoder/config.json",
+                     "text_encoder/model.fp16.safetensors", "vae/config.json",
+                     "vae/diffusion_pytorch_model.fp16.safetensors"]
 SOURCES = {
     "sdxs": {"repo": "IDKiro/sdxs-512-dreamshaper", "revision": "76f720262bb051da75666b22c902a78c8e16c763",
              "include": ["model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "unet/*", "vae/*",
                          "feature_extractor/*"]},
     "sd21base": {"repo": "sd2-community/stable-diffusion-2-1-base", "revision": "4e63672c03103b6c636b8fb4119ba982469b2955",
-                 "include": ["model_index.json", "scheduler/*", "tokenizer/*", "unet/config.json",
-                             "unet/diffusion_pytorch_model.fp16.safetensors", "text_encoder/config.json",
-                             "text_encoder/model.fp16.safetensors", "vae/config.json",
-                             "vae/diffusion_pytorch_model.fp16.safetensors"]},
+                 "include": SD2_FP16_PIPELINE},
+    # License: SD-Turbo is under the Stability AI Community License (see LICENSE.md in the repo).
+    "sdturbo": {"repo": "stabilityai/sd-turbo", "revision": "b261bac6fd2cf515557d5d0707481eafa0485ec2",
+                "include": SD2_FP16_PIPELINE},
     "taesd": {"repo": "madebyollin/taesd", "revision": "614f76814bbe30edbe2e627ace1c2234c81a2c0e",
               "include": ["config.json", "diffusion_pytorch_model.safetensors"]},
     # Licenses: SDXL is OpenRAIL++, TAESDXL is MIT.
@@ -140,23 +152,46 @@ def export_sdxs(out, sources, sd_cli, dry_run):
         keep_compiled(out / "sdxs_tae_decoder.mlpackage", dry_run)
 
 
-def export_sd21base(out, sources, sd_cli, dry_run, kmeans_workers):
-    src = download("sd21base", sources, dry_run)
-    if not exists(out / "sd21base-Q8_0.gguf"):
-        # Q8_0 like the addon's SD 2.1 file; sd-cli keeps convolutions, norms and the text encoder in F16.
-        view = fp16_view(src, sources / "sd21base-diffusers", dry_run)
-        run([sd_cli, "-M", "convert", "-m", view, "-o", out / "sd21base-Q8_0.gguf", "--type", "q8_0"], dry_run)
+def export_q8_gguf(src, view, gguf, sd_cli, dry_run):
+    """Q8_0 like the addon's SD 2.x files; sd-cli keeps convolutions, norms and the text encoder in F16."""
+    if not exists(gguf):
+        run([sd_cli, "-M", "convert", "-m", fp16_view(src, view, dry_run), "-o", gguf, "--type", "q8_0"], dry_run)
+
+
+def export_taesd(out, sources, dry_run):
     taesd = download("taesd", sources, dry_run)
     if not exists(out / "taesd.safetensors"):
         run(["cp", taesd / "diffusion_pytorch_model.safetensors", out / "taesd.safetensors"], dry_run)
     if not exists(out / "taesd_decoder.mlmodelc"):
         convert("convert_tae_decoder.py", ["--vae", taesd, "--out", out / "taesd_decoder.mlpackage", "--compile"], dry_run)
         keep_compiled(out / "taesd_decoder.mlpackage", dry_run)
+
+
+def export_sd21base(out, sources, sd_cli, dry_run, kmeans_workers):
+    src = download("sd21base", sources, dry_run)
+    export_q8_gguf(src, sources / "sd21base-diffusers", out / "sd21base-Q8_0.gguf", sd_cli, dry_run)
+    export_taesd(out, sources, dry_run)
     if not exists(out / "sd21base_unet_p6.mlmodelc"):
         convert("convert_unet.py", ["--unet", src / "unet", "--out", out / "sd21base_unet_p6.mlpackage", "--precision",
                                     "p6", "--batch", "2", "--attention", "split_einsum_v2", "--kmeans-workers",
                                     str(kmeans_workers), "--compile"], dry_run)
         keep_compiled(out / "sd21base_unet_p6.mlpackage", dry_run)
+
+
+def export_sdturbo(out, sources, sd_cli, dry_run, kmeans_workers):
+    src = download("sdturbo", sources, dry_run)
+    export_q8_gguf(src, sources / "sdturbo-diffusers", out / "sdturbo-Q8_0.gguf", sd_cli, dry_run)
+    export_taesd(out, sources, dry_run)
+    # Batch 1: SD-Turbo runs without CFG. docs/coreml.md has the measurements behind both exports.
+    if not exists(out / "sdturbo_unet_p8.mlmodelc"):
+        convert("convert_unet.py", ["--unet", src / "unet", "--out", out / "sdturbo_unet_p8.mlpackage", "--precision",
+                                    "p8", "--kmeans-workers", str(kmeans_workers), "--compile"],
+                dry_run)
+        keep_compiled(out / "sdturbo_unet_p8.mlpackage", dry_run)
+    if not exists(out / "sdturbo_unet_fp16.mlmodelc"):
+        convert("convert_unet.py", ["--unet", src / "unet", "--out", out / "sdturbo_unet_fp16.mlpackage", "--compile"],
+                dry_run)
+        keep_compiled(out / "sdturbo_unet_fp16.mlpackage", dry_run)
 
 
 def export_sdxl(out, sources, dry_run, kmeans_workers):
@@ -183,7 +218,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="directory for the artifacts")
     parser.add_argument("--sources", help="directory for downloaded sources (default: <out>/sources)")
-    parser.add_argument("--models", default="sdxs,sd21base", help="comma-separated: sdxs, sd21base, sdxl")
+    parser.add_argument("--models", default="sdxs,sd21base", help="comma-separated: sdxs, sd21base, sdturbo, sdxl")
     parser.add_argument("--sd-cli", default="build/bin/sd-cli", help="sd-cli, used to convert the models to GGUF")
     parser.add_argument("--skip-existing", action="store_true", help="skip artifacts that already exist in --out")
     parser.add_argument("--kmeans-workers", type=int, default=2, help="k-means workers for the palettized exports")
@@ -195,7 +230,7 @@ def main():
     out = Path(args.out).resolve()
     sources = Path(args.sources).resolve() if args.sources else out / "sources"
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    unknown = set(models) - {"sdxs", "sd21base", "sdxl"}
+    unknown = set(models) - {"sdxs", "sd21base", "sdturbo", "sdxl"}
     if unknown:
         raise SystemExit(f"error: unknown models {sorted(unknown)}")
     if not args.dry_run:
@@ -207,6 +242,8 @@ def main():
         export_sdxs(out, sources, Path(args.sd_cli).resolve(), args.dry_run)
     if "sd21base" in models:
         export_sd21base(out, sources, Path(args.sd_cli).resolve(), args.dry_run, args.kmeans_workers)
+    if "sdturbo" in models:
+        export_sdturbo(out, sources, Path(args.sd_cli).resolve(), args.dry_run, args.kmeans_workers)
     if "sdxl" in models:
         export_sdxl(out, sources, args.dry_run, args.kmeans_workers)
     print(f"done: artifacts in {out}")
