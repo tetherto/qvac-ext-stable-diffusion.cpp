@@ -397,12 +397,12 @@ jobs:
       - name: Python dependencies
         run: |
           python3 -m venv venv
-          venv/bin/pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4
+          venv/bin/pip install torch==2.5.1 diffusers==0.31.0 coremltools==8.3.0 numpy==1.26.4 scikit-learn==1.5.2
 
       - name: Build
         run: |
           cmake -B build -DSD_COREML=ON -DSD_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target test-coreml -j 4
+          cmake --build build --target test-coreml sd-cli -j 4
 
       - name: CoreML sidecar tests
         run: |
@@ -410,7 +410,7 @@ jobs:
           build/bin/test-coreml build/coreml-fixtures
 
       - name: Converter parity tests
-        run: venv/bin/python -m unittest script/coreml/test_convert_unet.py
+        run: venv/bin/python -m unittest script/coreml/test_convert_unet.py script/coreml/test_export_artifacts.py
 
   windows-latest-cmake:
     runs-on: windows-2022

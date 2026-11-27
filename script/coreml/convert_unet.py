@@ -24,6 +24,8 @@ On iOS, prefer p6 (6-bit palettized, Apple's ml-stable-diffusion recipe): the AN
 weights directly, so the compiled model is cached, while w8b is expanded to fp16 on the CPU on every
 load (about 105 s and 5.3 GB on an iPhone 16). p6 runs k-means over every large layer, which takes
 a long time and much memory: 20-40 minutes for SD 2.1 on a 16 GB Mac (needs scikit-learn).
+Distilled few-step UNets (SD-Turbo) lose detail at 6 bits; p8 (8-bit palette) keeps them as close to fp16 as a
+Q8_0 GGUF is. A split_einsum_v2 export with chunked queries returns NaN on the GPU; the checks at the end warn.
 SDXL's UNet is 5.1 GB in fp16 (10.3 GB as traced in fp32); for iOS use mixed and --chunks 2 (two chunks of about
 700 MB, the size of Apple's iOS SDXL chunks). Plain p4 loses fine texture over 20 steps; mixed gives 6 bits to the
 quarter of the weights most sensitive to 4 bits and matches p6 at 75% of its size. The export needs about 30 GB of
@@ -34,6 +36,7 @@ Examples:
   python convert_unet.py --unet sdxs/unet --out sdxs_unet_multi.mlpackage --sizes 512x512,512x768,768x512 --compile
   python convert_unet.py --unet sd21/unet --out sd21_unet_w8b.mlpackage --precision w8b --compile
   python convert_unet.py --unet sd21-base/unet --out sd21base_unet_p6.mlpackage --precision p6 --batch 2 --compile
+  python convert_unet.py --unet sd-turbo/unet --out sdturbo_unet_p8.mlpackage --precision p8 --compile
   python convert_unet.py --unet sdxl-base/unet --out sdxl_unet_mixed.mlpackage --precision mixed --batch 2 \
       --attention split_einsum_v2 --sizes 768x768 --chunks 2 --compile
 
@@ -302,6 +305,67 @@ def mil_weight_name(param_name):
     return "unet_" + param_name.replace(".", "_") + "_to_fp16"
 
 
+# SD_COREML_COMPUTE_UNITS values (docs/coreml.md) for the compute units every export is checked on.
+LINEAR_QUANTIZE_THRESHOLD = 2048
+LINEAR_BLOCK_SIZE = 32
+MIXED_LOW_BITS = 4
+
+
+def linear_quantize(mlmodel, precision):
+    # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
+    granularity = ({"granularity": "per_block", "block_size": LINEAR_BLOCK_SIZE} if precision == "w8b"
+                   else {"granularity": "per_channel"})
+    op_config = ct.optimize.coreml.OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
+                                                           weight_threshold=LINEAR_QUANTIZE_THRESHOLD, **granularity)
+    return ct.optimize.coreml.linear_quantize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
+
+
+def palette_config(nbits, palette_mode, kmeans_workers):
+    return ct.optimize.coreml.OpPalettizerConfig(mode=palette_mode, nbits=nbits, weight_threshold=PALETTE_THRESHOLD,
+                                                 num_kmeans_workers=kmeans_workers)
+
+
+def palettize_uniformly(mlmodel, nbits, palette_mode, kmeans_workers):
+    config = palette_config(nbits, palette_mode, kmeans_workers)
+    return ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(config))
+
+
+def palettize_mixed(mlmodel, bits, palette_mode, kmeans_workers):
+    consts  = {op.name for op in mlmodel._mil_program.functions["main"].operations if op.op_type == "const"}
+    by_name = {mil_weight_name(n): palette_config(b, palette_mode, kmeans_workers)
+               for n, b in bits.items() if b != MIXED_LOW_BITS}
+    missing = sorted(set(by_name) - consts)
+    if missing:
+        raise SystemExit(f"error: {len(missing)} weights not found in the CoreML program, e.g. {missing[0]}")
+    return ct.optimize.coreml.palettize_weights(
+        mlmodel, ct.optimize.coreml.OptimizationConfig(
+            global_config=palette_config(MIXED_LOW_BITS, palette_mode, kmeans_workers), op_name_configs=by_name))
+
+
+def compress_weights(mlmodel, precision, palette_mode, kmeans_workers, bits=None):
+    """Applies --precision to a converted fp16 model: w8/w8b quantize linearly, p8/p6/p4 palettize every weight
+    to that many bits, mixed palettizes each weight to its entry in bits. fp16 is returned unchanged."""
+    if precision in ("w8", "w8b"):
+        return linear_quantize(mlmodel, precision)
+    if precision in ("p8", "p6", "p4"):
+        return palettize_uniformly(mlmodel, int(precision[1:]), palette_mode, kmeans_workers)
+    if precision == "mixed":
+        return palettize_mixed(mlmodel, bits, palette_mode, kmeans_workers)
+    return mlmodel
+
+
+COMPUTE_UNITS_ENV = {"CPU_AND_NE": "cpu_ne", "CPU_AND_GPU": "cpu_gpu"}
+
+
+def unusable_units_warning(units_name, out):
+    """A warning when the export's output on these compute units is not finite, or None when it is usable.
+    Split-einsum attention with chunked queries returns NaN on the GPU for SD 2.x UNets, while the ANE runs it."""
+    if np.isfinite(out).all():
+        return None
+    return (f"warning: {units_name} returns non-finite values for this export; "
+            f"do not run it with SD_COREML_COMPUTE_UNITS={COMPUTE_UNITS_ENV[units_name]}")
+
+
 def parse_size(text):
     width, height = (int(v) for v in text.lower().split("x"))
     if width % 8 or height % 8:
@@ -351,9 +415,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--unet", required=True, help="diffusers UNet folder (the pipeline's unet/ directory)")
     parser.add_argument("--out", required=True, help="output .mlpackage path")
-    parser.add_argument("--precision", choices=["fp16", "w8", "w8b", "p6", "p4", "mixed"], default="fp16",
+    parser.add_argument("--precision", choices=["fp16", "w8", "w8b", "p8", "p6", "p4", "mixed"], default="fp16",
                         help="weights: fp16, int8 with one scale per output channel (w8), int8 with one scale per "
-                             "block of 32 weights (w8b, iOS 18+), a 6-bit (p6) or 4-bit (p4) k-means palette per "
+                             "block of 32 weights (w8b, iOS 18+), an 8-bit (p8), 6-bit (p6) or 4-bit (p4) k-means palette per "
                              "layer, or mixed: 4-bit palettes with 6 bits for the layers most sensitive to 4 bits, "
                              "averaging --mixed-bits (large UNets on iOS: p6 for SD 2.x, mixed for SDXL); compute "
                              "is fp16 in all cases")
@@ -365,13 +429,14 @@ def main():
     parser.add_argument("--attention", choices=["standard", "split_einsum_v2", "ane"], default="standard",
                         help="standard diffusers attention; split_einsum_v2: per-head attention with chunked queries; "
                              "ane: the same attention with the whole transformer block kept channels-first ([B, C, 1, S], "
-                             "Linear as 1x1 conv), as Apple lays it out for the ANE (fastest for SD 2.x)")
+                             "Linear as 1x1 conv), as Apple lays it out for the ANE (fastest for SD 2.x, but an M4 on "
+                             "macOS 15.3 gives wrong images with it; compare images on the target device)")
     parser.add_argument("--query-chunk", type=int, default=512, help="query tokens per chunk for split_einsum_v2")
     parser.add_argument("--palette-mode", choices=["kmeans", "uniform"], default="kmeans",
-                        help="how p6/p4 pick the palette values: kmeans (accurate, slow) or uniform (fast; for "
+                        help="how p8/p6/p4 pick the palette values: kmeans (accurate, slow) or uniform (fast; for "
                              "speed experiments, same file format and run time)")
     parser.add_argument("--kmeans-workers", type=int, default=2,
-                        help="parallel k-means workers for p6/p4; each one adds memory, keep it low on a 16 GB Mac")
+                        help="parallel k-means workers for p8/p6/p4; each one adds memory, keep it low on a 16 GB Mac")
     parser.add_argument("--batch", type=int, default=1, help="UNet batch: 1, or 2 for batched CFG")
     parser.add_argument("--sizes", default="512x512",
                         help="comma-separated image sizes as WIDTHxHEIGHT, only ones the model was trained at "
@@ -477,30 +542,7 @@ def main():
             minimum_deployment_target=getattr(ct.target, args.target),
             skip_model_load=True,  # loading compiles another full-size temporary copy; the checks use the final model
         )
-        if args.precision in ("w8", "w8b"):
-            # Symmetric only: asymmetric (with a zero point) moves the whole UNet off the ANE onto the CPU.
-            granularity = {"granularity": "per_block", "block_size": 32} if args.precision == "w8b" else {"granularity": "per_channel"}
-            op_config = ct.optimize.coreml.OpLinearQuantizerConfig(mode="linear_symmetric", dtype="int8",
-                                                                   weight_threshold=2048, **granularity)
-            mlmodel = ct.optimize.coreml.linear_quantize_weights(mlmodel,
-                                                                 ct.optimize.coreml.OptimizationConfig(op_config))
-        elif args.precision in ("p6", "p4"):
-            op_config = ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=int(args.precision[1:]),
-                                                              weight_threshold=PALETTE_THRESHOLD,
-                                                              num_kmeans_workers=args.kmeans_workers)
-            mlmodel = ct.optimize.coreml.palettize_weights(mlmodel, ct.optimize.coreml.OptimizationConfig(op_config))
-        elif args.precision == "mixed":
-            def palette(nbits):
-                return ct.optimize.coreml.OpPalettizerConfig(mode=args.palette_mode, nbits=nbits,
-                                                             weight_threshold=PALETTE_THRESHOLD,
-                                                             num_kmeans_workers=args.kmeans_workers)
-            consts  = {op.name for op in mlmodel._mil_program.functions["main"].operations if op.op_type == "const"}
-            by_name = {mil_weight_name(n): palette(b) for n, b in bits.items() if b != 4}
-            missing = sorted(set(by_name) - consts)
-            if missing:
-                raise SystemExit(f"error: {len(missing)} weights not found in the CoreML program, e.g. {missing[0]}")
-            mlmodel = ct.optimize.coreml.palettize_weights(
-                mlmodel, ct.optimize.coreml.OptimizationConfig(global_config=palette(4), op_name_configs=by_name))
+        mlmodel = compress_weights(mlmodel, args.precision, args.palette_mode, args.kmeans_workers, bits)
         print(f"{width}x{height}: converted in {time.time() - t0:.1f} s")
 
         inputs = {name: tensor.numpy() for name, tensor in zip(shapes, example)}
@@ -550,6 +592,9 @@ def main():
             cos = cosine(out, reference)
             print(f"{name or 'model'} {units.name}: {dt * 1000:.1f} ms, "
                   f"max abs err {np.abs(out - reference).max():.4f}, cosine {cos:.6f}")
+            warning = unusable_units_warning(units.name, out)
+            if warning:
+                print(warning)
 
     if args.chunks > 1:
         write_chunks(args.out, compiled, args.compile, prediction, checks[0][1:])

@@ -1,6 +1,6 @@
 ## Running the UNet and the tiny decoder on the Apple Neural Engine (CoreML sidecars)
 
-On Apple devices, two parts of the pipeline can run as CoreML models on the Neural Engine (ANE): the UNet of SD 1.x/2.x and SDXL models (`--coreml-unet`), and the tiny autoencoder's decoder used by SDXS and `--taesd` (`--coreml-tae`). The text encoder, tokenizer and scheduler stay on ggml (Metal/CPU). The ggml UNet weights are not loaded when the UNet runs on CoreML.
+On Apple devices, two parts of the pipeline can run as CoreML models on the Neural Engine (ANE): the UNet of SD 1.x/2.x (including SD-Turbo) and SDXL models (`--coreml-unet`), and the tiny autoencoder's decoder used by SDXS and `--taesd` (`--coreml-tae`). The text encoder, tokenizer and scheduler stay on ggml (Metal/CPU). The ggml UNet weights are not loaded when the UNet runs on CoreML.
 
 SDXS-512-DreamShaper on iPhone 16 (512x512, 1 step): the UNet takes 640-680 ms with ggml Metal and 48-53 ms on the ANE, and the images match (36-38 dB PSNR). On an M2, running the tiny decoder on the ANE as well takes a whole image from 1,728 ms (all ggml Metal) to about 95 ms. [examples/ios-bench](../examples/ios-bench/README.md) reproduces this comparison on macOS and iOS.
 
@@ -32,6 +32,10 @@ python script/coreml/export_artifacts.py --out artifacts --skip-existing        
 | SD 2.1-base | `sd21base-Q8_0.gguf` (sd-cli -M convert; the ggml UNet is only used without `--coreml-unet`) | `-m` |
 | | `sd21base_unet_p6.mlmodelc` (6-bit palette, batch 2, split-einsum attention) | `--coreml-unet`, with `--prediction eps` |
 | | `taesd.safetensors`, `taesd_decoder.mlmodelc` | `--taesd`, `--coreml-tae` |
+| SD-Turbo (`--models sdturbo`, not in the default set) | `sdturbo-Q8_0.gguf` (sd-cli -M convert; the ggml UNet is only used without `--coreml-unet`) | `-m` |
+| | `sdturbo_unet_p8.mlmodelc` (8-bit palette, batch 1, standard attention), for the ANE | `--coreml-unet` |
+| | `sdturbo_unet_fp16.mlmodelc` (fp16, batch 1, standard attention), for the GPU | `--coreml-unet`, with `SD_COREML_COMPUTE_UNITS=cpu_gpu` |
+| | `taesd.safetensors`, `taesd_decoder.mlmodelc` | `--taesd`, `--coreml-tae` |
 | SDXL 1.0 base (`--models sdxl`, not in the default set) | `sd_xl_base_1.0.safetensors` (the checkpoint itself; its UNet is not loaded) | `-m` |
 | | `sdxl_unet_mixed/` (two chunks, 4/6-bit mixed palette, batch 2, split-einsum attention, 768x768) | `--coreml-unet` |
 | | `taesdxl.safetensors`, `taesdxl_decoder_768.mlmodelc` | `--taesd`, `--coreml-tae` |
@@ -56,6 +60,7 @@ python script/coreml/convert_unet.py --unet sdxs-512-dreamshaper/unet --out sdxs
 | `fp16` (default) | fp16 | Small UNets such as SDXS (603 MB). Matches ggml Metal closely. |
 | `w8b` | int8, one scale per block of 32 weights (iOS 18+) | SD 2.x and other multi-step models. |
 | `w8` | int8, one scale per output channel | Older iOS only; drifts over many steps. |
+| `p8` | 8-bit k-means palette per layer | Distilled few-step UNets (SD-Turbo): as close to fp16 as a Q8_0 GGUF is (see [SD-Turbo](#sd-turbo)). |
 | `p6` | 6-bit k-means palette per layer | Large UNets on iOS (SD 2.x): the ANE reads palettes directly, so the compiled model is cached. |
 | `p4` | 4-bit k-means palette per layer | Not recommended: SDXL images lose fine detail (see [SDXL](#sdxl)). |
 | `mixed` | 4-bit palettes, with 6 bits for the layers most sensitive to 4 bits, averaging `--mixed-bits` (default 4.5) | SDXL on iOS. |
@@ -163,6 +168,64 @@ Apple's [coreml-stable-diffusion-xl-base-ios](https://huggingface.co/apple/corem
 
 The Metal numbers above come from an sd-cli built from the 2026-03-01 branch, measured before batched CFG gave flat images on Metal (fixed since); this branch's Metal image matches it at 38.6 dB.
 
+### SD-Turbo
+
+[SD-Turbo](https://huggingface.co/stabilityai/sd-turbo) is SD 2.1 distilled to 1-4 steps without CFG, at 512x512. Its UNet has the SD 2.1 architecture and predicts epsilon, which the export records, so no `--prediction` is needed. Without CFG the UNet is exported for batch 1.
+
+```bash
+python script/coreml/export_artifacts.py --out artifacts --models sdturbo --sd-cli build/bin/sd-cli
+build/bin/sd-cli -m artifacts/sdturbo-Q8_0.gguf --coreml-unet artifacts/sdturbo_unet_p8.mlmodelc \
+       --taesd artifacts/taesd.safetensors --coreml-tae artifacts/taesd_decoder.mlmodelc --cfg-scale 1 --steps 4 -p "portrait of a lovely cat"
+```
+
+Measured with `sd-bench` on a Mac mini (M4, 16 GB, macOS 15.3) and a Mac Studio (M3 Ultra, 60-core GPU, macOS 26.7): 512x512, CFG 1, TAESD as the decoder, mean of 3 warm images. It has not been measured on an iPhone yet.
+
+| SD-Turbo | M4, 1 step | M4, 4 steps | M3 Ultra, 1 step | M3 Ultra, 4 steps |
+| --- | --- | --- | --- | --- |
+| All ggml Metal (Q8_0) | 1,116 ms | 2,873 ms | 461 ms | 1,138 ms |
+| `sdturbo_unet_p8` on the ANE, TAESD on CoreML | 231 ms (4.8x faster) | 775 ms (3.7x faster) | 241 ms | 851 ms |
+| `sdturbo_unet_fp16` on the GPU (`cpu_gpu`), TAESD on CoreML | 328 ms | 1,084 ms | 91 ms (5.1x faster) | 272 ms (4.2x faster) |
+
+One UNet call:
+
+| SD-Turbo UNet | M4 | M3 Ultra |
+| --- | --- | --- |
+| ggml Metal, Q8_0 | 590 ms | 228 ms |
+| `sdturbo_unet_p8` on the ANE | 178 ms | 205 ms |
+| `sdturbo_unet_fp16` on the ANE | 192 ms | 215 ms |
+| `sdturbo_unet_fp16` on the GPU | 252 ms | 60 ms |
+| `sdturbo_unet_p8` on the GPU | 740 ms | 150 ms |
+
+The ANE costs about the same on both Macs, while the GPU follows its core count. So the ANE is the place for the UNet on an M4 (and, by the SD 2.1-base numbers above, on an iPhone), and the GPU on a Max or Ultra: use `sdturbo_unet_p8` with the default compute units on the first, and `sdturbo_unet_fp16` with `SD_COREML_COMPUTE_UNITS=cpu_gpu` on the second. Keep the palettized UNet off the GPU, where it is 2.5-3x slower than fp16. The tiny decoder takes 480 ms (M4) or 210 ms (M3 Ultra) on Metal and 10 ms on CoreML.
+
+The first load compiles the UNet for the ANE (12-24 s); later loads take 0.3 s, for the fp16 export as well. On the GPU the first load takes 1.5-6 s and later ones 0.3-0.6 s.
+
+#### Weights
+
+A distilled model has few steps to average weight error out, so SD-Turbo needs more bits than SD 2.1-base. PSNR of the final image against ggml Metal with F16 weights on the same Mac, mean of the three `sd-bench` prompts:
+
+| SD-Turbo UNet | Size | 1 step | 4 steps |
+| --- | --- | --- | --- |
+| ggml Metal, Q8_0 GGUF | 2.3 GB (whole model) | 29.5 dB | 28.5 dB |
+| CoreML fp16, on the GPU | 1.6 GB | 51.4-51.6 dB | 48.9-49.1 dB |
+| CoreML fp16, on the ANE | 1.6 GB | 39.8-40.4 dB | 35.3-36.2 dB |
+| CoreML `p8`, on the ANE | 827 MB | 30.7-30.8 dB | 28.7-28.8 dB |
+| CoreML `p6`, on the ANE (M3 Ultra only) | 622 MB | 21.1 dB | 21.1 dB |
+
+`p8` differs from fp16 as much as the Q8_0 GGUF does and is half the size of fp16, so it is the ANE artifact. `p6`, the SD 2.1-base choice, still gives a valid image with the same composition, but details change (the text on a billboard comes out different); use it only when the 200 MB matter. `w8b` (851 MB) did not compile for the ANE on the M3 Ultra: each load took 60-137 s and then ran on the CPU. The fp16 export runs on the ANE of both Macs; whether a 1.6 GB UNet compiles for the ANE on an iPhone is not tested.
+
+#### Attention
+
+One fp16 UNet call:
+
+| `--attention` | M4, ANE | M4, GPU | M3 Ultra, ANE | M3 Ultra, GPU |
+| --- | --- | --- | --- | --- |
+| `standard` | 192 ms | 252 ms | 215 ms | 60 ms |
+| `split_einsum_v2` | 203 ms | 269 ms | 190 ms | NaN output |
+| `ane` | 150 ms, wrong image | 299 ms | 143 ms | 110 ms |
+
+Only `standard` gives the right image on both Macs and both devices, and at batch 1 it costs at most 13% against `split_einsum_v2`, so both SD-Turbo artifacts use it. `ane` is the fastest on the ANE, but on the M4 (macOS 15.3) its images are blurred or scrambled (11-14 dB against Metal), while the same export is correct on the M3 Ultra (macOS 26.7); the export's own check shows it only as a cosine of 0.9991 against PyTorch instead of 0.999999. On the M3 Ultra a `split_einsum_v2` export returns NaN on the GPU when the queries are split into chunks (the default `--query-chunk 512` at 512x512; `--query-chunk 4096` avoids it), and the image is noise; the M4's GPU runs it correctly. `convert_unet.py` checks every export on the ANE and the GPU and prints a warning naming the compute units to avoid when the output is not finite. The SD 2.1-base artifact has the same UNet architecture and a `split_einsum_v2` export, so run it with the default `cpu_ne`.
+
 ### Supported sizes
 
 Every input shape of the CoreML model is fixed at export time (batch 1, 77 prompt tokens, one image size). Prompts longer than 77 tokens, ControlNet and models that take `c_concat` (inpainting, Instruct-Pix2Pix) fail with an error.
@@ -171,6 +234,7 @@ Every input shape of the CoreML model is fixed at export time (batch 1, 77 promp
 | --- | --- | --- |
 | SD 2.1 (768-v) | 512x512 tested | Native size is 768x768. At 512x512 the images are good; 768x768 is not tested yet. |
 | SDXL 1.0 base | 768x768 tested | Native size is 1024x1024; 768x768 keeps the iOS model and activations small, as Apple's iOS export does. |
+| SD-Turbo | 512x512 tested | Distilled at 512x512. |
 | SDXS-512-DreamShaper | 512x512 only | Distilled at 512 only. At 512x768, 768x512 and 768x768 it duplicates features (extra eyes and noses) on ggml Metal and on CoreML alike. `convert_unet.py` refuses other sizes for SDXS unless `--allow-untrained-sizes` is given. |
 
 For other models, `convert_unet.py` warns when a size differs from the one in the UNet config. Only list sizes the model was trained at.
@@ -185,13 +249,13 @@ Known issue: loading several functions of a multifunction model in one process h
 
 ### Tests
 
-`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, and the mixed-bit selection.
+`test-coreml` (built with `-DSD_COREML=ON -DSD_BUILD_TESTS=ON` and static libraries) runs tiny CoreML models through the sidecar runtime: fp32 and fp16 inputs, channels-first contexts, shape rejection, prediction metadata, batched CFG against separate passes, SDXL's `y` and Apple's `text_embeds`/`time_ids` inputs, chunked models, and decoder output checks. With `SD_TEST_SDXS_DIR` set to the SDXS artifacts it also runs the pipeline checks: circular padding and LoRAs are rejected with the CoreML UNet, and `--vae-tiling` falls back to the ggml decoder with the same image. `test_convert_unet.py` checks the attention, SiLU and SDXL time id rewrites against the original diffusers code on small random UNets, the mixed-bit selection, that `p8` stores 8-bit palettes, and the warning for exports whose output is not finite. `test_export_artifacts.py` checks the commands `export_artifacts.py` plans by default and for SD-Turbo, without downloading anything, and with `sd-cli` built (`build/bin/sd-cli` or `SD_CLI`) that the GGUF step keeps the UNet, the VAE and the text encoder of a small random pipeline.
 
 ```bash
 python tests/coreml/make_fixtures.py build/coreml-fixtures
 build/bin/test-coreml build/coreml-fixtures
 SD_TEST_SDXS_DIR=artifacts build/bin/test-coreml build/coreml-fixtures
-python -m unittest script/coreml/test_convert_unet.py
+python -m unittest script/coreml/test_convert_unet.py script/coreml/test_export_artifacts.py
 ```
 
 ### Notes on accuracy

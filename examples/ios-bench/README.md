@@ -15,6 +15,15 @@ sd-bench bench stable-diffusion-v2-1-Q8_0.gguf sd21_unet_w8b.mlmodelc sd21_ane t
          --taesd taesd.safetensors --steps 20 --cfg 7 --sampler euler
 ```
 
+For SD-Turbo (4 steps, no CFG), on the ANE and on the GPU:
+
+```
+sd-bench bench sdturbo-Q8_0.gguf sdturbo_unet_p8.mlmodelc turbo_ane taesd_decoder.mlmodelc \
+         --taesd taesd.safetensors --steps 4 --cfg 1
+SD_COREML_COMPUTE_UNITS=cpu_gpu sd-bench bench sdturbo-Q8_0.gguf sdturbo_unet_fp16.mlmodelc turbo_gpu \
+         taesd_decoder.mlmodelc --taesd taesd.safetensors --steps 4 --cfg 1
+```
+
 ### macOS
 
 ```bash
