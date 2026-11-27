@@ -107,41 +107,6 @@ struct UNetFunction {
     }
 };
 
-// The chunks in `dir`: files named <prefix>chunk<k>.mlmodelc or .mlpackage (any case), k = 1, 2, ...
-// An .mlmodelc is preferred over an .mlpackage of the same chunk. Empty if `dir` holds no chunks.
-std::vector<std::string> find_chunks(const std::string& dir) {
-    NSArray<NSString*>* entries = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@(dir.c_str()) error:nil];
-    const std::regex pattern("^(.*)chunk([0-9]+)\\.(mlmodelc|mlpackage)$", std::regex::icase);
-    std::map<int, std::string> chunks;
-    std::string prefix;
-    for (NSString* entry in entries) {
-        std::smatch m;
-        std::string file = entry.UTF8String;
-        if (!std::regex_match(file, m, pattern)) {
-            continue;
-        }
-        if (!prefix.empty() && m[1].str() != prefix) {
-            LOG_ERROR("coreml unet: %s holds chunks of more than one model (%schunk*, %schunk*)",
-                      dir.c_str(), prefix.c_str(), m[1].str().c_str());
-            return {};
-        }
-        prefix          = m[1].str();
-        std::string& to = chunks[std::stoi(m[2].str())];
-        if (to.empty() || m[3].str() == "mlmodelc") {
-            to = dir + "/" + file;
-        }
-    }
-    std::vector<std::string> paths;
-    for (auto& [index, path] : chunks) {
-        if (index != (int)paths.size() + 1) {
-            LOG_ERROR("coreml unet: %s has no chunk %zu", dir.c_str(), paths.size() + 1);
-            return {};
-        }
-        paths.push_back(path);
-    }
-    return paths;
-}
-
 class CoreMLUNetImpl : public CoreMLUNet {
 public:
     std::vector<NSURL*> urls;  // one model, or the chunks in order
@@ -441,7 +406,7 @@ std::unique_ptr<CoreMLUNet> CoreMLUNet::load(const std::string& path) {
         NSString* ns_path              = @(path.c_str());
         if ([[NSFileManager defaultManager] fileExistsAtPath:ns_path isDirectory:&is_dir] && is_dir &&
             ![ns_path.pathExtension isEqualToString:@"mlmodelc"] && ![ns_path.pathExtension isEqualToString:@"mlpackage"]) {
-            paths = find_chunks(path);
+            paths = find_chunks(path, "coreml unet");
             if (paths.empty()) {
                 LOG_ERROR("coreml unet: %s is a folder without UNet chunks (*chunk1.mlmodelc, *chunk2.mlmodelc, ...)", path.c_str());
                 return nullptr;

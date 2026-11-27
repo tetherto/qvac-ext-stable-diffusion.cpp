@@ -576,6 +576,7 @@ namespace sd::pipeline {
             }
         }
 
+        sd->end_conditioning_run();
         int64_t t1 = ggml_time_ms();
         LOG_INFO("get_learned_condition completed, taking %.2fs", (t1 - prepare_start_ms) * 1.0f / 1000);
 

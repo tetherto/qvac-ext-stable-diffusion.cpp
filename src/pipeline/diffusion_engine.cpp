@@ -145,8 +145,11 @@ void StableDiffusionGGML::capture_runner_sources() {
 void StableDiffusionGGML::end_runners() {
     if (cond_stage_model)
         cond_stage_model->runner_end();
-    if (diffusion_model)
+    if (diffusion_model) {
         diffusion_model->runner_end();
+        if (auto coreml_flux = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model))
+            coreml_flux->release_on_demand();
+    }
     if (high_noise_diffusion_model)
         high_noise_diffusion_model->runner_end();
     if (clip_vision)
@@ -1160,10 +1163,22 @@ bool StableDiffusionGGML::build_core_runners() {
         LOG_ERROR("Core ML FLUX.2 denoiser was requested but could not be loaded");
         return false;
     }
-    if (strlen(SAFE_STR(config_->params.coreml_unet_path)) > 0) {
+    if (strlen(SAFE_STR(config_->params.coreml_te_path)) > 0) {
+        auto llm_embedder = std::dynamic_pointer_cast<LLMEmbedder>(cond_stage_model);
+        if (!llm_embedder || !llm_embedder->is_coreml_te_requested()) {
+            LOG_ERROR("coreml_te_path only supports FLUX.2-klein");
+            return false;
+        }
+        if (!llm_embedder->is_coreml_te_ready()) {
+            LOG_ERROR("Core ML text encoder was requested but could not be loaded");
+            return false;
+        }
+    }
+    const bool flux_takes_coreml = coreml_flux_model && coreml_flux_model->is_coreml_requested();
+    if (strlen(SAFE_STR(config_->params.coreml_diffusion_path)) > 0 && !flux_takes_coreml) {
         auto coreml_unet = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
         if (!coreml_unet) {
-            LOG_ERROR("coreml_unet_path only supports SD 1.x/2.x and SDXL UNet models (including SDXS)");
+            LOG_ERROR("coreml_diffusion_path supports SD 1.x/2.x and SDXL UNets (including SDXS) and FLUX.2-klein");
             return false;
         }
         if (!coreml_unet->is_coreml_ready()) {
@@ -1998,7 +2013,7 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
     }
     auto coreml_unet_model = std::dynamic_pointer_cast<CoreMLUNetRunner>(diffusion_model);
     if (!all_loras.empty() && coreml_unet_model && coreml_unet_model->is_coreml_requested()) {
-        LOG_ERROR("LoRA requests are not supported with the CoreML UNet (coreml_unet_path)");
+        LOG_ERROR("LoRA requests are not supported with the CoreML UNet (coreml_diffusion_path)");
         last_lora_apply_result = {false, false};
         return false;
     }
@@ -2030,6 +2045,12 @@ bool StableDiffusionGGML::apply_loras(const sd_lora_t* loras, uint32_t lora_coun
     }
     conditioning_loras_ = std::move(all_loras);
     return true;
+}
+
+void StableDiffusionGGML::end_conditioning_run() {
+    auto coreml_flux = std::dynamic_pointer_cast<FluxCoreMLRunner>(diffusion_model);
+    if (cond_stage_model && coreml_flux && coreml_flux->loads_on_demand())
+        cond_stage_model->runner_end();
 }
 
 SDCondition StableDiffusionGGML::get_learned_condition(const ConditionerParams& params) {

@@ -32,9 +32,17 @@ endif()
 # sd-cli's main is renamed so the app can dispatch to it.
 set_source_files_properties(${SD_ROOT}/examples/cli/main.cpp PROPERTIES COMPILE_DEFINITIONS "main=sd_cli_main")
 set_source_files_properties(bench.cpp PROPERTIES COMPILE_DEFINITIONS "SDBENCH_NO_MAIN")
-add_executable(sdbench MACOSX_BUNDLE ios_main.mm bench.cpp ${SD_ROOT}/examples/cli/main.cpp)
-target_include_directories(sdbench PRIVATE ${SD_ROOT}/examples ${SD_ROOT}/thirdparty)
-target_link_libraries(sdbench PRIVATE stable-diffusion "-framework Foundation" "-framework Metal" "-framework UIKit")
+# The same sources as examples/cli/CMakeLists.txt, without WebP and WebM.
+add_executable(sdbench MACOSX_BUNDLE ios_main.mm bench.cpp
+    ${SD_ROOT}/examples/cli/main.cpp
+    ${SD_ROOT}/examples/cli/image_metadata.cpp
+    ${SD_ROOT}/examples/common/common.cpp
+    ${SD_ROOT}/examples/common/generation_metadata.cpp
+    ${SD_ROOT}/examples/common/log.cpp
+    ${SD_ROOT}/examples/common/media_io.cpp
+    ${SD_ROOT}/examples/common/media_metadata.cpp)
+target_include_directories(sdbench PRIVATE ${SD_ROOT}/examples ${SD_ROOT}/src ${SD_ROOT}/thirdparty)
+target_link_libraries(sdbench PRIVATE stable-diffusion zip "-framework Foundation" "-framework Metal" "-framework UIKit")
 target_compile_features(sdbench PRIVATE cxx_std_17)
 set_target_properties(sdbench PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER ${SDBENCH_BUNDLE_ID}

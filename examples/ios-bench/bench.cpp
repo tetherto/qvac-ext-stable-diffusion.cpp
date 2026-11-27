@@ -1,12 +1,20 @@
-// Metal vs CoreML benchmark: loads the model once, then generates 1 warm-up and up to 3 timed 512x512
-// images (seed 42). Stage times come from sd.cpp's own log lines. Defaults fit SDXS (1 step, CFG 1).
-// usage: sd-bench bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc] [options]
-//   "-" runs the UNet with ggml (Metal); a .mlmodelc runs it with the CoreML sidecar. The optional
-//   tae_decoder.mlmodelc runs the tiny decoder with its CoreML sidecar too.
+// Metal vs CoreML benchmark: loads the model once, then generates 1 warm-up and up to 3 timed images
+// (512x512 unless --size is given, seed 42). Stage times come from sd.cpp's own log lines. Defaults fit SDXS (1 step, CFG 1).
+// usage: sd-bench bench <model.gguf|-> <diffusion.mlmodelc|chunk folder|-> <out_prefix> [tae_decoder.mlmodelc] [options]
+//   "-" runs the diffusion model with ggml (Metal); a .mlmodelc or a folder of chunks runs it with the CoreML
+//   sidecar. The optional tae_decoder.mlmodelc runs the tiny decoder with its CoreML sidecar too.
+//   For a model in separate files (FLUX.2-klein), pass "-" as the model and --diffusion-model, --vae and --llm.
 // options: --steps N  --cfg F  --sampler NAME  --taesd FILE (ggml TAESD, for models without a built-in
 //   tiny decoder such as SD 2.1)  --images N (timed images, 1-3)  --mmap (map the model file instead of
 //   reading it into memory; on iOS the mapped pages do not count against the app's memory limit)
+//   --size WxH (image size; a CoreML UNet only runs the size it was exported for, such as 768x768 for SDXL)
 //   --prediction eps|v (for a CoreML UNet that does not record it, such as Apple's exports)
+//   --diffusion-model FILE  --vae FILE  --llm FILE (a model in separate files, such as FLUX.2-klein)
+//   --backend ASSIGNMENTS (as sd-cli's --backend, e.g. te=cpu: with --mmap the text encoder then reads the mapped
+//   file, whose pages do not count against iOS's memory limit)
+//   --coreml-te DIR (FLUX.2-klein's text encoder as CoreML chunks; --llm then only provides the tokenizer)
+//   --params-backend ASSIGNMENTS (as sd-cli's, e.g. te=disk: reload the text encoder's weights from the file and
+//   release them after use; with SD_COREML_LOAD_ON_DEMAND=1 the CoreML denoiser is loaded only while denoising)
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -36,7 +44,7 @@ double after(const char* text, const char* key) {
 void log_cb(enum sd_log_level_t level, const char* text, void*) {
     double v;
     if ((v = after(text, "get_learned_condition completed, taking ")) >= 0) {
-        g_stage.text_ms = v;  // ms
+        g_stage.text_ms = v * 1000;  // s
     } else if ((v = after(text, "sampling completed, taking ")) >= 0) {
         g_stage.unet_ms = v * 1000;  // s
     } else if ((v = after(text, "decode_first_stage completed, taking ")) >= 0) {
@@ -44,6 +52,8 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
     }
     static const bool verbose = getenv("SDBENCH_VERBOSE") != nullptr;
     if (verbose || level >= SD_LOG_WARN || strstr(text, "coreml unet") || strstr(text, "coreml tae") ||
+        strstr(text, "coreml flux") || strstr(text, "Core ML FLUX.2") || strstr(text, "coreml te") ||
+        strstr(text, "Core ML text encoder") ||
         strstr(text, "total params memory")) {
         fputs(text, stdout);
     }
@@ -53,10 +63,10 @@ void log_cb(enum sd_log_level_t level, const char* text, void*) {
 
 int sd_bench_main(int argc, const char* argv[]) {
     if (argc < 5) {
-        fprintf(stderr, "usage: %s bench <model.gguf> <unet.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]\n", argv[0]);
+        fprintf(stderr, "usage: %s bench <model.gguf|-> <diffusion.mlmodelc|-> <out_prefix> [tae_decoder.mlmodelc]\n", argv[0]);
         return 1;
     }
-    const char* model   = argv[2];
+    const char* model   = strcmp(argv[2], "-") == 0 ? "" : argv[2];
     const char* coreml  = strcmp(argv[3], "-") == 0 ? "" : argv[3];
     std::string prefix  = argv[4];
     const char* tae     = argc > 5 && strncmp(argv[5], "--", 2) != 0 ? argv[5] : "";
@@ -67,6 +77,14 @@ int sd_bench_main(int argc, const char* argv[]) {
     int images          = 3;
     bool mmap           = false;
     const char* pred    = "";
+    int width           = 512;
+    int height          = 512;
+    const char* diffusion_model = "";
+    const char* vae             = "";
+    const char* llm             = "";
+    const char* backend         = "";
+    const char* params_backend  = "";
+    const char* coreml_te       = "";
     for (int i = *tae ? 6 : 5; i < argc; i += 2) {
         if (strcmp(argv[i], "--mmap") == 0) {
             mmap = true;
@@ -84,6 +102,23 @@ int sd_bench_main(int argc, const char* argv[]) {
             taesd = argv[i + 1];
         } else if (strcmp(argv[i], "--prediction") == 0) {
             pred = argv[i + 1];
+        } else if (strcmp(argv[i], "--size") == 0) {
+            if (sscanf(argv[i + 1], "%dx%d", &width, &height) != 2) {
+                fprintf(stderr, "--size expects WxH, got %s\n", argv[i + 1]);
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--diffusion-model") == 0) {
+            diffusion_model = argv[i + 1];
+        } else if (strcmp(argv[i], "--vae") == 0) {
+            vae = argv[i + 1];
+        } else if (strcmp(argv[i], "--llm") == 0) {
+            llm = argv[i + 1];
+        } else if (strcmp(argv[i], "--backend") == 0) {
+            backend = argv[i + 1];
+        } else if (strcmp(argv[i], "--params-backend") == 0) {
+            params_backend = argv[i + 1];
+        } else if (strcmp(argv[i], "--coreml-te") == 0) {
+            coreml_te = argv[i + 1];
         } else if (strcmp(argv[i], "--images") == 0) {
             images = atoi(argv[i + 1]);
         } else {
@@ -109,7 +144,13 @@ int sd_bench_main(int argc, const char* argv[]) {
     sd_ctx_params_t ctx_params;
     sd_ctx_params_init(&ctx_params);
     ctx_params.model_path              = model;
-    ctx_params.coreml_unet_path        = coreml;
+    ctx_params.diffusion_model_path    = diffusion_model;
+    ctx_params.vae_path                = vae;
+    ctx_params.llm_path                = llm;
+    ctx_params.backend                 = backend;
+    ctx_params.params_backend          = params_backend;
+    ctx_params.coreml_te_path          = coreml_te;
+    ctx_params.coreml_diffusion_path   = coreml;
     ctx_params.coreml_tae_decoder_path = tae;
     ctx_params.taesd_path              = taesd;
     ctx_params.enable_mmap             = mmap;
@@ -124,15 +165,15 @@ int sd_bench_main(int argc, const char* argv[]) {
         fprintf(stdout, "[bench] new_sd_ctx failed\n");
         return 1;
     }
-    fprintf(stdout, "[bench] unet=%s decoder=%s steps=%d cfg=%.1f load=%.2f s\n", *coreml ? "coreml" : "metal",
-            *tae ? "coreml" : (*taesd ? "taesd-metal" : "metal"), steps, cfg, load_s);
+    fprintf(stdout, "[bench] diffusion=%s decoder=%s size=%dx%d steps=%d cfg=%.1f load=%.2f s\n", *coreml ? "coreml" : "metal",
+            *tae ? "coreml" : (*taesd ? "taesd-metal" : "metal"), width, height, steps, cfg, load_s);
 
     for (const auto& job : jobs) {
         sd_img_gen_params_t params;
         sd_img_gen_params_init(&params);
         params.prompt                         = job.prompt;
-        params.width                          = 512;
-        params.height                         = 512;
+        params.width                          = width;
+        params.height                         = height;
         params.seed                           = 42;
         params.batch_count                    = 1;
         params.sample_params.sample_steps     = steps;

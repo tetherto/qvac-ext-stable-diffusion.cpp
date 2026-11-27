@@ -4,6 +4,10 @@
 The implementation is imported from Black Forest Labs' official flux2 source
 checkout. This script only adapts the engine's fixed-shape tensor interface.
 Run each mode in a separate process to limit peak memory.
+
+`chunk` exports the Neural Engine model: one chunk per process, FP16 with the
+residual-stream rescale, per-head attention and palettized weights, compiled to
+<output>/chunk<k>.mlmodelc. sd-cli takes the folder with --coreml-diffusion.
 """
 
 import argparse
@@ -18,6 +22,12 @@ from compare_flux_coreml_fixture import error_metrics, validate_capture
 
 EXPECTED_CHANNELS = 128
 EXPECTED_CONTEXT_WIDTH = 7680
+DOUBLE_BLOCKS = 5
+TOTAL_BLOCKS = 25  # 5 double-stream blocks, then 20 single-stream blocks
+# Cut before these of the 25 blocks. An M2 Neural Engine runs a program of at
+# most about 1 GB of stored weights (an M3 about 2 GB); a larger one falls back
+# to the CPU entirely. With 8-bit palettes these cuts give 0.63-0.85 GB chunks.
+DEFAULT_CUTS = (3, 6, 13, 20)
 
 
 def fixture_shapes(manifest):
@@ -48,7 +58,48 @@ def position_ids(height, width, text_tokens, torch, device):
     return image.reshape(1, height * width, 4), text
 
 
-def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
+def rescale_for_fp16(model, stream, swiglu, torch):
+    """Shrink the residual streams by 1/stream and SwiGLU products by 1/swiglu, without changing the output.
+
+    Every read of a residual stream goes through a LayerNorm without affine parameters (block inputs and the
+    final layer), which is invariant to scaling its input once eps is scaled with it. So dividing what writes
+    the streams (img_in, txt_in, attention output projections, MLP down projections) by stream scales both
+    streams exactly. Likewise silu(a) * b scales with b, so dividing b's rows of the up projection by swiglu
+    and multiplying the down projection's matching columns by swiglu is exact. In FP16 the streams and
+    SwiGLU products of FLUX.2-klein otherwise exceed 65504 on later denoising steps.
+    """
+    import math
+
+    if any(f < 1 or not math.log2(f).is_integer() for f in (stream, swiglu)):
+        raise ValueError("rescale factors must be powers of two, so the scaled weights stay exact")
+    hidden = model.hidden_size
+    mlp_hidden = model.double_blocks[0].img_mlp[2].in_features
+
+    def scale_(tensor, factor):
+        if tensor is not None:
+            with torch.no_grad():
+                tensor.mul_(factor)
+
+    for linear in (model.img_in, model.txt_in):
+        scale_(linear.weight, 1 / stream)
+        scale_(linear.bias, 1 / stream)
+    for block in model.double_blocks:
+        for attn, mlp in ((block.img_attn, block.img_mlp), (block.txt_attn, block.txt_mlp)):
+            scale_(attn.proj.weight, 1 / stream)
+            scale_(attn.proj.bias, 1 / stream)
+            scale_(mlp[0].weight[mlp_hidden:], 1 / swiglu)
+            scale_(mlp[2].weight, swiglu / stream)
+    for block in model.single_blocks:
+        scale_(block.linear1.weight[3 * hidden + mlp_hidden:], 1 / swiglu)
+        scale_(block.linear2.weight[:, :hidden], 1 / stream)
+        scale_(block.linear2.weight[:, hidden:], swiglu / stream)
+    for module in model.modules():
+        if isinstance(module, torch.nn.LayerNorm):
+            module.eps /= stream * stream
+
+
+def load_official_model(source, weights, dtype, device, torch, safe_fp16=False, rescale=None,
+                        split_attention_heads=False, load_only=None):
     try:
         from safetensors import safe_open
     except ImportError as exc:
@@ -64,7 +115,15 @@ def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
     def no_reference_attention(q, k, v, num_txt_tokens, num_ref_tokens, kv_cache=None):
         if num_ref_tokens != 0 or kv_cache is not None:
             raise ValueError("the Core ML exporter supports text-to-image without references")
-        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
+        if split_attention_heads:
+            # One attention per head. On an M2's Neural Engine, attention over all 24 heads of the
+            # 1536-token sequence in one op returns wrong values (normalized error above 1), while
+            # the per-head form matches FP32 and runs faster; M3 Neural Engines handle both.
+            scale = q.shape[-1] ** -0.5
+            out = torch.cat([torch.softmax((q[:, h:h + 1] @ k[:, h:h + 1].transpose(-1, -2)) * scale, -1)
+                             @ v[:, h:h + 1] for h in range(q.shape[1])], 1)
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
         return out.transpose(1, 2).reshape(out.shape[0], out.shape[2], -1)
 
     # The official RoPE implementation represents each rotation as a 2x2
@@ -138,6 +197,10 @@ def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
             unexpected = sorted(actual_names - set(expected))
             raise ValueError(f"checkpoint mismatch: missing={missing[:8]}, unexpected={unexpected[:8]}")
         for name, parameter in expected.items():
+            # load_only(name) selects the weights one chunk uses; the others stay on the meta
+            # device, so a 16 GB Mac can export the 4B model chunk by chunk.
+            if load_only is not None and not load_only(name):
+                continue
             value = handle.get_tensor(name)
             if tuple(value.shape) != tuple(parameter.shape):
                 raise ValueError(f"weight shape mismatch for {name}")
@@ -146,6 +209,8 @@ def load_official_model(source, weights, dtype, device, torch, safe_fp16=False):
             setattr(module, attribute,
                     torch.nn.Parameter(value.to(device=device, dtype=dtype), requires_grad=False))
             del value
+    if rescale:
+        rescale_for_fp16(model, *rescale, torch)
     if safe_fp16:
         from types import MethodType
 
@@ -178,6 +243,108 @@ def make_wrapper(model, height, width, text_tokens, device, torch):
             return out.reshape(1, height, width, EXPECTED_CHANNELS).permute(0, 3, 1, 2).float()
 
     return EngineInputs().eval()
+
+
+def chunk_bounds(cuts):
+    bounds = [0, *sorted(cuts), TOTAL_BLOCKS]
+    if len(set(bounds)) != len(bounds) or bounds[0] < 0 or bounds[-1] > TOTAL_BLOCKS:
+        raise ValueError(f"cuts must be distinct block indices between 1 and {TOTAL_BLOCKS - 1}")
+    return list(zip(bounds[:-1], bounds[1:]))
+
+
+def chunk_weight_filter(lo, hi):
+    """Names of the checkpoint weights blocks [lo, hi) and their shared parts use."""
+    shared = (("time_in.", "img_in.", "txt_in.") if lo == 0 else ()) + \
+             (("double_stream_modulation_img.", "double_stream_modulation_txt.") if lo < DOUBLE_BLOCKS else ()) + \
+             (("single_stream_modulation.",) if hi > DOUBLE_BLOCKS else ()) + \
+             (("final_layer.",) if hi == TOTAL_BLOCKS else ())
+    blocks = tuple(f"double_blocks.{i}." for i in range(lo, min(hi, DOUBLE_BLOCKS))) + \
+        tuple(f"single_blocks.{j}." for j in range(max(lo, DOUBLE_BLOCKS) - DOUBLE_BLOCKS, hi - DOUBLE_BLOCKS))
+    return lambda name: name.startswith(shared + blocks)
+
+
+def chunk_io(lo, hi):
+    """Input and output names of the chunk for blocks [lo, hi).
+
+    A boundary inside the double blocks passes img_<k> and txt_<k>; one after them passes
+    hidden_<k>. The first chunk also returns vec, which every later chunk takes.
+    """
+    def edge(k):
+        return [f"img_{k}", f"txt_{k}"] if k <= DOUBLE_BLOCKS else [f"hidden_{k}"]
+
+    inputs = ["latent", "timesteps", "context"] if lo == 0 else edge(lo) + ["vec"]
+    outputs = ["output"] if hi == TOTAL_BLOCKS else edge(hi) + (["vec"] if lo == 0 else [])
+    return inputs, outputs
+
+
+def make_chunk(model, lo, hi, height, width, text_tokens, torch):
+    """The engine-facing denoiser restricted to blocks [lo, hi), with chunk_io's inputs and outputs."""
+    from flux2 import model as flux2_model
+
+    image_ids, text_ids = position_ids(height, width, text_tokens, torch, "cpu")
+
+    class Chunk(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.m = model
+            self.register_buffer("image_ids", image_ids, persistent=False)
+            self.register_buffer("text_ids", text_ids, persistent=False)
+
+        def forward(self, *args):
+            m = self.m
+            if lo == 0:
+                latent, timesteps, context = args
+                dtype = m.img_in.weight.dtype
+                x = latent.permute(0, 2, 3, 1).reshape(1, height * width, EXPECTED_CHANNELS).to(dtype)
+                ctx = context.reshape(1, text_tokens, EXPECTED_CONTEXT_WIDTH).to(dtype)
+                vec = m.time_in(flux2_model.timestep_embedding(timesteps.reshape(1), 256))
+                state = (m.img_in(x), m.txt_in(ctx))
+            else:
+                *state, vec = args
+            pe_x, pe_ctx = m.pe_embedder(self.image_ids), m.pe_embedder(self.text_ids)
+            if lo < DOUBLE_BLOCKS:
+                img, txt = state
+                mod_img = m.double_stream_modulation_img(vec)
+                mod_txt = m.double_stream_modulation_txt(vec)
+                for block in m.double_blocks[lo:min(hi, DOUBLE_BLOCKS)]:
+                    img, txt, _ = block.forward_kv_extract(img, txt, pe_x, pe_ctx, mod_img, mod_txt,
+                                                           num_ref_tokens=0)
+                if hi <= DOUBLE_BLOCKS:
+                    return (img, txt, vec) if lo == 0 else (img, txt)
+                state = (torch.cat((txt, img), dim=1),)
+            x = state[0]
+            pe = torch.cat((pe_ctx, pe_x), dim=2)
+            mod, _ = m.single_stream_modulation(vec)
+            for block in m.single_blocks[max(lo, DOUBLE_BLOCKS) - DOUBLE_BLOCKS:hi - DOUBLE_BLOCKS]:
+                x, _ = block.forward_kv_extract(x, pe, mod, text_tokens, num_ref_tokens=0)
+            if hi < TOTAL_BLOCKS:
+                return (x, vec) if lo == 0 else x
+            x = m.final_layer(x[:, text_tokens:, ...], vec)
+            return x.reshape(1, height, width, EXPECTED_CHANNELS).permute(0, 3, 1, 2).float()
+
+    return Chunk().eval()
+
+
+def timestep_only_ops(program, input_name):
+    """Names of the ops before any matmul whose value depends only on input_name and constants.
+
+    These are the sinusoidal timestep embedding: in FP16 a timestep of about 1000 has a
+    resolution of 0.5, which makes its sines wrong, so they stay FP32 (on the CPU).
+    """
+    depends = {input_name}
+    keep = set()
+    for op in program.functions["main"].operations:
+        if op.op_type in ("linear", "matmul", "conv"):
+            continue
+        values = []
+        for value in op.inputs.values():
+            values.extend(value if isinstance(value, (list, tuple)) else [value])
+        computed = [v for v in values if getattr(v, "op", None) is not None and v.op.op_type != "const"]
+        if (computed and all(v.name in depends for v in computed)) or \
+                (not computed and any(getattr(v, "name", None) == input_name for v in values)):
+            keep.add(op.name)
+            depends.update(o.name for o in op.outputs)
+    return keep
 
 
 def read_fixture_array(fixture, manifest, name, np):
@@ -292,9 +459,83 @@ def watch_first_nonfinite(model, torch):
     return cleanup
 
 
+def export_chunk(args, parser, rescale, latent_shape, timestep_shape, context_shape, np, torch):
+    import shutil
+
+    try:
+        chunks = chunk_bounds(int(c) for c in args.cuts.split(","))
+    except ValueError as exc:
+        parser.error(f"--cuts: {exc}")
+    if not args.chunk or not 1 <= args.chunk <= len(chunks):
+        parser.error(f"--chunk must be between 1 and {len(chunks)}")
+    if not args.source or not args.weights or not args.weights.is_file() or not args.output:
+        parser.error("chunk requires an existing --source and --weights, and --output")
+    final = args.output / f"chunk{args.chunk}.mlmodelc"
+    if final.exists():
+        parser.error(f"{final} already exists")
+    import coremltools as ct
+
+    lo, hi = chunks[args.chunk - 1]
+    height, width, text_tokens = latent_shape[2], latent_shape[3], context_shape[2]
+    print(f"Chunk {args.chunk} of {len(chunks)}: blocks {lo}-{hi - 1}; loading its weights", flush=True)
+    started = time.perf_counter()
+    model = load_official_model(args.source, args.weights.resolve(), torch.float16, "cpu", torch,
+                                rescale=rescale, split_attention_heads=not args.fused_attention,
+                                load_only=chunk_weight_filter(lo, hi))
+    module = make_chunk(model, lo, hi, height, width, text_tokens, torch)
+    in_names, out_names = chunk_io(lo, hi)
+    hidden = model.hidden_size
+    shapes = {"latent": latent_shape, "timesteps": timestep_shape, "context": context_shape,
+              "img": (1, height * width, hidden), "txt": (1, text_tokens, hidden),
+              "hidden": (1, text_tokens + height * width, hidden), "vec": (1, hidden)}
+
+    def shape(name):
+        return shapes[name] if name in shapes else shapes[name.split("_")[0]]
+
+    if lo == 0:
+        example = tuple(torch.from_numpy(read_fixture_array(args.fixture.resolve(), validate_capture(
+            args.fixture.resolve()), name, np).copy()) for name in in_names)
+    else:
+        example = tuple(torch.zeros(*shape(name), dtype=torch.float16) for name in in_names)
+    with torch.inference_mode():
+        traced = torch.jit.trace(module, example, strict=False, check_trace=False)
+    # Engine inputs and the final output are FP32; tensors between chunks stay FP16.
+    inputs = [ct.TensorType(name=name, shape=tuple(shape(name)),
+                            dtype=np.float32 if lo == 0 else np.float16) for name in in_names]
+    outputs = [ct.TensorType(name=name, dtype=np.float32 if name == "output" else np.float16) for name in out_names]
+    target = ct.target.macOS14  # iOS 17 op set: iOS 18 op set models have failed to load on the Neural Engine
+    fp32_ops = set()
+    if lo == 0:
+        program = ct.convert(traced, convert_to="milinternal", inputs=inputs, minimum_deployment_target=target)
+        fp32_ops = timestep_only_ops(program, "timesteps")
+        del program
+    converted = ct.convert(
+        traced, convert_to="mlprogram", inputs=inputs, outputs=outputs,
+        compute_precision=ct.transform.FP16ComputePrecision(op_selector=lambda op: op.name not in fp32_ops),
+        minimum_deployment_target=target, skip_model_load=True)
+    del traced, module, model
+    gc.collect()
+    print(f"Converted in {time.perf_counter() - started:.0f}s", flush=True)
+    if args.palette_bits:
+        started = time.perf_counter()
+        config = ct.optimize.coreml.OpPalettizerConfig(mode="kmeans", nbits=args.palette_bits, weight_threshold=2048,
+                                                       num_kmeans_workers=args.kmeans_workers)
+        converted = ct.optimize.coreml.palettize_weights(converted, ct.optimize.coreml.OptimizationConfig(config))
+        print(f"Palettized to {args.palette_bits} bits in {time.perf_counter() - started:.0f}s", flush=True)
+    args.output.mkdir(parents=True, exist_ok=True)
+    package = args.output / f".chunk{args.chunk}.mlpackage"
+    shutil.rmtree(package, ignore_errors=True)
+    converted.save(str(package))
+    del converted
+    ct.utils.compile_model(str(package), str(final))
+    shutil.rmtree(package, ignore_errors=True)
+    size = sum(f.stat().st_size for f in final.rglob("*") if f.is_file()) / 1e9
+    print(f"Saved {final} ({size:.2f} GB)", flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("check", "trace", "convert", "compile"))
+    parser.add_argument("mode", choices=("check", "trace", "convert", "compile", "chunk"))
     parser.add_argument("--source", type=Path, help="checkout of black-forest-labs/flux2")
     parser.add_argument("--weights", type=Path, help="FLUX.2-klein 4B safetensors")
     parser.add_argument("--fixture", type=Path, help="captured GGML denoiser invocation")
@@ -306,10 +547,22 @@ def main(argv=None):
                         help="check finite PyTorch output without comparing to the fixture output (check mode)")
     parser.add_argument("--locate-nonfinite", action="store_true",
                         help="stop at the first non-finite module output (check mode)")
-    parser.add_argument("--check-dtype", choices=("bf16", "fp16"), default="bf16",
+    parser.add_argument("--check-dtype", choices=("bf16", "fp16", "fp32"), default="bf16",
                         help="weight and activation precision for check; trace always uses fp16")
     parser.add_argument("--safe-fp16", action="store_true",
                         help="keep residual streams in FP32 with FP16 linear weights (check/trace)")
+    parser.add_argument("--fp16-rescale", metavar="STREAM[,SWIGLU]",
+                        help="divide the residual streams (and SwiGLU products) by these powers of two, "
+                             "an exact rewrite that keeps FP16 activations finite (check/trace)")
+    parser.add_argument("--chunk", type=int, help="chunk: which chunk to export (1-based)")
+    parser.add_argument("--cuts", default=",".join(map(str, DEFAULT_CUTS)),
+                        help="chunk: cut before these of the 25 blocks (double 0-4, single 5-24)")
+    parser.add_argument("--palette-bits", type=int, choices=(0, 4, 6, 8), default=8,
+                        help="chunk: k-means palette bits per weight; 0 keeps FP16 weights")
+    parser.add_argument("--kmeans-workers", type=int, default=2,
+                        help="chunk: k-means worker processes for palettization")
+    parser.add_argument("--fused-attention", action="store_true",
+                        help="chunk: one attention op over all heads (wrong on M2 Neural Engines)")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu",
                         help="PyTorch device for check/trace; use mps if CPU inference is too slow")
     args = parser.parse_args(argv)
@@ -322,6 +575,19 @@ def main(argv=None):
         parser.error("--safe-fp16 requires check --check-dtype fp16 or trace")
     if args.safe_fp16 and args.locate_nonfinite:
         parser.error("--safe-fp16 and --locate-nonfinite cannot be combined")
+    rescale = None
+    if args.mode == "chunk" and not args.fp16_rescale:
+        args.fp16_rescale = "8"
+    if args.fp16_rescale:
+        if args.mode not in ("check", "trace", "chunk"):
+            parser.error("--fp16-rescale applies to check, trace and chunk")
+        try:
+            rescale = tuple(float(v) for v in args.fp16_rescale.split(","))
+            rescale = rescale + (1.0,) * (2 - len(rescale))
+            if len(rescale) != 2:
+                raise ValueError
+        except ValueError:
+            parser.error("--fp16-rescale takes STREAM or STREAM,SWIGLU")
 
     if args.mode == "compile":
         if not args.package or not args.package.is_dir() or not args.output:
@@ -334,7 +600,7 @@ def main(argv=None):
         return
 
     if not args.fixture:
-        parser.error("check/trace/convert require --fixture")
+        parser.error("check/trace/convert/chunk require --fixture")
     try:
         manifest = validate_capture(args.fixture.resolve())
         latent_shape, timestep_shape, context_shape = fixture_shapes(manifest)
@@ -350,17 +616,21 @@ def main(argv=None):
     if args.device == "mps" and not torch.backends.mps.is_available():
         parser.error("PyTorch MPS is unavailable in this environment")
     fixture = args.fixture.resolve()
+    if args.mode == "chunk":
+        export_chunk(args, parser, rescale, latent_shape, timestep_shape, context_shape, np, torch)
+        return
     if args.mode in ("check", "trace"):
         if not args.source or not args.weights or not args.weights.is_file():
             parser.error("check/trace require an existing --source and --weights")
         arrays = tuple(read_fixture_array(fixture, manifest, name, np)
                        for name in ("latent", "timesteps", "context"))
         inputs = tuple(torch.from_numpy(array.copy()).to(args.device) for array in arrays)
-        dtype = torch.bfloat16 if args.mode == "check" and args.check_dtype == "bf16" else torch.float16
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.check_dtype] \
+            if args.mode == "check" else torch.float16
         print(f"Loading complete FLUX.2-klein 4B checkpoint as {dtype} on {args.device}", flush=True)
         started = time.perf_counter()
         model = load_official_model(args.source, args.weights.resolve(), dtype, args.device, torch,
-                                    safe_fp16=args.safe_fp16)
+                                    safe_fp16=args.safe_fp16, rescale=rescale)
         print(f"Checkpoint loaded in {time.perf_counter() - started:.1f}s", flush=True)
         wrapper = make_wrapper(model, latent_shape[2], latent_shape[3], context_shape[2], args.device, torch)
 

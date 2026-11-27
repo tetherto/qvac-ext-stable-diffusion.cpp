@@ -5,17 +5,17 @@ directory and sd-cli. Steps run one at a time (the 6-bit SD 2.1 export alone nee
 
   sdxs        SDXS-512-DreamShaper, 512x512, 1 step, no CFG
     sdxs-f16.gguf                  text encoder + UNet + tiny decoder for sd.cpp (sd-cli -M convert)
-    sdxs_unet_fp16.mlmodelc        UNet on CoreML, fp16                       --coreml-unet
+    sdxs_unet_fp16.mlmodelc        UNet on CoreML, fp16                       --coreml-diffusion
     sdxs_tae_decoder.mlmodelc      built-in tiny decoder on CoreML             --coreml-tae
   sd21base    SD 2.1-base, 512x512, 20 steps, CFG > 1 (batched), --prediction eps with a CoreML UNet
     sd21base-Q8_0.gguf             text encoder + UNet + VAE for sd.cpp (sd-cli -M convert); -m
-    sd21base_unet_p6.mlmodelc      UNet on CoreML, 6-bit palette, batch 2, split-einsum attention  --coreml-unet
+    sd21base_unet_p6.mlmodelc      UNet on CoreML, 6-bit palette, batch 2, split-einsum attention  --coreml-diffusion
     taesd.safetensors              TAESD weights (sd.cpp still loads them)     --taesd
     taesd_decoder.mlmodelc         TAESD decoder on CoreML                     --coreml-tae
   sdxl        SDXL 1.0 base, 768x768, 20 steps, CFG > 1 (batched); not in the default --models
     sd_xl_base_1.0.safetensors     text encoders + VAE for sd.cpp (its UNet is not loaded); -m
     sdxl_unet_mixed/               UNet on CoreML, 4/6-bit mixed palette (4.5 bits on average), batch 2,
-                                   split-einsum attention, two chunks        --coreml-unet
+                                   split-einsum attention, two chunks        --coreml-diffusion
     taesdxl.safetensors            TAESDXL weights                             --taesd
     taesdxl_decoder_768.mlmodelc   TAESDXL decoder on CoreML, 768x768          --coreml-tae
     The UNet export traces 10 GB of fp32 weights and peaks at about 30 GB of RAM and 15 GB of temporary disk:

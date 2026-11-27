@@ -58,7 +58,9 @@ def error_metrics(actual, reference, np):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, required=True, help="compiled .mlmodelc")
+    parser.add_argument("--model", type=Path, required=True,
+                        help="compiled .mlmodelc, or a folder of chunk<k>.mlmodelc (export_flux2_klein_coreml.py chunk)")
+    parser.add_argument("--compute-units", choices=("all", "cpu_ne", "cpu_gpu", "cpu"), default="all")
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="JSON comparison report")
     parser.add_argument("--inputs", default="latent,timesteps,context",
@@ -94,8 +96,17 @@ def main():
             parser.error(f"{name} must be float32 for this Core ML interface")
         shape = tuple(reversed(entry["ne"]))
         inputs[name] = np.fromfile(args.fixture / entry["file"], dtype=np.float32).reshape(shape)
-    model = ct.models.CompiledMLModel(str(args.model.resolve()), compute_units=ct.ComputeUnit.ALL)
-    prediction = model.predict(inputs)
+    units = {"all": ct.ComputeUnit.ALL, "cpu_ne": ct.ComputeUnit.CPU_AND_NE,
+             "cpu_gpu": ct.ComputeUnit.CPU_AND_GPU, "cpu": ct.ComputeUnit.CPU_ONLY}[args.compute_units]
+    paths = [args.model]
+    if args.model.suffix != ".mlmodelc":
+        paths = sorted(args.model.glob("chunk*.mlmodelc"), key=lambda p: int(p.stem[5:]))
+        if not paths:
+            parser.error(f"{args.model} holds no chunk<k>.mlmodelc")
+    # Each chunk takes the engine inputs and earlier chunks' outputs it needs; Core ML ignores the rest.
+    prediction = dict(inputs)
+    for path in paths:
+        prediction.update(ct.models.CompiledMLModel(str(path.resolve()), compute_units=units).predict(prediction))
     output_entry = tensors["output"]
     output_shape = tuple(reversed(output_entry["ne"]))
     if args.finite_only:

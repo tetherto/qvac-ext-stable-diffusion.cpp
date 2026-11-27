@@ -58,11 +58,12 @@ struct CoreMLTinyImageAutoEncoder : public TinyImageAutoEncoder {
         if (coreml && !resolve_tiling_params(tiling_params).enabled && !decode_video && !circular_x && !circular_y &&
             (x.dim() == 3 || x.dim() == 4)) {
             // sd::Tensor shapes are in ggml order: [w, h, C, N] latent, [W, H, 3, N] image (N may be dropped when 1).
-            const auto& s                 = x.shape();
-            const int64_t n               = x.dim() == 4 ? s[3] : 1;
-            const int64_t latent_shape[4] = {n, s[2], s[1], s[0]};
-            const int64_t image_shape[4]  = {n, 3, s[1] * 8, s[0] * 8};
-            std::vector<int64_t> out_shape = {s[0] * 8, s[1] * 8, 3};
+            const auto& s                  = x.shape();
+            const int64_t n                = x.dim() == 4 ? s[3] : 1;
+            const int64_t f                = coreml->scale();
+            const int64_t latent_shape[4]  = {n, s[2], s[1], s[0]};
+            const int64_t image_shape[4]   = {n, 3, s[1] * f, s[0] * f};
+            std::vector<int64_t> out_shape = {s[0] * f, s[1] * f, 3};
             if (x.dim() == 4) {
                 out_shape.push_back(n);
             }
