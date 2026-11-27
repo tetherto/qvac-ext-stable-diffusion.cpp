@@ -524,6 +524,17 @@ public:
         }
     }
 
+    // The 1x1 projections run as matmuls on the tokens when both prefer that form and the backend runs every op of it,
+    // which is probed with the output projection applied straight to the input projection.
+    ggml_tensor* project_in_as_tokens(GGMLRunnerContext* ctx, Conv2d* conv_in, Conv2d* conv_out, ggml_tensor* x) {
+        if (use_linear || conv_in == nullptr || conv_out == nullptr || !conv_in->runs_as_linear(ctx) || !conv_out->runs_as_linear(ctx)) {
+            return nullptr;
+        }
+        ggml_tensor* tokens = conv_in->forward_tokens(ctx, ggml_ext_image_to_tokens(ctx->ggml_ctx, x));
+        ggml_tensor* probe  = ggml_ext_tokens_to_image(ctx->ggml_ctx, conv_out->forward_tokens(ctx, tokens), x->ne[0], x->ne[1]);
+        return ggml_ext_ops_supported(probe, x, ggml_ext_backend_op_support(ctx->backend)) ? tokens : nullptr;
+    }
+
     virtual ggml_tensor* forward(GGMLRunnerContext* ctx,
                                  ggml_tensor* x,
                                  ggml_tensor* context) {
@@ -539,8 +550,15 @@ public:
         int64_t w         = x->ne[0];
         int64_t inner_dim = n_head * d_head;
 
+        auto conv_in  = std::dynamic_pointer_cast<Conv2d>(blocks["proj_in"]);
+        auto conv_out = std::dynamic_pointer_cast<Conv2d>(blocks["proj_out"]);
+
         x = norm->forward(ctx, x);
-        if (use_linear) {
+        ggml_tensor* projected_tokens = project_in_as_tokens(ctx, conv_in.get(), conv_out.get(), x);
+        const bool projects_tokens    = projected_tokens != nullptr;
+        if (projects_tokens) {
+            x = projected_tokens;
+        } else if (use_linear) {
             x = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, x, 1, 2, 0, 3));  // [N, h, w, inner_dim]
             x = ggml_reshape_3d(ctx->ggml_ctx, x, inner_dim, w * h, n);                // [N, h * w, inner_dim]
             x = proj_in->forward(ctx, x);                                              // [N, inner_dim, h, w]
@@ -557,7 +575,9 @@ public:
             x = transformer_block->forward(ctx, x, context);
         }
 
-        if (use_linear) {
+        if (projects_tokens) {
+            x = ggml_ext_tokens_to_image(ctx->ggml_ctx, conv_out->forward_tokens(ctx, x), w, h);
+        } else if (use_linear) {
             // proj_out
             x = proj_out->forward(ctx, x);  // [N, in_channels, h, w]
 

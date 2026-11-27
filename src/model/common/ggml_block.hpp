@@ -664,6 +664,12 @@ public:
             forward_params.conv2d.scale      = scale;
             return ctx->weight_adapter->forward_with_lora(ctx->ggml_ctx, ctx->backend, x, w, b, prefix, forward_params);
         }
+        if (runs_as_linear(ctx)) {
+            ggml_tensor* linear = ggml_ext_conv_2d_pointwise_as_linear(ctx->ggml_ctx, x, w, b);
+            if (ggml_ext_ops_supported(linear, x, ggml_ext_backend_op_support(ctx->backend))) {
+                return linear;
+            }
+        }
         return ggml_ext_conv_2d(ctx->ggml_ctx,
                                 x,
                                 w,
@@ -677,7 +683,18 @@ public:
                                 ctx->conv2d_direct_enabled,
                                 ctx->circular_x_enabled,
                                 ctx->circular_y_enabled,
-                                scale);
+                                scale,
+                                ggml_ext_backend_op_support(ctx->backend));
+    }
+
+    bool runs_as_linear(GGMLRunnerContext* ctx) {
+        return ctx->conv2d_direct_enabled && !ctx->weight_adapter && scale == 1.f &&
+               ggml_ext_conv_2d_is_pointwise(params["weight"], stride.second, stride.first, padding.second, padding.first) &&
+               ctx->pointwise_conv_as_linear;
+    }
+
+    ggml_tensor* forward_tokens(GGMLRunnerContext* ctx, ggml_tensor* tokens) {
+        return ggml_ext_conv_2d_pointwise_tokens(ctx->ggml_ctx, tokens, params["weight"], bias ? params["bias"] : nullptr);
     }
 };
 

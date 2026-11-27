@@ -75,6 +75,7 @@ struct GGMLRunnerContext {
     float linear_scale                                               = 0.f;
     float attn_scale                                                 = 0.f;
     bool conv2d_direct_enabled                                       = false;
+    bool pointwise_conv_as_linear                                    = false;
     bool conv3d_direct_enabled                                       = false;
     bool circular_x_enabled                                          = false;
     bool circular_y_enabled                                          = false;
