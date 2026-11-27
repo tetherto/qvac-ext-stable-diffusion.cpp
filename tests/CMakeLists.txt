@@ -7,6 +7,10 @@ add_executable(test-vae-routing test-vae-routing.cpp)
 target_link_libraries(test-vae-routing PRIVATE stable-diffusion)
 add_test(NAME test-vae-routing COMMAND test-vae-routing)
 
+add_executable(test-view-pinning test-view-pinning.cpp)
+target_link_libraries(test-view-pinning PRIVATE stable-diffusion)
+add_test(NAME test-view-pinning COMMAND test-view-pinning)
+
 add_executable(test-fit-params test-fit-params.cpp)
 target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
