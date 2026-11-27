@@ -6,8 +6,10 @@ add_executable(test-vae-routing test-vae-routing.cpp)
 target_link_libraries(test-vae-routing PRIVATE stable-diffusion)
 add_test(NAME test-vae-routing COMMAND test-vae-routing)
 
+set(SD_TEST_GGML_SOURCE_DIR "${PROJECT_SOURCE_DIR}/ggml" CACHE PATH "GGML source tree for test-only backend mocks")
+
 add_executable(test-fit-params test-fit-params.cpp)
-target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_include_directories(test-fit-params PRIVATE "${PROJECT_SOURCE_DIR}/src" "${SD_TEST_GGML_SOURCE_DIR}/src")
 target_link_libraries(test-fit-params PRIVATE stable-diffusion ${CMAKE_THREAD_LIBS_INIT})
 add_test(NAME test-fit-params COMMAND test-fit-params)
 
@@ -80,3 +82,8 @@ add_executable(test-qwen-image-21 test_qwen_image_21.cpp)
 target_include_directories(test-qwen-image-21 PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(test-qwen-image-21 PRIVATE stable-diffusion)
 add_test(NAME test-qwen-image-21 COMMAND test-qwen-image-21)
+
+add_executable(test-graph-eval-callback test_graph_eval_callback.cpp)
+target_include_directories(test-graph-eval-callback PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(test-graph-eval-callback PRIVATE stable-diffusion)
+add_test(NAME test-graph-eval-callback COMMAND test-graph-eval-callback)

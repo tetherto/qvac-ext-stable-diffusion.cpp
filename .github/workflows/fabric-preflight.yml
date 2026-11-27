@@ -1,0 +1,109 @@
+name: Fabric integration preflight
+
+on:
+  push:
+    branches: [ci/fabric-integration-preflight]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fabric-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: package-fabric
+            runner: ubuntu-22.04
+            backend: CPU
+            mode: package
+            repository: tetherto/qvac-fabric-llm.cpp
+            revision: ccb0962b151b8710b3c9f0b35b81c1a40243738b
+            source: dependency/ggml
+          - name: cpu-fabric
+            runner: ubuntu-22.04
+            backend: CPU
+            mode: package
+            repository: tetherto/qvac-fabric-llm.cpp
+            revision: ccb0962b151b8710b3c9f0b35b81c1a40243738b
+            source: dependency/ggml
+          - name: cpu-control
+            runner: ubuntu-22.04
+            backend: CPU
+            mode: package
+            repository: tetherto/qvac-ext-ggml
+            revision: 2ab141bb0fb9028cd847c3f5095c453d9646c5ea
+            source: dependency
+          - name: cuda-fabric
+            runner: qvac-ubuntu2204-x64-gpu
+            backend: CUDA
+            mode: package
+            repository: tetherto/qvac-fabric-llm.cpp
+            revision: ccb0962b151b8710b3c9f0b35b81c1a40243738b
+            source: dependency/ggml
+          - name: cuda-control
+            runner: qvac-ubuntu2204-x64-gpu
+            backend: CUDA
+            mode: package
+            repository: tetherto/qvac-ext-ggml
+            revision: 2ab141bb0fb9028cd847c3f5095c453d9646c5ea
+            source: dependency
+          - name: metal-fabric
+            runner: qvac-macos26-arm64-gpu
+            backend: Metal
+            mode: package
+            repository: tetherto/qvac-fabric-llm.cpp
+            revision: ccb0962b151b8710b3c9f0b35b81c1a40243738b
+            source: dependency/ggml
+          - name: metal-control
+            runner: qvac-macos26-arm64-gpu
+            backend: Metal
+            mode: package
+            repository: tetherto/qvac-ext-ggml
+            revision: 2ab141bb0fb9028cd847c3f5095c453d9646c5ea
+            source: dependency
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.revision }}
+          path: dependency
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: runner.os != 'macOS'
+        with:
+          python-version: '3.11'
+      - name: Install build tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/preflight-python"
+          "$RUNNER_TEMP/preflight-python/bin/python" -m pip install cmake==3.31.6 ninja==1.11.1.3
+          echo "$RUNNER_TEMP/preflight-python/bin" >> "$GITHUB_PATH"
+      - name: Run preflight
+        env:
+          GGML_SOURCE: ${{ matrix.source }}
+          BACKEND: ${{ matrix.backend }}
+          MODE: ${{ matrix.mode }}
+        run: >-
+          python scripts/fabric_preflight.py
+          --ggml-source "$GGML_SOURCE" --backend "$BACKEND"
+          --mode "$MODE" --output preflight-results --jobs 2
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fabric-preflight-${{ matrix.name }}
+          path: |
+            preflight-results/*.json
+            preflight-results/*.log
+          if-no-files-found: warn
